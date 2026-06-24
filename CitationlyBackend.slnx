@@ -1,0 +1,6 @@
+﻿<Solution>
+  <Project Path="Citationly.API/Citationly.API.csproj" />
+  <Project Path="Citationly.Application/Citationly.Application.csproj" />
+  <Project Path="Citationly.Domain/Citationly.Domain.csproj" />
+  <Project Path="Citationly.Infrastructure/Citationly.Infrastructure.csproj" />
+</Solution>

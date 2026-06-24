@@ -1,6 +1,0 @@
-<Solution>
-  <Project Path="Opus.API/Opus.API.csproj" />
-  <Project Path="Opus.Application/Opus.Application.csproj" />
-  <Project Path="Opus.Domain/Opus.Domain.csproj" />
-  <Project Path="Opus.Infrastructure/Opus.Infrastructure.csproj" />
-</Solution>
