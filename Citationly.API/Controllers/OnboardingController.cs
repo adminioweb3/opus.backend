@@ -1,4 +1,4 @@
-﻿using MediatR;
+using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Citationly.Application.Features.Onboarding;
@@ -33,12 +33,145 @@ public class OnboardingController : ControllerBase
             BusinessName = request.BusinessName ?? string.Empty,
             Industry = request.Industry ?? string.Empty,
             TargetAudience = request.TargetAudience ?? string.Empty,
-            Keywords = request.Keywords ?? string.Empty,
-            Competitors = request.Competitors ?? string.Empty,
-            RankingGoal = request.RankingGoal ?? string.Empty
+            Keywords = request.Keywords ?? string.Empty
         };
 
         var result = await _mediator.Send(command);
+
+        return Ok(result);
+    }
+
+    [HttpPost("analyze-competitors")]
+    public async Task<IActionResult> AnalyzeCompetitors([FromBody] AnalyzeCompetitorsRequest request)
+    {
+        if (request.OrganizationId == Guid.Empty)
+            return BadRequest("OrganizationId is required.");
+
+        var command = new AnalyzeCompetitorsCommand
+        {
+            OrganizationId = request.OrganizationId
+        };
+
+        var result = await _mediator.Send(command);
+        if (!result.Success) return BadRequest(result.Error);
+
+        return Ok(result);
+    }
+
+    [HttpPost("analyze-prompts")]
+    public async Task<IActionResult> AnalyzePrompts([FromBody] AnalyzeAiSearchPromptsRequest request)
+    {
+        if (request.OrganizationId == Guid.Empty)
+            return BadRequest("OrganizationId is required.");
+
+        var command = new AnalyzeAiSearchPromptsCommand
+        {
+            OrganizationId = request.OrganizationId
+        };
+
+        var result = await _mediator.Send(command);
+        if (!result.Success) return BadRequest(result.Error);
+
+        return Ok(result);
+    }
+
+    [HttpPost("analyze-visibility")]
+    public async Task<IActionResult> AnalyzeVisibility([FromBody] AnalyzeVisibilityRequest request)
+    {
+        if (request.OrganizationId == Guid.Empty)
+            return BadRequest("OrganizationId is required.");
+
+        var command = new AnalyzeVisibilityCommand
+        {
+            OrganizationId = request.OrganizationId
+        };
+
+        var result = await _mediator.Send(command);
+        if (!result.Success) return BadRequest(result.Error);
+
+        return Ok(result);
+    }
+
+    [HttpPost("analyze-platform-visibility")]
+    public async Task<IActionResult> AnalyzePlatformVisibility([FromBody] AnalyzePlatformVisibilityRequest request)
+    {
+        if (request.OrganizationId == Guid.Empty)
+            return BadRequest("OrganizationId is required.");
+
+        var command = new AnalyzePlatformVisibilityCommand
+        {
+            OrganizationId = request.OrganizationId
+        };
+
+        var result = await _mediator.Send(command);
+        if (!result.Success) return BadRequest(result.Error);
+
+        return Ok(result);
+    }
+
+    [HttpPost("analyze-citations")]
+    public async Task<IActionResult> AnalyzeCitations([FromBody] AnalyzeCitationsRequest request)
+    {
+        if (request.OrganizationId == Guid.Empty)
+            return BadRequest("OrganizationId is required.");
+
+        var command = new AnalyzeCitationsCommand
+        {
+            OrganizationId = request.OrganizationId
+        };
+
+        var result = await _mediator.Send(command);
+        if (!result.Success) return BadRequest(result.Error);
+
+        return Ok(result);
+    }
+
+    [HttpPost("analyze-personas")]
+    public async Task<IActionResult> AnalyzePersonas([FromBody] AnalyzePersonasRequest request)
+    {
+        if (request.OrganizationId == Guid.Empty)
+            return BadRequest("OrganizationId is required.");
+
+        var command = new AnalyzePersonasCommand
+        {
+            OrganizationId = request.OrganizationId
+        };
+
+        var result = await _mediator.Send(command);
+        if (!result.Success) return BadRequest(result.Error);
+
+        return Ok(result);
+    }
+
+    [HttpPost("analyze-regions")]
+    public async Task<IActionResult> AnalyzeRegions([FromBody] AnalyzeRegionsRequest request)
+    {
+        var command = new AnalyzeRegionsCommand { OrganizationId = request.OrganizationId };
+        var result = await _mediator.Send(command);
+
+        if (!result.Success) return BadRequest(result.Error);
+
+        return Ok(result);
+    }
+
+    [HttpPost("generate-recommendations")]
+    public async Task<IActionResult> GenerateRecommendations([FromBody] GenerateRecommendationsRequest request)
+    {
+        var command = new GenerateRecommendationsCommand { OrganizationId = request.OrganizationId };
+        var result = await _mediator.Send(command);
+
+        if (!result.Success) return BadRequest(result.Error);
+
+        return Ok(result);
+    }
+
+    [HttpPost("generate-executive-summary")]
+    public async Task<IActionResult> GenerateExecutiveSummary([FromBody] GenerateExecutiveSummaryRequest request)
+    {
+        var command = new GenerateExecutiveSummaryCommand { OrganizationId = request.OrganizationId };
+        var result = await _mediator.Send(command);
+
+        if (!result.Success) return BadRequest(result.Error);
 
         return Ok(result);
     }
@@ -58,7 +191,6 @@ public class OnboardingController : ControllerBase
             OrganizationId = user.Value.OrganizationId,
             WebsiteUrl = request.WebsiteUrl ?? string.Empty,
             BusinessName = request.BusinessName ?? string.Empty,
-            Competitors = request.Competitors ?? string.Empty,
             VisibilityScore = request.VisibilityScore,
             BrandAuthority = request.BrandAuthority,
             ContentStrength = request.ContentStrength,
@@ -79,17 +211,59 @@ public class AnalyzeOnboardingRequest
     public string? Industry { get; set; }
     public string? TargetAudience { get; set; }
     public string? Keywords { get; set; }
-    public string? Competitors { get; set; }
-    public string? RankingGoal { get; set; }
 }
 
 public class CompleteOnboardingRequest
 {
     public string? WebsiteUrl { get; set; }
     public string? BusinessName { get; set; }
-    public string? Competitors { get; set; }
     public int VisibilityScore { get; set; }
     public int BrandAuthority { get; set; }
     public int ContentStrength { get; set; }
     public int CitationScore { get; set; }
+}
+
+public class AnalyzeCompetitorsRequest
+{
+    public Guid OrganizationId { get; set; }
+}
+
+public class AnalyzeAiSearchPromptsRequest
+{
+    public Guid OrganizationId { get; set; }
+}
+
+public class AnalyzeVisibilityRequest
+{
+    public Guid OrganizationId { get; set; }
+}
+
+public class AnalyzePlatformVisibilityRequest
+{
+    public Guid OrganizationId { get; set; }
+}
+
+public class AnalyzeCitationsRequest
+{
+    public Guid OrganizationId { get; set; }
+}
+
+public class AnalyzePersonasRequest
+{
+    public Guid OrganizationId { get; set; }
+}
+
+public class AnalyzeRegionsRequest
+{
+    public Guid OrganizationId { get; set; }
+}
+
+public class GenerateRecommendationsRequest
+{
+    public Guid OrganizationId { get; set; }
+}
+
+public class GenerateExecutiveSummaryRequest
+{
+    public Guid OrganizationId { get; set; }
 }

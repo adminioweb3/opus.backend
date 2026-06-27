@@ -1,4 +1,4 @@
-﻿using MediatR;
+using MediatR;
 using Citationly.Application.Interfaces;
 using Citationly.Domain.Entities;
 

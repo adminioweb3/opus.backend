@@ -1,4 +1,4 @@
-﻿using MediatR;
+using MediatR;
 using Citationly.Application.Interfaces;
 using Citationly.Domain.Entities;
 
@@ -42,7 +42,8 @@ public class RunScanCommandHandler : IRequestHandler<RunScanCommand, bool>
         for(int i = 6; i >= 0; i--)
         {
             var date = today.AddDays(-i);
-            var existingForDate = existingScans.FirstOrDefault(s => s.ScanDate.Date == date);
+            var dateOnly = DateOnly.FromDateTime(date);
+            var existingForDate = existingScans.FirstOrDefault(s => s.ScanDate == dateOnly);
             
             HistoricalScan scan;
             if (existingForDate != null && date != today) 
@@ -60,7 +61,7 @@ public class RunScanCommandHandler : IRequestHandler<RunScanCommand, bool>
                 scan = new HistoricalScan
                 {
                     OrganizationId = request.OrganizationId,
-                    ScanDate = date,
+                    ScanDate = dateOnly,
                     VisibilityScore = Math.Clamp(baseScan.VisibilityScore + random.Next(-1, 3), 0, 100),
                     CitationScore = Math.Clamp(baseScan.CitationScore + random.Next(-2, 4), 0, 100),
                     SentimentScore = Math.Clamp(baseScan.SentimentScore + random.Next(-1, 3), 0, 100),
@@ -76,10 +77,10 @@ public class RunScanCommandHandler : IRequestHandler<RunScanCommand, bool>
             int compB = random.Next(10, 20);
             int others = Math.Max(0, 100 - (myShare + compA + compB));
             
-            shareOfVoiceList.Add(new ShareOfVoice { OrganizationId = request.OrganizationId, ScanDate = date, CompetitorName = "Your Brand", SharePercentage = myShare, ColorCode = "hsl(var(--primary))" });
-            shareOfVoiceList.Add(new ShareOfVoice { OrganizationId = request.OrganizationId, ScanDate = date, CompetitorName = "Competitor A", SharePercentage = compA, ColorCode = "#f97316" });
-            shareOfVoiceList.Add(new ShareOfVoice { OrganizationId = request.OrganizationId, ScanDate = date, CompetitorName = "Competitor B", SharePercentage = compB, ColorCode = "#3b82f6" });
-            shareOfVoiceList.Add(new ShareOfVoice { OrganizationId = request.OrganizationId, ScanDate = date, CompetitorName = "Others", SharePercentage = others, ColorCode = "#64748b" });
+            shareOfVoiceList.Add(new ShareOfVoice { OrganizationId = request.OrganizationId, ScanDate = dateOnly, CompetitorName = "Your Brand", SharePercentage = myShare, ColorCode = "hsl(var(--primary))" });
+            shareOfVoiceList.Add(new ShareOfVoice { OrganizationId = request.OrganizationId, ScanDate = dateOnly, CompetitorName = "Competitor A", SharePercentage = compA, ColorCode = "#f97316" });
+            shareOfVoiceList.Add(new ShareOfVoice { OrganizationId = request.OrganizationId, ScanDate = dateOnly, CompetitorName = "Competitor B", SharePercentage = compB, ColorCode = "#3b82f6" });
+            shareOfVoiceList.Add(new ShareOfVoice { OrganizationId = request.OrganizationId, ScanDate = dateOnly, CompetitorName = "Others", SharePercentage = others, ColorCode = "#64748b" });
 
             var total = shareOfVoiceList.Sum(s => s.SharePercentage);
             if (total > 0) 

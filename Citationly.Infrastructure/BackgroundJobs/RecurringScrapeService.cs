@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Citationly.Application.Interfaces;
@@ -96,6 +96,25 @@ public class RecurringScrapeService : BackgroundService
                     });
                 }
             }
+
+            // --- COMPETITOR INTELLIGENCE ENGINE ---
+            var searchService = scope.ServiceProvider.GetRequiredService<ISearchService>();
+            var metricsService = scope.ServiceProvider.GetRequiredService<IMetricsCalculationService>();
+
+            _logger.LogInformation("Running Competitor Intelligence for: {DomainUrl}", website.DomainUrl);
+            
+            var industry = "Web3 Development";
+            var services = "Smart Contracts, dApps, Blockchain Consulting";
+            
+            var competitors = await searchService.DiscoverCompetitorsAsync(website.OrganizationId, industry, services);
+            var prompts = await searchService.GeneratePromptsAsync(website.OrganizationId, industry, services);
+            
+            foreach(var prompt in prompts)
+            {
+                await searchService.ExecutePromptSearchAsync(prompt, competitors, website.DomainUrl);
+            }
+
+            await metricsService.CalculateAndStoreMetricsAsync(website.OrganizationId, DateTime.UtcNow.Date, website.DomainUrl);
         }
     }
 }

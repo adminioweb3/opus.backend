@@ -1,8 +1,10 @@
-﻿using FirebaseAdmin;
+using FirebaseAdmin;
 using Google.Apis.Auth.OAuth2;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using Scalar.AspNetCore;
+using Hangfire;
+using Hangfire.PostgreSql;
 
 using Citationly.Application;
 using Citationly.Infrastructure;
@@ -12,6 +14,7 @@ var builder = WebApplication.CreateBuilder(args);
 // Add services to the container.
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddHttpClient();
 
 // OpenAPI
 builder.Services.AddOpenApi();
@@ -20,6 +23,15 @@ builder.Services.AddOpenApi();
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure();
 
+// Configure Hangfire
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+builder.Services.AddHangfire(configuration => configuration
+    .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
+    .UseSimpleAssemblyNameTypeSerializer()
+    .UseRecommendedSerializerSettings()
+    .UsePostgreSqlStorage(options => options.UseNpgsqlConnection(connectionString)));
+builder.Services.AddHangfireServer();
+
 // Add CORS
 builder.Services.AddCors(options =>
 {
@@ -27,8 +39,8 @@ builder.Services.AddCors(options =>
         builder =>
         {
             builder.AllowAnyOrigin()
-                   .AllowAnyMethod()
-                   .AllowAnyHeader();
+                .AllowAnyMethod()
+                .AllowAnyHeader();
         });
 });
 
@@ -53,11 +65,11 @@ if (!string.IsNullOrEmpty(firebaseProjectId))
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
     app.MapScalarApiReference();
+    app.UseHangfireDashboard("/hangfire");
 }
 
 app.UseHttpsRedirection();

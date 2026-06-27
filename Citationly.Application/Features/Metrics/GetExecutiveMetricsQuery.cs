@@ -1,4 +1,4 @@
-﻿using MediatR;
+using MediatR;
 using Citationly.Application.Interfaces;
 using Citationly.Domain.Entities;
 
@@ -74,7 +74,7 @@ public class GetExecutiveMetricsQueryHandler : IRequestHandler<GetExecutiveMetri
                 Citations = s.VisibilityScore 
             });
 
-            var shareOfVoice = await _repository.GetShareOfVoiceAsync(request.OrganizationId, latest.ScanDate);
+            var shareOfVoice = await _repository.GetShareOfVoiceAsync(request.OrganizationId, latest.ScanDate.ToDateTime(TimeOnly.MinValue));
             result.ShareOfVoice = shareOfVoice.Select(sov => new ShareOfVoiceData
             {
                 Name = sov.CompetitorName,

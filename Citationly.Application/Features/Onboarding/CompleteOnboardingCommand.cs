@@ -1,7 +1,8 @@
-﻿using System.Text.Json;
 using MediatR;
 using Citationly.Application.Interfaces;
+using Citationly.Domain.Entities;
 using Dapper;
+using Hangfire;
 
 namespace Citationly.Application.Features.Onboarding;
 
@@ -10,7 +11,7 @@ public class CompleteOnboardingCommand : IRequest<bool>
     public Guid OrganizationId { get; set; }
     public string WebsiteUrl { get; set; } = string.Empty;
     public string BusinessName { get; set; } = string.Empty;
-    public string Competitors { get; set; } = string.Empty;
+
     public int VisibilityScore { get; set; }
     public int BrandAuthority { get; set; }
     public int ContentStrength { get; set; }
@@ -20,10 +21,17 @@ public class CompleteOnboardingCommand : IRequest<bool>
 public class CompleteOnboardingCommandHandler : IRequestHandler<CompleteOnboardingCommand, bool>
 {
     private readonly IDbConnectionFactory _dbConnectionFactory;
+    private readonly IBackgroundJobClient _backgroundJobClient;
+    private readonly IScrapingJobRepository _scrapingJobRepository;
 
-    public CompleteOnboardingCommandHandler(IDbConnectionFactory dbConnectionFactory)
+    public CompleteOnboardingCommandHandler(
+        IDbConnectionFactory dbConnectionFactory,
+        IBackgroundJobClient backgroundJobClient,
+        IScrapingJobRepository scrapingJobRepository)
     {
         _dbConnectionFactory = dbConnectionFactory;
+        _backgroundJobClient = backgroundJobClient;
+        _scrapingJobRepository = scrapingJobRepository;
     }
 
     public async Task<bool> Handle(CompleteOnboardingCommand request, CancellationToken cancellationToken)
@@ -52,69 +60,24 @@ public class CompleteOnboardingCommandHandler : IRequestHandler<CompleteOnboardi
                     "INSERT INTO Websites (OrganizationId, DomainUrl) VALUES (@OrganizationId, @WebsiteUrl) RETURNING Id",
                     new { request.OrganizationId, request.WebsiteUrl });
             }
+
+            // 3. Enqueue Website Scraper (Website crawl)
+            var job = new ScrapingJob
+            {
+                OrganizationId = request.OrganizationId,
+                WebsiteId = websiteId,
+                Url = request.WebsiteUrl,
+                ScrapeType = "Website",
+                MaxPages = 50, // Reasonable default for onboarding
+                Status = "Pending"
+            };
+
+            var jobId = await _scrapingJobRepository.CreateJobAsync(job);
+            _backgroundJobClient.Enqueue<IScrapingJobService>(x => x.ProcessJobAsync(jobId));
         }
 
-        // 3. Insert initial HistoricalScan
-        await connection.ExecuteAsync(@"
-            INSERT INTO HistoricalScans 
-            (OrganizationId, ScanDate, VisibilityScore, CitationScore, SentimentScore, CompetitorScore) 
-            VALUES 
-            (@OrganizationId, CURRENT_DATE, @VisibilityScore, @CitationScore, @ContentStrength, @BrandAuthority)",
-            new
-            {
-                request.OrganizationId,
-                request.VisibilityScore,
-                request.CitationScore,
-                request.ContentStrength,
-                request.BrandAuthority
-            });
-
-        // 4. Insert ShareOfVoice for each competitor
-        if (!string.IsNullOrWhiteSpace(request.Competitors))
-        {
-            var competitors = request.Competitors.Split(',')
-                .Select(c => c.Trim())
-                .Where(c => !string.IsNullOrEmpty(c))
-                .ToList();
-
-            int share = competitors.Count > 0 ? 100 / (competitors.Count + 1) : 0;
-            var random = new Random();
-
-            foreach (var competitor in competitors)
-            {
-                var color = $"#{random.Next(0x1000000):X6}";
-                await connection.ExecuteAsync(@"
-                    INSERT INTO ShareOfVoice 
-                    (OrganizationId, ScanDate, CompetitorName, SharePercentage, ColorCode) 
-                    VALUES 
-                    (@OrganizationId, CURRENT_DATE, @CompetitorName, @SharePercentage, @ColorCode)
-                    ON CONFLICT ON CONSTRAINT shareofvoice_organizationid_scandate_competitorname_key DO NOTHING",
-                    new
-                    {
-                        request.OrganizationId,
-                        CompetitorName = competitor,
-                        SharePercentage = share,
-                        ColorCode = color
-                    });
-            }
-            
-            // Add self share
-            if (share > 0)
-            {
-                await connection.ExecuteAsync(@"
-                    INSERT INTO ShareOfVoice 
-                    (OrganizationId, ScanDate, CompetitorName, SharePercentage, ColorCode) 
-                    VALUES 
-                    (@OrganizationId, CURRENT_DATE, @CompetitorName, @SharePercentage, '#3b82f6')
-                    ON CONFLICT ON CONSTRAINT shareofvoice_organizationid_scandate_competitorname_key DO NOTHING",
-                    new
-                    {
-                        request.OrganizationId,
-                        CompetitorName = string.IsNullOrWhiteSpace(request.BusinessName) ? "You" : request.BusinessName,
-                        SharePercentage = 100 - (share * competitors.Count)
-                    });
-            }
-        }
+        // 4. Enqueue AI Visibility Engine Analysis
+        _backgroundJobClient.Enqueue<IAiVisibilityEngineService>(x => x.RunAnalysisAsync(request.OrganizationId));
 
         return true;
     }
