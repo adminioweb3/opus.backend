@@ -23,7 +23,7 @@ public class OpenAiClientService
             new { role = "user", content = prompt }
         };
         
-        return await CallOpenRouterAsync(messages, "gpt-4o-mini", 500, ct);
+        return await CallOpenRouterAsync(messages, "gpt-4o-mini", 500, ct, isIntent: true);
     }
 
     public async Task<string> GenerateResponseAsync(object messageList, CancellationToken ct)
@@ -31,11 +31,14 @@ public class OpenAiClientService
         return await CallOpenRouterAsync(messageList, "gpt-4o", 1000, ct);
     }
 
-    private async Task<string> CallOpenRouterAsync(object messages, string model, int maxTokens, CancellationToken ct)
+    private async Task<string> CallOpenRouterAsync(object messages, string model, int maxTokens, CancellationToken ct, bool isIntent = false)
     {
         if (string.IsNullOrEmpty(_apiKey) || _apiKey == "YOUR_OPENAI_API_KEY")
         {
-            return "{\"intent\":\"General Chat\",\"requiredTools\":[]}"; // Mock fallback
+            if (isIntent)
+                return "{\"intent\":\"General Chat\",\"requiredTools\":[]}"; // Mock fallback for intent
+            
+            return "This is a mock AI response. Please configure your OpenAI API Key in `appsettings.json` to enable real AI generation.";
         }
 
         var httpClient = _httpClientFactory.CreateClient();
