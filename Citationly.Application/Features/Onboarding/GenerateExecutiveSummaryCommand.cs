@@ -439,7 +439,7 @@ Return ONLY the JSON object.";
                 prompt: userPrompt,
                 systemPrompt: systemPrompt,
                 requireJson: true,
-                model: "meta-llama/llama-3.3-70b-instruct:free");
+                model: "gpt-4o-mini");
 
             responseContent = responseContent.Trim();
             if (responseContent.StartsWith("```json"))

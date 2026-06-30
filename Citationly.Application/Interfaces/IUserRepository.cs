@@ -1,4 +1,4 @@
-﻿namespace Citationly.Application.Interfaces;
+namespace Citationly.Application.Interfaces;
 
 public interface IUserRepository
 {

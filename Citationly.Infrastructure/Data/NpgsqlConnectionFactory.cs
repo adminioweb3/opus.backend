@@ -1,4 +1,4 @@
-﻿using System.Data;
+using System.Data;
 using Microsoft.Extensions.Configuration;
 using Npgsql;
 using Citationly.Application.Interfaces;

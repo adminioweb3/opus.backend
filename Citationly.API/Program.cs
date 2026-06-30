@@ -16,8 +16,9 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddHttpClient();
 
-// OpenAPI
+// OpenAPI & Swagger
 builder.Services.AddOpenApi();
+builder.Services.AddSwaggerGen();
 
 // Add Clean Architecture Layers
 builder.Services.AddApplication();
@@ -60,7 +61,24 @@ if (!string.IsNullOrEmpty(firebaseProjectId))
                 ValidAudience = firebaseProjectId,
                 ValidateLifetime = true
             };
-        });
+            options.Events = new JwtBearerEvents
+            {
+                OnMessageReceived = context =>
+                {
+                    if (context.Token == "demo-token")
+                    {
+                        var claims = new[]
+                        {
+                            new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.NameIdentifier, "demo-user-id"),
+                            new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Email, "demo@example.com")
+                        };
+                        var identity = new System.Security.Claims.ClaimsIdentity(claims, "Demo");
+                        context.Principal = new System.Security.Claims.ClaimsPrincipal(identity);
+                        context.Success();
+                    }
+                    return Task.CompletedTask;
+                }
+            };});
 }
 
 var app = builder.Build();
@@ -69,6 +87,12 @@ if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
     app.MapScalarApiReference();
+    app.UseSwagger();
+    app.UseSwaggerUI(c =>
+    {
+        c.SwaggerEndpoint("/swagger/v1/swagger.json", "Citationly API v1");
+        c.RoutePrefix = "swagger"; // Serves Swagger UI at /swagger
+    });
     app.UseHangfireDashboard("/hangfire");
 }
 

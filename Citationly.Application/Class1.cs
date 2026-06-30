@@ -1,4 +1,4 @@
-﻿namespace Citationly.Application;
+namespace Citationly.Application;
 
 public class Class1
 {

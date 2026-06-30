@@ -16,6 +16,7 @@ public static class DependencyInjection
         services.AddTransient<IWebsiteRepository, WebsiteRepository>();
         services.AddTransient<IIntegrationRepository, IntegrationRepository>();
         services.AddTransient<IEmbeddingRepository, EmbeddingRepository>();
+        services.AddTransient<IPromptIntelligenceRepository, PromptIntelligenceRepository>();
         services.AddScoped<IMetricsRepository, MetricsRepository>();
         services.AddScoped<IScrapingJobRepository, ScrapingJobRepository>();
         services.AddScoped<IAiVisibilityRepository, AiVisibilityRepository>();

@@ -57,7 +57,7 @@ public class DummyAiAnalysisService : IAiAnalysisService
 
     public async Task<List<ShareOfVoice>> GenerateCompetitorsAsync(string domainUrl, Guid orgId)
     {
-        var apiKey = _configuration["OpenRouter:ApiKey"];
+        var apiKey = _configuration["OpenAI:ApiKey"];
         
         if (string.IsNullOrEmpty(apiKey) || apiKey == "YOUR_OPEN_ROUTER_API_KEY")
         {
@@ -101,7 +101,7 @@ Make sure one of the entries is for {domainUrl} itself. Ensure valid JSON.";
             };
 
             var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
-            var response = await httpClient.PostAsync("https://openrouter.ai/api/v1/chat/completions", content);
+            var response = await httpClient.PostAsync("https://api.openai.com/v1/chat/completions", content);
 
             if (response.IsSuccessStatusCode)
             {
