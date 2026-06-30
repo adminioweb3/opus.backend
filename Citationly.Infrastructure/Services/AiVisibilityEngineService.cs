@@ -7,13 +7,13 @@ namespace Citationly.Infrastructure.Services;
 public class AiVisibilityEngineService : IAiVisibilityEngineService
 {
     private readonly IAiVisibilityRepository _repository;
-    private readonly IOpenRouterService _openRouterService;
+    private readonly IOpenAiService _openRouterService;
     private readonly IWebsiteRepository _websiteRepository;
     private readonly IUserRepository _userRepository;
 
     public AiVisibilityEngineService(
         IAiVisibilityRepository repository,
-        IOpenRouterService openRouterService,
+        IOpenAiService openRouterService,
         IWebsiteRepository websiteRepository,
         IUserRepository userRepository)
     {

@@ -53,18 +53,21 @@ public class ToneOfVoiceObj { public string PrimaryTone { get; set; } = string.E
 
 public class AnalyzeOnboardingCommandHandler : IRequestHandler<AnalyzeOnboardingCommand, OnboardingAnalysisResult>
 {
-    private readonly IOpenRouterService _openRouterService;
+    private readonly IOpenAiService _openRouterService;
     private readonly IScrapingJobRepository _scrapingRepository;
     private readonly IWebsiteRepository _websiteRepository;
+    private readonly IDbConnectionFactory _dbConnectionFactory;
 
     public AnalyzeOnboardingCommandHandler(
-        IOpenRouterService openRouterService,
+        IOpenAiService openRouterService,
         IScrapingJobRepository scrapingRepository,
-        IWebsiteRepository websiteRepository)
+        IWebsiteRepository websiteRepository,
+        IDbConnectionFactory dbConnectionFactory)
     {
         _openRouterService = openRouterService;
         _scrapingRepository = scrapingRepository;
         _websiteRepository = websiteRepository;
+        _dbConnectionFactory = dbConnectionFactory;
     }
 
     public async Task<OnboardingAnalysisResult> Handle(AnalyzeOnboardingCommand request, CancellationToken cancellationToken)
@@ -439,6 +442,14 @@ Return ONLY the JSON object.";
                             RawProfileJson = responseContent
                         };
                         await _websiteRepository.InsertWebsiteProfileAsync(profile);
+
+                        // Also update the Organization name
+                        using var connection = _dbConnectionFactory.CreateConnection();
+                        await Dapper.SqlMapper.ExecuteAsync(
+                            connection,
+                            "UPDATE Organizations SET Name = @Name WHERE Id = @Id",
+                            new { Name = request.BusinessName, Id = request.OrganizationId }
+                        );
                     }
                     catch (Exception dbEx)
                     {

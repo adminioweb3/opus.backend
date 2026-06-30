@@ -72,12 +72,12 @@ public class AnalyzeCompetitorsCommandHandler : IRequestHandler<AnalyzeCompetito
 {
     private readonly IWebsiteRepository _websiteRepository;
     private readonly IScrapingJobRepository _scrapingRepository;
-    private readonly IOpenRouterService _openRouterService;
+    private readonly IOpenAiService _openRouterService;
 
     public AnalyzeCompetitorsCommandHandler(
         IWebsiteRepository websiteRepository,
         IScrapingJobRepository scrapingRepository,
-        IOpenRouterService openRouterService)
+        IOpenAiService openRouterService)
     {
         _websiteRepository = websiteRepository;
         _scrapingRepository = scrapingRepository;

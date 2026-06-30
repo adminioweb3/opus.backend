@@ -405,3 +405,80 @@ public class ExecutiveSummaryData
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
+
+public class AnalysisRun
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public Guid? WebsiteId { get; set; }
+    public string Status { get; set; } = "Pending";
+    public DateTime? StartedAt { get; set; }
+    public DateTime? CompletedAt { get; set; }
+    public int DurationSeconds { get; set; }
+    public string ModelsUsed { get; set; } = string.Empty; 
+    public int PromptsExecuted { get; set; }
+    public int PagesAnalyzed { get; set; }
+    public int CompetitorsCompared { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class DashboardSnapshot
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public Guid AnalysisRunId { get; set; }
+    public int VisibilityScore { get; set; }
+    public int CitationHealth { get; set; }
+    public string RevenueImpact { get; set; } = "$0";
+    public string CompetitorRisk { get; set; } = "Low";
+    
+    public string PlatformVisibilitiesJson { get; set; } = "[]"; 
+    public string TopCompetitorsJson { get; set; } = "[]";
+    public string OpportunityPipelineJson { get; set; } = "{}";
+    public string ExecutiveAlertsJson { get; set; } = "[]";
+    public string RecommendedActionsJson { get; set; } = "[]";
+    public string KnowledgeVaultJson { get; set; } = "{}";
+    public string CitationTimelineJson { get; set; } = "[]";
+    public string AgentOperationsJson { get; set; } = "[]";
+    
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class VisibilityHistory
+{
+    public Guid Id { get; set; }
+    public Guid AnalysisRunId { get; set; }
+    public Guid OrganizationId { get; set; }
+    public int Score { get; set; }
+    public DateTime RecordedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class CitationHistory
+{
+    public Guid Id { get; set; }
+    public Guid AnalysisRunId { get; set; }
+    public Guid OrganizationId { get; set; }
+    public int Score { get; set; }
+    public DateTime RecordedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class RecommendationHistory
+{
+    public Guid Id { get; set; }
+    public Guid AnalysisRunId { get; set; }
+    public Guid OrganizationId { get; set; }
+    public string Title { get; set; } = string.Empty;
+    public string Description { get; set; } = string.Empty;
+    public string Priority { get; set; } = string.Empty;
+    public DateTime RecordedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class PromptHistory
+{
+    public Guid Id { get; set; }
+    public Guid AnalysisRunId { get; set; }
+    public Guid OrganizationId { get; set; }
+    public string QueryString { get; set; } = string.Empty;
+    public string SearchEngine { get; set; } = string.Empty;
+    public DateTime RecordedAt { get; set; } = DateTime.UtcNow;
+}

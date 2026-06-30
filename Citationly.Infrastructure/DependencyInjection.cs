@@ -20,6 +20,8 @@ public static class DependencyInjection
         services.AddScoped<IMetricsRepository, MetricsRepository>();
         services.AddScoped<IScrapingJobRepository, ScrapingJobRepository>();
         services.AddScoped<IAiVisibilityRepository, AiVisibilityRepository>();
+        services.AddScoped<IAnalysisRepository, AnalysisRepository>();
+        services.AddScoped<IAnalysisOrchestrator, Citationly.Application.Features.AnalysisEngine.AnalysisOrchestrator>();
         services.AddScoped<IWebScraperService, WebScraperService>();
         services.AddScoped<IAiAnalysisService, DummyAiAnalysisService>();
         services.AddScoped<IMarkdownGeneratorService, MarkdownGeneratorService>();
@@ -28,7 +30,7 @@ public static class DependencyInjection
         services.AddScoped<IAiVisibilityEngineService, AiVisibilityEngineService>();
 
         services.AddHttpClient<ICmsIntegrationService, WordPressIntegrationService>();
-        services.AddHttpClient<IOpenRouterService, OpenRouterService>(client =>
+        services.AddHttpClient<IOpenAiService, OpenAiService>(client =>
         {
             client.Timeout = TimeSpan.FromMinutes(10);
         });

@@ -50,11 +50,11 @@ public class GeoRecommendationResponse
 public class GenerateRecommendationsCommandHandler : IRequestHandler<GenerateRecommendationsCommand, GenerateRecommendationsResult>
 {
     private readonly IWebsiteRepository _websiteRepository;
-    private readonly IOpenRouterService _openRouterService;
+    private readonly IOpenAiService _openRouterService;
 
     public GenerateRecommendationsCommandHandler(
         IWebsiteRepository websiteRepository,
-        IOpenRouterService openRouterService)
+        IOpenAiService openRouterService)
     {
         _websiteRepository = websiteRepository;
         _openRouterService = openRouterService;

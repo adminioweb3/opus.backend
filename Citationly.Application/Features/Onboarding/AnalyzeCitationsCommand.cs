@@ -49,11 +49,11 @@ public class CitationItemResponse
 public class AnalyzeCitationsCommandHandler : IRequestHandler<AnalyzeCitationsCommand, CitationAnalysisResult>
 {
     private readonly IWebsiteRepository _websiteRepository;
-    private readonly IOpenRouterService _openRouterService;
+    private readonly IOpenAiService _openRouterService;
 
     public AnalyzeCitationsCommandHandler(
         IWebsiteRepository websiteRepository,
-        IOpenRouterService openRouterService)
+        IOpenAiService openRouterService)
     {
         _websiteRepository = websiteRepository;
         _openRouterService = openRouterService;

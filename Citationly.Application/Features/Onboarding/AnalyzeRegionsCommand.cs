@@ -44,11 +44,11 @@ public class RegionScoreResponse
 public class AnalyzeRegionsCommandHandler : IRequestHandler<AnalyzeRegionsCommand, AnalyzeRegionsResult>
 {
     private readonly IWebsiteRepository _websiteRepository;
-    private readonly IOpenRouterService _openRouterService;
+    private readonly IOpenAiService _openRouterService;
 
     public AnalyzeRegionsCommandHandler(
         IWebsiteRepository websiteRepository,
-        IOpenRouterService openRouterService)
+        IOpenAiService openRouterService)
     {
         _websiteRepository = websiteRepository;
         _openRouterService = openRouterService;

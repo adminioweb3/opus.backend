@@ -13,13 +13,13 @@ public class DeployRecommendationCommand : IRequest<string>
 
 public class DeployRecommendationCommandHandler : IRequestHandler<DeployRecommendationCommand, string>
 {
-    private readonly IOpenRouterService _openRouterService;
+    private readonly IOpenAiService _openRouterService;
     private readonly ICmsIntegrationService _cmsIntegrationService;
     // We would normally need IRecommendationRepository and IIntegrationRepository here,
     // but for the sake of MVP we will simulate fetching them or inject them if they exist.
 
     public DeployRecommendationCommandHandler(
-        IOpenRouterService openRouterService,
+        IOpenAiService openRouterService,
         ICmsIntegrationService cmsIntegrationService)
     {
         _openRouterService = openRouterService;

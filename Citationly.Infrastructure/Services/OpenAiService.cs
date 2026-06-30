@@ -6,12 +6,12 @@ using Citationly.Application.Interfaces;
 
 namespace Citationly.Infrastructure.Services;
 
-public class OpenRouterService : IOpenRouterService
+public class OpenAiService : IOpenAiService
 {
     private readonly HttpClient _httpClient;
     private readonly string _apiKey;
 
-    public OpenRouterService(HttpClient httpClient, IConfiguration configuration)
+    public OpenAiService(HttpClient httpClient, IConfiguration configuration)
     {
         _httpClient = httpClient;
         _apiKey = configuration["OpenAI:ApiKey"] ?? string.Empty;
