@@ -1,4 +1,4 @@
-﻿using HtmlAgilityPack;
+using HtmlAgilityPack;
 using Citationly.Application.Interfaces;
 using Citationly.Domain.Entities;
 

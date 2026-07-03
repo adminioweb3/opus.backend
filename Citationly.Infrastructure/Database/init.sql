@@ -1,6 +1,25 @@
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
+-- Drop tables to reset DB
+DROP TABLE IF EXISTS ExtractedLinks CASCADE;
+DROP TABLE IF EXISTS ExtractedImages CASCADE;
+DROP TABLE IF EXISTS WebsiteMetadata CASCADE;
+DROP TABLE IF EXISTS ScrapedPages CASCADE;
+DROP TABLE IF EXISTS ScrapingJobs CASCADE;
+DROP TABLE IF EXISTS ShareOfVoice CASCADE;
+DROP TABLE IF EXISTS HistoricalScans CASCADE;
+DROP TABLE IF EXISTS BrandMentions CASCADE;
+DROP TABLE IF EXISTS AiSearchPrompts CASCADE;
+DROP TABLE IF EXISTS Competitors CASCADE;
+DROP TABLE IF EXISTS Embeddings CASCADE;
+DROP TABLE IF EXISTS Integrations CASCADE;
+DROP TABLE IF EXISTS Recommendations CASCADE;
+DROP TABLE IF EXISTS CrawledPages CASCADE;
+DROP TABLE IF EXISTS Websites CASCADE;
+DROP TABLE IF EXISTS Users CASCADE;
+DROP TABLE IF EXISTS Organizations CASCADE;
+
 -- Organizations (Tenants)
 CREATE TABLE IF NOT EXISTS Organizations (
     Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -227,3 +246,134 @@ BEGIN
     WHERE e.OrganizationId = p_OrganizationId;
 END;
 $$ LANGUAGE plpgsql;
+
+-- 8. Competitor Engine Tables
+
+CREATE TABLE IF NOT EXISTS Competitors (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+    Name VARCHAR(255) NOT NULL,
+    WebsiteUrl VARCHAR(2048),
+    Industry VARCHAR(255),
+    Description TEXT,
+    Category VARCHAR(255),
+    Logo VARCHAR(2048),
+    Country VARCHAR(100),
+    Authority INT DEFAULT 0,
+    Popularity INT DEFAULT 0,
+    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS AiSearchPrompts (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+    QueryString TEXT NOT NULL,
+    SearchEngine VARCHAR(100) DEFAULT 'Google',
+    GeneratedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS BrandMentions (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    AiSearchPromptId UUID REFERENCES AiSearchPrompts(Id) ON DELETE CASCADE,
+    OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+    BrandName VARCHAR(255) NOT NULL,
+    Position INT NOT NULL,
+    SentimentScore INT DEFAULT 0,
+    MentionedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS HistoricalScans (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+    ScanDate DATE NOT NULL,
+    VisibilityScore INT DEFAULT 0,
+    CitationScore INT DEFAULT 0,
+    SentimentScore INT DEFAULT 0,
+    CompetitorScore INT DEFAULT 0,
+    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(OrganizationId, ScanDate)
+);
+
+CREATE TABLE IF NOT EXISTS ShareOfVoice (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+    ScanDate DATE NOT NULL,
+    CompetitorName VARCHAR(255) NOT NULL,
+    SharePercentage INT DEFAULT 0,
+    ColorCode VARCHAR(50) DEFAULT '#000000',
+    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(OrganizationId, ScanDate, CompetitorName)
+);
+
+-- Scraping Jobs
+CREATE TABLE IF NOT EXISTS ScrapingJobs (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+    WebsiteId UUID REFERENCES Websites(Id) ON DELETE SET NULL,
+    Url VARCHAR(2048) NOT NULL,
+    Status VARCHAR(50) DEFAULT 'Pending', -- Pending, Processing, Completed, Failed
+    ScrapeType VARCHAR(50) DEFAULT 'Single', -- Single, Website
+    TotalPages INT DEFAULT 0,
+    ProcessedPages INT DEFAULT 0,
+    MaxPages INT DEFAULT 100,
+    SuccessfulPages INT DEFAULT 0,
+    FailedPages INT DEFAULT 0,
+    TotalWords INT DEFAULT 0,
+    TotalImages INT DEFAULT 0,
+    TotalLinks INT DEFAULT 0,
+    StartedAt TIMESTAMP WITH TIME ZONE,
+    CompletedAt TIMESTAMP WITH TIME ZONE,
+    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Scraped Pages (Results of ScrapingJobs)
+CREATE TABLE IF NOT EXISTS ScrapedPages (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    JobId UUID REFERENCES ScrapingJobs(Id) ON DELETE CASCADE,
+    Url VARCHAR(2048) NOT NULL,
+    Title VARCHAR(512),
+    Description TEXT,
+    Content TEXT,
+    HtmlContent TEXT,
+    MarkdownContent TEXT,
+    WordCount INT DEFAULT 0,
+    ImageCount INT DEFAULT 0,
+    LinkCount INT DEFAULT 0,
+    Images JSONB DEFAULT '[]'::jsonb, -- Kept for UI backwards compatibility & speed
+    InternalLinks JSONB DEFAULT '[]'::jsonb, -- Kept for UI backwards compatibility & speed
+    ExternalLinks JSONB DEFAULT '[]'::jsonb, -- Kept for UI backwards compatibility & speed
+    Headings JSONB DEFAULT '[]'::jsonb,
+    ScrapedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Normalized tables requested by the user
+CREATE TABLE IF NOT EXISTS ExtractedImages (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    PageId UUID REFERENCES ScrapedPages(Id) ON DELETE CASCADE,
+    Url VARCHAR(2048) NOT NULL,
+    AltText TEXT
+);
+
+CREATE TABLE IF NOT EXISTS ExtractedLinks (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    PageId UUID REFERENCES ScrapedPages(Id) ON DELETE CASCADE,
+    Url VARCHAR(2048) NOT NULL,
+    LinkType VARCHAR(50) -- Internal, External
+);
+
+CREATE TABLE IF NOT EXISTS WebsiteMetadata (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    WebsiteId UUID REFERENCES Websites(Id) ON DELETE CASCADE,
+    JobId UUID REFERENCES ScrapingJobs(Id) ON DELETE SET NULL,
+    Title VARCHAR(512),
+    Description TEXT,
+    OpenGraph JSONB DEFAULT '{}'::jsonb,
+    TwitterCard JSONB DEFAULT '{}'::jsonb,
+    SchemaData JSONB DEFAULT '{}'::jsonb,
+    JsonLd JSONB DEFAULT '[]'::jsonb,
+    CanonicalUrl VARCHAR(2048),
+    Robots VARCHAR(255),
+    Language VARCHAR(50),
+    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+

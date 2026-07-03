@@ -1,4 +1,4 @@
-﻿namespace Citationly.Infrastructure;
+namespace Citationly.Infrastructure;
 
 public class Class1
 {

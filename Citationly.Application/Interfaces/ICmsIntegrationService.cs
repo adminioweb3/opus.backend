@@ -1,4 +1,4 @@
-﻿using Citationly.Domain.Entities;
+using Citationly.Domain.Entities;
 
 namespace Citationly.Application.Interfaces;
 

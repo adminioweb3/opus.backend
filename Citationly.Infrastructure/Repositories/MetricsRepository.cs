@@ -1,4 +1,4 @@
-﻿using Dapper;
+using Dapper;
 using Citationly.Application.Features.Metrics;
 using Citationly.Application.Interfaces;
 using Citationly.Domain.Entities;
@@ -42,9 +42,14 @@ public class MetricsRepository : IMetricsRepository
     public async Task<IEnumerable<ShareOfVoice>> GetShareOfVoiceAsync(Guid organizationId, DateTime date)
     {
         using var connection = _dbConnectionFactory.CreateConnection();
+        // Instead of strict date match, get the latest scan date's records
         return await connection.QueryAsync<ShareOfVoice>(
-            "SELECT Id, OrganizationId, ScanDate::timestamp as ScanDate, CompetitorName, SharePercentage, ColorCode, CreatedAt FROM ShareOfVoice WHERE OrganizationId = @OrgId AND ScanDate = @Date ORDER BY SharePercentage DESC",
-            new { OrgId = organizationId, Date = date.Date });
+            @"SELECT Id, OrganizationId, ScanDate::timestamp as ScanDate, CompetitorName, SharePercentage, ColorCode, CreatedAt 
+              FROM ShareOfVoice 
+              WHERE OrganizationId = @OrgId 
+                AND ScanDate = (SELECT MAX(ScanDate) FROM ShareOfVoice WHERE OrganizationId = @OrgId)
+              ORDER BY SharePercentage DESC",
+            new { OrgId = organizationId });
     }
 
     public async Task InsertMockScanAsync(HistoricalScan scan, IEnumerable<ShareOfVoice> shareOfVoices)

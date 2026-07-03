@@ -1,4 +1,4 @@
-﻿using Dapper;
+using Dapper;
 using Citationly.Application.Interfaces;
 using Citationly.Domain.Entities;
 

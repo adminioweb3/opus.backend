@@ -1,4 +1,4 @@
-﻿using System.Numerics.Tensors;
+using System.Numerics.Tensors;
 using MediatR;
 using Citationly.Application.Interfaces;
 using Citationly.Domain.Entities;

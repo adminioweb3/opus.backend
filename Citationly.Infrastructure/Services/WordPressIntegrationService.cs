@@ -1,4 +1,4 @@
-﻿using System.Net.Http.Headers;
+using System.Net.Http.Headers;
 using Microsoft.Extensions.Logging;
 using Citationly.Application.Interfaces;
 using Citationly.Domain.Entities;
