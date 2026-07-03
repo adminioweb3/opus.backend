@@ -60,7 +60,15 @@ public class AgentOrchestrator
         // Return a special marker so the frontend knows the "thinking" is done
         yield return "STATUS_DONE";
 
-        var finalResponse = await _openAiClient.GenerateResponseAsync(finalPrompt, cancellationToken);
+        string finalResponse;
+        try
+        {
+            finalResponse = await _openAiClient.GenerateResponseAsync(finalPrompt, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            finalResponse = $"OpenAI Error: {ex.Message}";
+        }
         
         // Finally yield the actual response content
         yield return $"RESPONSE:{finalResponse}";

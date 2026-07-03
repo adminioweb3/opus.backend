@@ -16,6 +16,7 @@ public class VisibilityAnalysisResult
     public bool Success { get; set; }
     public string? Error { get; set; }
     public int TotalPromptsAnalyzed { get; set; }
+    public List<AiSearchPrompt>? Prompts { get; set; }
 }
 
 public class VisibilityResponse
@@ -80,7 +81,8 @@ public class AnalyzeVisibilityCommandHandler : IRequestHandler<AnalyzeVisibility
             return new VisibilityAnalysisResult
             {
                 Success = true,
-                TotalPromptsAnalyzed = existingPrompts.Count()
+                TotalPromptsAnalyzed = existingPrompts.Count(),
+                Prompts = existingPrompts.Take(50).ToList()
             };
         }
 
@@ -94,16 +96,17 @@ public class AnalyzeVisibilityCommandHandler : IRequestHandler<AnalyzeVisibility
         string websiteUrl = profile.WebsiteUrl;
         string websiteProfile = profile.RawProfileJson;
 
-        var promptsListForAi = existingPrompts.Select(p => new {
-            Id = p.Id, 
+        var promptsListForAi = existingPrompts.Select(p => new
+        {
+            Id = p.Id,
             Prompt = p.QueryString,
             Topic = p.Topic
         }).ToList();
-        
+
         string generatedPromptsJson = JsonSerializer.Serialize(promptsListForAi);
 
         var systemPrompt = "You are an expert Generative Engine Optimization (GEO), AI Search Visibility, SEO, Content Strategy, and Competitive Intelligence Analyst.";
-        
+
         var userPrompt = $@"Your task is to estimate how likely the provided business is to appear in AI-generated answers for each generated prompt.
 
 ## Input
@@ -288,7 +291,7 @@ Return ONLY the JSON object.";
                         dbPrompt.ContentStrength = (int)Math.Round(item.contentStrength);
                         dbPrompt.CitationStrength = (int)Math.Round(item.citationStrength);
                         dbPrompt.VisibilityReason = item.reason;
-                        
+
                         promptsToUpdate.Add(dbPrompt);
                     }
                 }
@@ -301,7 +304,8 @@ Return ONLY the JSON object.";
                 return new VisibilityAnalysisResult
                 {
                     Success = true,
-                    TotalPromptsAnalyzed = promptsToUpdate.Count
+                    TotalPromptsAnalyzed = promptsToUpdate.Count,
+                    Prompts = promptsToUpdate.Take(50).ToList()
                 };
             }
             else

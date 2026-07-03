@@ -138,6 +138,11 @@ public class WebsiteRepository : IWebsiteRepository
             ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS Rank INTEGER DEFAULT 0;
             ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS SimilarityScore INTEGER DEFAULT 0;
             ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS RawJson JSONB DEFAULT '{}'::jsonb;
+            ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS EnrichmentStatus VARCHAR(20) DEFAULT 'Pending';
+            ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS EnrichedJson JSONB;
+            ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS EnrichedAt TIMESTAMPTZ;
+            ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS CompetitorType VARCHAR(50) DEFAULT 'Direct';
+            ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS Confidence INTEGER DEFAULT 0;
         ");
 
         using var transaction = connection.BeginTransaction();
@@ -147,8 +152,8 @@ public class WebsiteRepository : IWebsiteRepository
             foreach (var comp in competitors)
             {
                 await connection.ExecuteAsync(@"
-                    INSERT INTO Competitors (OrganizationId, Name, WebsiteUrl, Industry, Description, Category, Logo, Country, Authority, Popularity, Rank, SimilarityScore, RawJson, CreatedAt)
-                    VALUES (@OrganizationId, @Name, @WebsiteUrl, @Industry, @Description, @Category, @Logo, @Country, @Authority, @Popularity, @Rank, @SimilarityScore, @RawJson::jsonb, @CreatedAt)",
+                    INSERT INTO Competitors (OrganizationId, Name, WebsiteUrl, Industry, Description, Category, Logo, Country, Authority, Popularity, Rank, SimilarityScore, RawJson, EnrichmentStatus, EnrichedJson, EnrichedAt, CompetitorType, Confidence, CreatedAt)
+                    VALUES (@OrganizationId, @Name, @WebsiteUrl, @Industry, @Description, @Category, @Logo, @Country, @Authority, @Popularity, @Rank, @SimilarityScore, @RawJson::jsonb, @EnrichmentStatus, @EnrichedJson::jsonb, @EnrichedAt, @CompetitorType, @Confidence, @CreatedAt)",
                     new {
                         comp.OrganizationId,
                         comp.Name,
@@ -163,6 +168,11 @@ public class WebsiteRepository : IWebsiteRepository
                         comp.Rank,
                         comp.SimilarityScore,
                         comp.RawJson,
+                        comp.EnrichmentStatus,
+                        EnrichedJson = comp.EnrichedJson ?? (object)DBNull.Value,
+                        EnrichedAt = comp.EnrichedAt.HasValue ? (object)comp.EnrichedAt.Value : DBNull.Value,
+                        comp.CompetitorType,
+                        comp.Confidence,
                         CreatedAt = comp.CreatedAt == default ? DateTime.UtcNow : comp.CreatedAt
                     }, transaction: transaction);
             }
@@ -191,10 +201,48 @@ public class WebsiteRepository : IWebsiteRepository
     public async Task<int> GetCompetitorCountAsync(Guid organizationId)
     {
         using var connection = _dbConnectionFactory.CreateConnection();
-        // Return count of competitors for the given organization
         return await connection.ExecuteScalarAsync<int>(
             "SELECT COUNT(1) FROM Competitors WHERE OrganizationId = @OrganizationId",
             new { OrganizationId = organizationId });
+    }
+
+    public async Task UpdateCompetitorAsync(Competitor competitor)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        await connection.ExecuteAsync(@"
+            UPDATE Competitors SET
+                EnrichmentStatus = @EnrichmentStatus,
+                EnrichedJson = @EnrichedJson::jsonb,
+                EnrichedAt = @EnrichedAt,
+                Authority = @Authority,
+                Country = @Country,
+                RawJson = @RawJson::jsonb
+            WHERE Id = @Id",
+            new {
+                competitor.Id,
+                competitor.EnrichmentStatus,
+                EnrichedJson = competitor.EnrichedJson ?? (object)DBNull.Value,
+                EnrichedAt = competitor.EnrichedAt.HasValue ? (object)competitor.EnrichedAt.Value : DBNull.Value,
+                competitor.Authority,
+                competitor.Country,
+                competitor.RawJson
+            });
+    }
+
+    public async Task DeleteCompetitorsByOrgAsync(Guid organizationId)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        await connection.ExecuteAsync(
+            "DELETE FROM Competitors WHERE OrganizationId = @OrganizationId",
+            new { OrganizationId = organizationId });
+    }
+
+    public async Task<Competitor?> GetCompetitorByIdAsync(Guid competitorId)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        return await connection.QueryFirstOrDefaultAsync<Competitor>(
+            "SELECT * FROM Competitors WHERE Id = @Id",
+            new { Id = competitorId });
     }
 
     public async Task<int> GetAiSearchPromptCountAsync(Guid organizationId)
@@ -316,6 +364,64 @@ public class WebsiteRepository : IWebsiteRepository
         }
     }
 
+    public async Task UpdateAiSearchPromptsAsync(IEnumerable<AiSearchPrompt> prompts)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+            connection.Open();
+        }
+
+        // Auto-migrate schema for the new enrichment properties
+        await connection.ExecuteAsync(@"
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS MonthlySearchEstimate VARCHAR(50);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Region VARCHAR(100);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Language VARCHAR(50);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS TopicValidation VARCHAR(255);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS BuyerJourneyStage VARCHAR(100);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS IsEnriched BOOLEAN DEFAULT FALSE;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS EnrichedAt TIMESTAMP WITH TIME ZONE;
+        ");
+
+        using var transaction = connection.BeginTransaction();
+
+        try
+        {
+            foreach (var prompt in prompts)
+            {
+                await connection.ExecuteAsync(@"
+                    UPDATE AiSearchPrompts 
+                    SET Intent = @Intent,
+                        Persona = @Persona,
+                        Difficulty = @Difficulty,
+                        MonthlySearchEstimate = @MonthlySearchEstimate,
+                        Region = @Region,
+                        Language = @Language,
+                        CommercialValue = @CommercialValue,
+                        TopicValidation = @TopicValidation,
+                        BuyerJourneyStage = @BuyerJourneyStage,
+                        IsEnriched = @IsEnriched,
+                        RawJson = @RawJson::jsonb,
+                        EnrichedAt = @EnrichedAt
+                    WHERE Id = @Id",
+                    prompt, transaction: transaction);
+            }
+            transaction.Commit();
+        }
+        catch
+        {
+            transaction.Rollback();
+            throw;
+        }
+    }
+
+    public async Task DeleteAiSearchPromptsAsync(Guid organizationId)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        await connection.ExecuteAsync("DELETE FROM AiSearchPrompts WHERE OrganizationId = @OrganizationId", new { OrganizationId = organizationId });
+    }
+
     public async Task InsertPlatformVisibilityAsync(VisibilitySummary summary, IEnumerable<PlatformVisibility> visibilities)
     {
         using var connection = _dbConnectionFactory.CreateConnection();
@@ -373,6 +479,31 @@ public class WebsiteRepository : IWebsiteRepository
             transaction.Rollback();
             throw;
         }
+    }
+
+    public async Task UpdatePlatformVisibilityAsync(PlatformVisibility platformVisibility)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+            connection.Open();
+        }
+
+        // Auto-migrate schema for the new enrichment properties
+        await connection.ExecuteAsync(@"
+            ALTER TABLE PlatformVisibilities ADD COLUMN IF NOT EXISTS Explanation TEXT;
+            ALTER TABLE PlatformVisibilities ADD COLUMN IF NOT EXISTS IsEnriched BOOLEAN DEFAULT FALSE;
+        ");
+
+        await connection.ExecuteAsync(@"
+            UPDATE PlatformVisibilities 
+            SET StrengthsJson = @StrengthsJson,
+                WeaknessesJson = @WeaknessesJson,
+                Explanation = @Explanation,
+                Confidence = @Confidence,
+                IsEnriched = @IsEnriched
+            WHERE Id = @Id",
+            platformVisibility);
     }
 
     public async Task<VisibilitySummary?> GetVisibilitySummaryAsync(Guid organizationId)
@@ -442,6 +573,9 @@ public class WebsiteRepository : IWebsiteRepository
                 Reason TEXT,
                 CreatedAt TIMESTAMP NOT NULL
             );
+
+            ALTER TABLE CitationSources ADD COLUMN IF NOT EXISTS IsEnriched BOOLEAN DEFAULT FALSE;
+            ALTER TABLE CitationSources ADD COLUMN IF NOT EXISTS EnrichedAt TIMESTAMP WITH TIME ZONE;
         ");
 
         using var transaction = connection.BeginTransaction();
@@ -456,8 +590,8 @@ public class WebsiteRepository : IWebsiteRepository
             foreach (var source in sources)
             {
                 await connection.ExecuteAsync(@"
-                    INSERT INTO CitationSources (Id, OrganizationId, Rank, Source, Category, AuthorityScore, InfluenceScore, CitationFrequency, CompetitorCoverage, OpportunityScore, MentionProbability, Reason, CreatedAt)
-                    VALUES (@Id, @OrganizationId, @Rank, @Source, @Category, @AuthorityScore, @InfluenceScore, @CitationFrequency, @CompetitorCoverage, @OpportunityScore, @MentionProbability, @Reason, @CreatedAt)",
+                    INSERT INTO CitationSources (Id, OrganizationId, Rank, Source, Category, AuthorityScore, InfluenceScore, CitationFrequency, CompetitorCoverage, OpportunityScore, MentionProbability, Reason, IsEnriched, EnrichedAt, CreatedAt)
+                    VALUES (@Id, @OrganizationId, @Rank, @Source, @Category, @AuthorityScore, @InfluenceScore, @CitationFrequency, @CompetitorCoverage, @OpportunityScore, @MentionProbability, @Reason, @IsEnriched, @EnrichedAt, @CreatedAt)",
                     source, transaction: transaction);
             }
             transaction.Commit();
@@ -494,6 +628,69 @@ public class WebsiteRepository : IWebsiteRepository
         return await connection.QueryAsync<CitationSource>(
             "SELECT * FROM CitationSources WHERE OrganizationId = @OrganizationId ORDER BY Rank ASC",
             new { OrganizationId = organizationId });
+    }
+
+    public async Task UpdateCitationSourcesAsync(IEnumerable<CitationSource> sources)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+            connection.Open();
+        }
+
+        using var transaction = connection.BeginTransaction();
+        try
+        {
+            foreach (var source in sources)
+            {
+                await connection.ExecuteAsync(@"
+                    UPDATE CitationSources 
+                    SET AuthorityScore = @AuthorityScore,
+                        InfluenceScore = @InfluenceScore,
+                        CitationFrequency = @CitationFrequency,
+                        CompetitorCoverage = @CompetitorCoverage,
+                        OpportunityScore = @OpportunityScore,
+                        MentionProbability = @MentionProbability,
+                        Reason = @Reason,
+                        IsEnriched = @IsEnriched,
+                        EnrichedAt = @EnrichedAt
+                    WHERE Id = @Id",
+                    source, transaction: transaction);
+            }
+            transaction.Commit();
+        }
+        catch
+        {
+            transaction.Rollback();
+            throw;
+        }
+    }
+
+    public async Task<IEnumerable<CitationSource>> GetCitationsForEnrichmentAsync(Guid organizationId, int limit)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        var exists = await connection.ExecuteScalarAsync<bool>(
+            "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'citationsources')"
+        );
+        if (!exists) return new List<CitationSource>();
+
+        return await connection.QueryAsync<CitationSource>(
+            "SELECT * FROM CitationSources WHERE OrganizationId = @OrganizationId AND IsEnriched = FALSE ORDER BY Rank ASC LIMIT @Limit",
+            new { OrganizationId = organizationId, Limit = limit });
+    }
+
+    public async Task UpdateCitationSummaryAsync(CitationSummary summary)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        await connection.ExecuteAsync(@"
+            UPDATE CitationSummaries 
+            SET AverageAuthorityScore = @AverageAuthorityScore,
+                AverageInfluenceScore = @AverageInfluenceScore,
+                HighestOpportunitySource = @HighestOpportunitySource,
+                MostInfluentialSource = @MostInfluentialSource
+            WHERE Id = @Id",
+            summary);
     }
 
     public async Task InsertPersonaAnalysisAsync(PersonaAnalysisSummary summary, IEnumerable<PersonaScore> scores)
@@ -701,8 +898,51 @@ public class WebsiteRepository : IWebsiteRepository
                 ExpectedOutcome TEXT NOT NULL,
                 SuccessMetric TEXT NOT NULL,
                 ActionItemsJson TEXT NOT NULL,
+                IsEnriched BOOLEAN NOT NULL DEFAULT FALSE,
+                EnrichedAt TIMESTAMP NULL,
+                ExpandedGuidance TEXT NULL,
+                BusinessImpact TEXT NULL,
+                ExampleResourcesJson TEXT NULL,
+                ReferenceLinksJson TEXT NULL,
                 CreatedAt TIMESTAMP NOT NULL
             )");
+
+        // Add columns if they don't exist
+        await connection.ExecuteAsync(@"
+            DO $$ 
+            BEGIN 
+                BEGIN
+                    ALTER TABLE GeoRecommendations ADD COLUMN IsEnriched BOOLEAN NOT NULL DEFAULT FALSE;
+                EXCEPTION
+                    WHEN duplicate_column THEN null;
+                END;
+                BEGIN
+                    ALTER TABLE GeoRecommendations ADD COLUMN EnrichedAt TIMESTAMP NULL;
+                EXCEPTION
+                    WHEN duplicate_column THEN null;
+                END;
+                BEGIN
+                    ALTER TABLE GeoRecommendations ADD COLUMN ExpandedGuidance TEXT NULL;
+                EXCEPTION
+                    WHEN duplicate_column THEN null;
+                END;
+                BEGIN
+                    ALTER TABLE GeoRecommendations ADD COLUMN BusinessImpact TEXT NULL;
+                EXCEPTION
+                    WHEN duplicate_column THEN null;
+                END;
+                BEGIN
+                    ALTER TABLE GeoRecommendations ADD COLUMN ExampleResourcesJson TEXT NULL;
+                EXCEPTION
+                    WHEN duplicate_column THEN null;
+                END;
+                BEGIN
+                    ALTER TABLE GeoRecommendations ADD COLUMN ReferenceLinksJson TEXT NULL;
+                EXCEPTION
+                    WHEN duplicate_column THEN null;
+                END;
+            END $$;
+        ");
 
         connection.Open();
         using var transaction = connection.BeginTransaction();
@@ -726,8 +966,8 @@ public class WebsiteRepository : IWebsiteRepository
                 rec.OrganizationId = summary.OrganizationId;
                 rec.CreatedAt = DateTime.UtcNow;
                 await connection.ExecuteAsync(@"
-                    INSERT INTO GeoRecommendations (Id, OrganizationId, RecommendationId, Category, Title, Description, Priority, EstimatedImpact, EstimatedDifficulty, ImplementationTime, ExpectedOutcome, SuccessMetric, ActionItemsJson, CreatedAt)
-                    VALUES (@Id, @OrganizationId, @RecommendationId, @Category, @Title, @Description, @Priority, @EstimatedImpact, @EstimatedDifficulty, @ImplementationTime, @ExpectedOutcome, @SuccessMetric, @ActionItemsJson, @CreatedAt)",
+                    INSERT INTO GeoRecommendations (Id, OrganizationId, RecommendationId, Category, Title, Description, Priority, EstimatedImpact, EstimatedDifficulty, ImplementationTime, ExpectedOutcome, SuccessMetric, ActionItemsJson, IsEnriched, EnrichedAt, ExpandedGuidance, BusinessImpact, ExampleResourcesJson, ReferenceLinksJson, CreatedAt)
+                    VALUES (@Id, @OrganizationId, @RecommendationId, @Category, @Title, @Description, @Priority, @EstimatedImpact, @EstimatedDifficulty, @ImplementationTime, @ExpectedOutcome, @SuccessMetric, @ActionItemsJson, @IsEnriched, @EnrichedAt, @ExpandedGuidance, @BusinessImpact, @ExampleResourcesJson, @ReferenceLinksJson, @CreatedAt)",
                     rec, transaction: transaction);
             }
             transaction.Commit();
@@ -763,6 +1003,34 @@ public class WebsiteRepository : IWebsiteRepository
         return await connection.QueryAsync<GeoRecommendation>(
             "SELECT * FROM GeoRecommendations WHERE OrganizationId = @OrganizationId ORDER BY CreatedAt DESC",
             new { OrganizationId = organizationId });
+    }
+
+    public async Task UpdateGeoRecommendationAsync(GeoRecommendation recommendation)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        await connection.ExecuteAsync(@"
+            UPDATE GeoRecommendations
+            SET IsEnriched = @IsEnriched,
+                EnrichedAt = @EnrichedAt,
+                ExpandedGuidance = @ExpandedGuidance,
+                BusinessImpact = @BusinessImpact,
+                ExampleResourcesJson = @ExampleResourcesJson,
+                ReferenceLinksJson = @ReferenceLinksJson
+            WHERE Id = @Id",
+            recommendation);
+    }
+
+    public async Task<IEnumerable<GeoRecommendation>> GetGeoRecommendationsForEnrichmentAsync(Guid organizationId, int limit)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        var exists = await connection.ExecuteScalarAsync<bool>(
+            "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'georecommendations')"
+        );
+        if (!exists) return new List<GeoRecommendation>();
+
+        return await connection.QueryAsync<GeoRecommendation>(
+            "SELECT * FROM GeoRecommendations WHERE OrganizationId = @OrganizationId AND IsEnriched = FALSE ORDER BY CreatedAt DESC LIMIT @Limit",
+            new { OrganizationId = organizationId, Limit = limit });
     }
 
     public async Task InsertExecutiveSummaryAsync(ExecutiveSummaryData summary)

@@ -116,6 +116,13 @@ public class Competitor
     public int SimilarityScore { get; set; } = 0;
     public string RawJson { get; set; } = string.Empty;
     public DateTime CreatedAt { get; set; }
+    // Enrichment tracking
+    public string EnrichmentStatus { get; set; } = "Pending";
+    public string? EnrichedJson { get; set; }
+    public DateTime? EnrichedAt { get; set; }
+    // Competitor classification
+    public string CompetitorType { get; set; } = "Direct";
+    public int Confidence { get; set; }
 }
 
 public class AiSearchPrompt
@@ -140,6 +147,13 @@ public class AiSearchPrompt
     public int ContentStrength { get; set; }
     public int CitationStrength { get; set; }
     public string? VisibilityReason { get; set; }
+    public string MonthlySearchEstimate { get; set; } = string.Empty;
+    public string Region { get; set; } = string.Empty;
+    public string Language { get; set; } = string.Empty;
+    public string TopicValidation { get; set; } = string.Empty;
+    public string BuyerJourneyStage { get; set; } = string.Empty;
+    public bool IsEnriched { get; set; }
+    public DateTime? EnrichedAt { get; set; }
     public DateTime GeneratedAt { get; set; }
 }
 
@@ -165,6 +179,8 @@ public class PlatformVisibility
     public int MentionRate { get; set; }
     public int PromptCoverage { get; set; }
     public int Confidence { get; set; }
+    public string Explanation { get; set; } = string.Empty;
+    public bool IsEnriched { get; set; }
     public string StrengthsJson { get; set; } = "[]";
     public string WeaknessesJson { get; set; } = "[]";
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
@@ -175,6 +191,7 @@ public class CitationSummary
     public Guid Id { get; set; }
     public Guid OrganizationId { get; set; }
     public int TotalSources { get; set; }
+    public int TotalMentionsAnalyzed { get; set; }
     public int AverageAuthorityScore { get; set; }
     public int AverageInfluenceScore { get; set; }
     public string HighestOpportunitySource { get; set; } = string.Empty;
@@ -196,6 +213,8 @@ public class CitationSource
     public int OpportunityScore { get; set; }
     public int MentionProbability { get; set; }
     public string Reason { get; set; } = string.Empty;
+    public bool IsEnriched { get; set; }
+    public DateTime? EnrichedAt { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
 
@@ -373,6 +392,12 @@ public class GeoRecommendation
     public string ExpectedOutcome { get; set; } = string.Empty;
     public string SuccessMetric { get; set; } = string.Empty;
     public string ActionItemsJson { get; set; } = "[]";
+    public bool IsEnriched { get; set; }
+    public DateTime? EnrichedAt { get; set; }
+    public string ExpandedGuidance { get; set; } = string.Empty;
+    public string BusinessImpact { get; set; } = string.Empty;
+    public string ExampleResourcesJson { get; set; } = "[]";
+    public string ReferenceLinksJson { get; set; } = "[]";
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
 

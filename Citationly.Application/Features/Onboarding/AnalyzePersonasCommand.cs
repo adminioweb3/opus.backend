@@ -15,6 +15,8 @@ public class PersonaAnalysisResult
     public bool Success { get; set; }
     public string? Error { get; set; }
     public int PersonasAnalyzed { get; set; }
+    public PersonaAnalysisSummary? Summary { get; set; }
+    public List<PersonaScore>? Scores { get; set; }
 }
 
 public class PersonaAnalysisResponse
@@ -65,7 +67,9 @@ public class AnalyzePersonasCommandHandler : IRequestHandler<AnalyzePersonasComm
             return new PersonaAnalysisResult
             {
                 Success = true,
-                PersonasAnalyzed = existingScores.Count()
+                PersonasAnalyzed = existingScores.Count(),
+                Summary = existingSummary,
+                Scores = existingScores.ToList()
             };
         }
 
@@ -77,13 +81,15 @@ public class AnalyzePersonasCommandHandler : IRequestHandler<AnalyzePersonasComm
         var existingPrompts = await _websiteRepository.GetAiSearchPromptsAsync(request.OrganizationId);
         var platformVisibilities = await _websiteRepository.GetPlatformVisibilitiesAsync(request.OrganizationId);
 
-        var promptAnalysisJson = JsonSerializer.Serialize(existingPrompts.Select(p => new {
+        var promptAnalysisJson = JsonSerializer.Serialize(existingPrompts.Select(p => new
+        {
             Query = p.QueryString,
             VisibilityScore = p.VisibilityScore,
             BrandStrength = p.BrandStrength
         }));
 
-        var platformScoresJson = JsonSerializer.Serialize(platformVisibilities.Select(p => new {
+        var platformScoresJson = JsonSerializer.Serialize(platformVisibilities.Select(p => new
+        {
             Platform = p.Platform,
             VisibilityScore = p.VisibilityScore
         }));
@@ -363,7 +369,9 @@ Return ONLY the JSON object.";
                 return new PersonaAnalysisResult
                 {
                     Success = true,
-                    PersonasAnalyzed = scores.Count
+                    PersonasAnalyzed = scores.Count,
+                    Summary = summary,
+                    Scores = scores
                 };
             }
             else

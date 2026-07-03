@@ -36,15 +36,20 @@ public class IntentDetectionService
 Respond ONLY with valid JSON.
 Fields required: intent (string), requiredTools (array of strings from: Visibility Tool, Competitor Tool, SEO Tool, Website Tool), confidence (number 0-1), priority (Low/Normal/High), responseMode (Quick Answer/Consultant/Research/Coding/Report).";
 
-        var json = await _openAi.GenerateResponseFastAsync(prompt, ct);
         try
         {
+            var json = await _openAi.GenerateResponseFastAsync(prompt, ct);
             var result = JsonSerializer.Deserialize<IntentDetectionResult>(json);
             return result ?? new IntentDetectionResult();
         }
         catch
         {
-            return new IntentDetectionResult();
+            // If OpenAI rate limits or fails, fallback to general chat and fetch core data
+            return new IntentDetectionResult 
+            { 
+                Intent = "General Chat", 
+                RequiredTools = new string[0] 
+            };
         }
     }
 }

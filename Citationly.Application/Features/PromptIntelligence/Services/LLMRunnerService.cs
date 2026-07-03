@@ -119,17 +119,17 @@ public class LLMRunnerService : ILLMRunnerService
         request.Headers.Add("Authorization", $"Bearer {_openAiKey}");
 
         // For non-ChatGPT platforms, ask OpenAI to act like them for a realistic simulation without credits
-        string sysMsg = platformName == "ChatGPT" 
-            ? "You are ChatGPT." 
+        string sysMsg = platformName == "ChatGPT"
+            ? "You are ChatGPT."
             : $"You are acting as {platformName}. Respond in a style typical of {platformName}.";
 
         var body = new
         {
             model = modelId,
-            messages = new[] 
-            { 
+            messages = new[]
+            {
                 new { role = "system", content = sysMsg },
-                new { role = "user", content = promptText } 
+                new { role = "user", content = promptText }
             }
         };
 

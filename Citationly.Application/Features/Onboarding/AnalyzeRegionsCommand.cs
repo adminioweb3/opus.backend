@@ -14,6 +14,8 @@ public class AnalyzeRegionsResult
 {
     public bool Success { get; set; }
     public string? Error { get; set; }
+    public RegionAnalysisSummary? Summary { get; set; }
+    public List<RegionScore>? Scores { get; set; }
 }
 
 public class RegionAnalysisResponse
@@ -59,7 +61,13 @@ public class AnalyzeRegionsCommandHandler : IRequestHandler<AnalyzeRegionsComman
         var existing = await _websiteRepository.GetRegionAnalysisSummaryAsync(request.OrganizationId);
         if (existing != null)
         {
-            return new AnalyzeRegionsResult { Success = true };
+            var existingScores = await _websiteRepository.GetRegionScoresAsync(request.OrganizationId);
+            return new AnalyzeRegionsResult 
+            { 
+                Success = true,
+                Summary = existing,
+                Scores = existingScores.ToList()
+            };
         }
 
         var profile = await _websiteRepository.GetLatestWebsiteProfileAsync(request.OrganizationId);
@@ -69,7 +77,7 @@ public class AnalyzeRegionsCommandHandler : IRequestHandler<AnalyzeRegionsComman
         var promptsCount = await _websiteRepository.GetAiSearchPromptCountAsync(request.OrganizationId);
 
         var systemPrompt = "You are an expert in Generative Engine Optimization (GEO), AI Search Visibility, International SEO, Regional Market Analysis, and Competitive Intelligence.";
-        
+
         var userPrompt = $@"Your task is to estimate the business's AI visibility across different geographic regions.
 
 ## Input
@@ -354,7 +362,12 @@ Return ONLY the JSON object.";
                 }
 
                 await _websiteRepository.InsertRegionAnalysisAsync(summary, scores);
-                return new AnalyzeRegionsResult { Success = true };
+                return new AnalyzeRegionsResult 
+                { 
+                    Success = true,
+                    Summary = summary,
+                    Scores = scores 
+                };
             }
             else
             {

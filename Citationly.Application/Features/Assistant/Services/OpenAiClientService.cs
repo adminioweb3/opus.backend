@@ -22,7 +22,7 @@ public class OpenAiClientService
         {
             new { role = "user", content = prompt }
         };
-        
+
         return await CallOpenRouterAsync(messages, "gpt-4o-mini", 500, ct, isIntent: true);
     }
 
@@ -37,7 +37,7 @@ public class OpenAiClientService
         {
             if (isIntent)
                 return "{\"intent\":\"General Chat\",\"requiredTools\":[]}"; // Mock fallback for intent
-            
+
             return "This is a mock AI response. Please configure your OpenAI API Key in `appsettings.json` to enable real AI generation.";
         }
 
@@ -53,7 +53,7 @@ public class OpenAiClientService
         var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
 
         var response = await httpClient.PostAsync("https://api.openai.com/v1/chat/completions", content, ct);
-        
+
         if (!response.IsSuccessStatusCode)
         {
             var err = await response.Content.ReadAsStringAsync(ct);

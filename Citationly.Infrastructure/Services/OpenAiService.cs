@@ -63,7 +63,7 @@ public class OpenAiService : IOpenAiService
         _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
 
         var response = await _httpClient.PostAsync("https://api.openai.com/v1/chat/completions", content);
-        
+
         // Simple retry for standard network hiccups (OpenAI handles concurrency fine)
         if (!response.IsSuccessStatusCode && response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
         {

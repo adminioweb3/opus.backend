@@ -57,17 +57,29 @@ public class AnalyzeOnboardingCommandHandler : IRequestHandler<AnalyzeOnboarding
     private readonly IScrapingJobRepository _scrapingRepository;
     private readonly IWebsiteRepository _websiteRepository;
     private readonly IDbConnectionFactory _dbConnectionFactory;
+    private readonly Citationly.Application.Interfaces.Onboarding.IPageClassificationService _pageClassificationService;
+    private readonly Citationly.Application.Interfaces.Onboarding.IPageRankingService _pageRankingService;
+    private readonly Citationly.Application.Interfaces.Onboarding.IContentCleaningService _contentCleaningService;
+    private readonly Citationly.Application.Interfaces.Onboarding.IWebsiteContentBuilder _websiteContentBuilder;
 
     public AnalyzeOnboardingCommandHandler(
         IOpenAiService openRouterService,
         IScrapingJobRepository scrapingRepository,
         IWebsiteRepository websiteRepository,
-        IDbConnectionFactory dbConnectionFactory)
+        IDbConnectionFactory dbConnectionFactory,
+        Citationly.Application.Interfaces.Onboarding.IPageClassificationService pageClassificationService,
+        Citationly.Application.Interfaces.Onboarding.IPageRankingService pageRankingService,
+        Citationly.Application.Interfaces.Onboarding.IContentCleaningService contentCleaningService,
+        Citationly.Application.Interfaces.Onboarding.IWebsiteContentBuilder websiteContentBuilder)
     {
         _openRouterService = openRouterService;
         _scrapingRepository = scrapingRepository;
         _websiteRepository = websiteRepository;
         _dbConnectionFactory = dbConnectionFactory;
+        _pageClassificationService = pageClassificationService;
+        _pageRankingService = pageRankingService;
+        _contentCleaningService = contentCleaningService;
+        _websiteContentBuilder = websiteContentBuilder;
     }
 
     public async Task<OnboardingAnalysisResult> Handle(AnalyzeOnboardingCommand request, CancellationToken cancellationToken)
@@ -83,7 +95,7 @@ public class AnalyzeOnboardingCommandHandler : IRequestHandler<AnalyzeOnboarding
                     PropertyNameCaseInsensitive = true,
                     NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
                 };
-                try 
+                try
                 {
                     var cachedResult = JsonSerializer.Deserialize<OnboardingAnalysisResult>(existingProfile.RawProfileJson, options);
                     if (cachedResult != null) return cachedResult;
@@ -92,7 +104,7 @@ public class AnalyzeOnboardingCommandHandler : IRequestHandler<AnalyzeOnboarding
             }
         }
 
-        // 1. Fetch scraped data
+        // 1. Fetch scraped data and build optimized context
         string websiteContent = "";
         try
         {
@@ -105,12 +117,33 @@ public class AnalyzeOnboardingCommandHandler : IRequestHandler<AnalyzeOnboarding
             if (job != null)
             {
                 var pages = await _scrapingRepository.GetPagesByJobIdAsync(job.Id);
-                // Limit to top 5 pages to avoid massive prompt
-                var topPages = pages.Take(5).ToList();
-                foreach (var page in topPages)
+
+                // Pipeline Step 1 & 2: Classify and Score
+                var rankedPages = new List<(ScrapedPage Page, Citationly.Domain.Enums.PageCategory Category, int Score)>();
+                foreach (var page in pages)
                 {
-                    websiteContent += $"\n--- PAGE: {page.Url} ---\n{page.MarkdownContent}\n";
+                    var cat = _pageClassificationService.ClassifyPage(page);
+                    var score = _pageRankingService.ScorePage(cat);
+                    rankedPages.Add((page, cat, score));
                 }
+
+                // Pipeline Step 3: Select top 15 pages
+                var topRanked = rankedPages.OrderByDescending(p => p.Score).Take(15).ToList();
+                var topPages = topRanked.Select(p => p.Page).ToList();
+
+                // Pipeline Step 4: Clean content
+                var cleanedPages = _contentCleaningService.CleanPages(topPages);
+
+                // Re-associate cleaned pages with their category and score for the builder
+                var finalPagesForBuilder = new List<(ScrapedPage Page, Citationly.Domain.Enums.PageCategory Category, int Score)>();
+                foreach (var cl in cleanedPages)
+                {
+                    var orig = topRanked.First(p => p.Page.Id == cl.Id);
+                    finalPagesForBuilder.Add((cl, orig.Category, orig.Score));
+                }
+
+                // Pipeline Step 5: Build structured content (limit to ~8000 tokens)
+                websiteContent = _websiteContentBuilder.BuildStructuredContent(finalPagesForBuilder, 8000);
             }
         }
         catch (Exception ex)
@@ -118,285 +151,45 @@ public class AnalyzeOnboardingCommandHandler : IRequestHandler<AnalyzeOnboarding
             Console.WriteLine($"Error fetching scraped data: {ex.Message}");
         }
 
-        var systemPrompt = "You are an expert Business Intelligence, SEO, and Website Analysis AI.";
-        var userPrompt = $@"Your task is to analyze the provided business information and website to create a comprehensive business intelligence profile.
-
-## Input
-
+        var systemPrompt = "You are an expert Business Intelligence, SEO, and Website Analysis AI. Return JSON exactly matching the requested schema. No markdown.";
+        var userPrompt = $@"Extract comprehensive business intelligence from the website content below.
+        
 Website: {request.WebsiteUrl}
 Business Name: {request.BusinessName}
 Industry: {request.Industry}
 Keywords: {request.Keywords}
 Target Audience: {request.TargetAudience}
 
-[Scraped Website Content]
+[Website Content]
 {websiteContent}
-[/Scraped Website Content]
+[/Website Content]
 
-## Instructions
+INSTRUCTIONS:
+1. Populate all fields with rich, accurate insights.
+2. Infer missing information only if there is strong evidence.
+3. Every object needs a 'value' and 'confidence' (0-100).
+4. Include deeper SEO (metadata, headings, internal links), structural (nav, UX), brand (mission, values), and market (ICP, pain points, tech stack) insights in the relevant fields (e.g. SEO recommendations, Brand Positioning, Strengths).
+5. Only detect technologies explicitly found. Do not hallucinate.
 
-1. Analyze the entire website, including:
-   - Homepage
-   - About page
-   - Services
-   - Products
-   - Blog
-   - Solutions
-   - Industries
-   - Pricing
-   - Contact page
-   - Footer
-   - Metadata
-   - Structured data (if available)
-
-2. Infer missing information only when there is strong evidence from the website content.
-
-3. Never hallucinate or invent facts.
-If information cannot be reasonably inferred from the provided website content, return:
-- null
-- []
-- ""Unknown""
-
-4. Every section must include:
-   - value
-   - confidence (0-100)
-
-5. Confidence Score Rules
-
-100 = Explicitly stated multiple times
-90 = Clearly stated
-80 = Strong inference
-70 = Reasonable inference
-60 = Weak inference
-Below 60 = Unknown or insufficient evidence
-
-6. Keep summaries concise.
-
-7. Return ONLY valid JSON.
-Do NOT include markdown.
-Do NOT include explanations.
-Do NOT wrap inside ```json.
-
-Return using the following schema exactly:
-
+SCHEMA (Return ONLY this JSON):
 {{
-  ""businessSummary"": {{
-    ""value"": """",
-    ""confidence"": 0
-  }},
-  ""coreServices"": {{
-    ""value"": [],
-    ""confidence"": 0
-  }},
-  ""products"": {{
-    ""value"": [],
-    ""confidence"": 0
-  }},
-  ""industriesServed"": {{
-    ""value"": [],
-    ""confidence"": 0
-  }},
-  ""businessModel"": {{
-    ""value"": """",
-    ""confidence"": 0
-  }},
-  ""uniqueSellingProposition"": {{
-    ""value"": """",
-    ""confidence"": 0
-  }},
-  ""primaryTechnologies"": {{
-    ""value"": [],
-    ""confidence"": 0
-  }},
-  ""targetCustomers"": {{
-    ""value"": [],
-    ""confidence"": 0
-  }},
-  ""contentCategories"": {{
-    ""value"": [],
-    ""confidence"": 0
-  }},
-  ""seoStrength"": {{
-    ""value"": {{
-      ""overall"": """",
-      ""score"": 0,
-      ""strengths"": [],
-      ""weaknesses"": [],
-      ""recommendations"": []
-    }},
-    ""confidence"": 0
-  }},
-  ""websiteStructure"": {{
-    ""value"": {{
-      ""navigationQuality"": """",
-      ""importantPages"": [],
-      ""blogPresent"": false,
-      ""contactPresent"": false,
-      ""pricingPresent"": false,
-      ""faqPresent"": false,
-      ""mobileFriendlyEstimate"": """",
-      ""overallArchitecture"": """"
-    }},
-    ""confidence"": 0
-  }},
-  ""domainAuthorityEstimate"": {{
-    ""value"": {{
-      ""estimatedScore"": 0,
-      ""category"": """",
-      ""reason"": """"
-    }},
-    ""confidence"": 0
-  }},
-  ""topicalAuthority"": {{
-    ""value"": {{
-      ""primaryTopics"": [],
-      ""authorityLevel"": """",
-      ""reason"": """"
-    }},
-    ""confidence"": 0
-  }},
-  ""brandPositioning"": {{
-    ""value"": """",
-    ""confidence"": 0
-  }},
-  ""toneOfVoice"": {{
-    ""value"": {{
-      ""primaryTone"": """",
-      ""secondaryTone"": [],
-      ""writingStyle"": """",
-      ""readingLevel"": """"
-    }},
-    ""confidence"": 0
-  }},
+  ""businessSummary"": {{""value"": """", ""confidence"": 0}},
+  ""coreServices"": {{""value"": [], ""confidence"": 0}},
+  ""products"": {{""value"": [], ""confidence"": 0}},
+  ""industriesServed"": {{""value"": [], ""confidence"": 0}},
+  ""businessModel"": {{""value"": """", ""confidence"": 0}},
+  ""uniqueSellingProposition"": {{""value"": """", ""confidence"": 0}},
+  ""primaryTechnologies"": {{""value"": [], ""confidence"": 0}},
+  ""targetCustomers"": {{""value"": [], ""confidence"": 0}},
+  ""contentCategories"": {{""value"": [], ""confidence"": 0}},
+  ""seoStrength"": {{""value"": {{""overall"": """", ""score"": 0, ""strengths"": [], ""weaknesses"": [], ""recommendations"": []}}, ""confidence"": 0}},
+  ""websiteStructure"": {{""value"": {{""navigationQuality"": """", ""importantPages"": [], ""blogPresent"": false, ""contactPresent"": false, ""pricingPresent"": false, ""faqPresent"": false, ""mobileFriendlyEstimate"": """", ""overallArchitecture"": """"}}, ""confidence"": 0}},
+  ""domainAuthorityEstimate"": {{""value"": {{""estimatedScore"": 0, ""category"": """", ""reason"": """"}}, ""confidence"": 0}},
+  ""topicalAuthority"": {{""value"": {{""primaryTopics"": [], ""authorityLevel"": """", ""reason"": """"}}, ""confidence"": 0}},
+  ""brandPositioning"": {{""value"": """", ""confidence"": 0}},
+  ""toneOfVoice"": {{""value"": {{""primaryTone"": """", ""secondaryTone"": [], ""writingStyle"": """", ""readingLevel"": """"}}, ""confidence"": 0}},
   ""overallConfidence"": 0
-}}
-
-Additional Analysis Guidelines
-
-Business Summary
-- 2-4 sentences describing the company.
-
-Core Services
-- List major services.
-
-Products
-- List software, platforms, products, or offerings.
-
-Industries Served
-- List all industries explicitly mentioned or strongly implied.
-
-Business Model
-Choose one:
-- B2B
-- B2C
-- D2C
-- Marketplace
-- SaaS
-- Enterprise
-- Agency
-- E-commerce
-- Consulting
-- Hybrid
-- Unknown
-
-Unique Selling Proposition
-Summarize the company's key differentiator.
-
-Primary Technologies
-Only identify technologies that are explicitly detected from the website content,
-HTML, JavaScript bundles, metadata, script tags, CSS classes, or other technical indicators.
-
-Do NOT guess technologies based solely on appearance.
-
-Target Customers
-Examples:
-- Small Businesses
-- Startups
-- Enterprises
-- Healthcare Providers
-- Retailers
-- Manufacturers
-- Agencies
-- Developers
-- Consumers
-
-Content Categories
-Examples:
-- Blogs
-- Case Studies
-- Whitepapers
-- Product Updates
-- Documentation
-- Guides
-- News
-- Testimonials
-- Careers
-
-SEO Strength
-Evaluate:
-- Metadata quality
-- Heading hierarchy
-- Content depth
-- Internal linking
-- Keyword optimization
-- Structured data
-- Technical SEO indicators
-
-Website Structure
-Evaluate:
-- Navigation quality
-- Information architecture
-- Important pages
-- User experience
-- Mobile friendliness estimate
-
-Domain Authority Estimate
-Estimate:
-0-20 = Very Low
-21-40 = Low
-41-60 = Medium
-61-80 = High
-81-100 = Very High
-
-Base the estimate on:
-- Content quality
-- Website maturity
-- Backlink likelihood
-- Brand recognition
-- SEO signals
-
-Topical Authority
-Evaluate expertise in the website's primary subject areas.
-
-Brand Positioning
-Describe how the company positions itself relative to competitors.
-
-Tone of Voice
-Identify:
-- Professional
-- Friendly
-- Technical
-- Luxury
-- Innovative
-- Corporate
-- Casual
-- Authoritative
-- Educational
-- Conversational
-
-Finally calculate an overallConfidence value between 0 and 100 based on the average confidence across all sections.
-
-All arrays must contain unique values.
-
-Do not repeat similar items.
-
-Do not include empty strings.
-
-The JSON must be valid and parsable.
-
-Every field defined in the schema must be present.
-
-Return ONLY the JSON object.";
+}}";
 
         try
         {

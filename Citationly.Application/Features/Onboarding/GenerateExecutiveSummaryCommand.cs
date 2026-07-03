@@ -14,6 +14,7 @@ public class GenerateExecutiveSummaryResult
 {
     public bool Success { get; set; }
     public string? Error { get; set; }
+    public ExecutiveSummaryResponseWrapper? data { get; set; }
 }
 
 public class ExecutiveSummaryScoresResponse
@@ -68,7 +69,37 @@ public class GenerateExecutiveSummaryCommandHandler : IRequestHandler<GenerateEx
         var existing = await _websiteRepository.GetExecutiveSummaryAsync(request.OrganizationId);
         if (existing != null)
         {
-            return new GenerateExecutiveSummaryResult { Success = true };
+            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            var existingData = new ExecutiveSummaryResponseWrapper
+            {
+                businessOverview = existing.BusinessOverview,
+                currentAIVisibility = existing.CurrentAIVisibility,
+                competitorPosition = existing.CompetitorPosition,
+                platformPerformance = existing.PlatformPerformance,
+                topicPerformance = existing.TopicPerformance,
+                promptPerformance = existing.PromptPerformance,
+                citationSummary = existing.CitationSummary,
+                strengths = !string.IsNullOrEmpty(existing.StrengthsJson) ? JsonDocument.Parse(existing.StrengthsJson).RootElement : default,
+                weaknesses = !string.IsNullOrEmpty(existing.WeaknessesJson) ? JsonDocument.Parse(existing.WeaknessesJson).RootElement : default,
+                opportunities = !string.IsNullOrEmpty(existing.OpportunitiesJson) ? JsonDocument.Parse(existing.OpportunitiesJson).RootElement : default,
+                threats = !string.IsNullOrEmpty(existing.ThreatsJson) ? JsonDocument.Parse(existing.ThreatsJson).RootElement : default,
+                scores = new ExecutiveSummaryScoresResponse
+                {
+                    overallGEOScore = existing.OverallGEOScore,
+                    overallAIVisibilityScore = existing.OverallAIVisibilityScore,
+                    overallSEOScore = existing.OverallSEOScore,
+                    overallBrandAuthority = existing.OverallBrandAuthority,
+                    overallContentScore = existing.OverallContentScore
+                },
+                executiveSummary = new ExecutiveSummaryExecResponse
+                {
+                    overallAssessment = existing.OverallAssessment,
+                    topPriorityRecommendation = existing.TopPriorityRecommendation,
+                    expectedBusinessImpact = existing.ExpectedBusinessImpact,
+                    nextSteps = !string.IsNullOrEmpty(existing.NextStepsJson) ? JsonDocument.Parse(existing.NextStepsJson).RootElement : default
+                }
+            };
+            return new GenerateExecutiveSummaryResult { Success = true, data = existingData };
         }
 
         var profile = await _websiteRepository.GetLatestWebsiteProfileAsync(request.OrganizationId);
@@ -76,7 +107,7 @@ public class GenerateExecutiveSummaryCommandHandler : IRequestHandler<GenerateEx
 
         var competitorsCount = await _websiteRepository.GetCompetitorCountAsync(request.OrganizationId);
         var promptsCount = await _websiteRepository.GetAiSearchPromptCountAsync(request.OrganizationId);
-        
+
         var visibilitySum = await _websiteRepository.GetVisibilitySummaryAsync(request.OrganizationId);
         var platVis = await _websiteRepository.GetPlatformVisibilitiesAsync(request.OrganizationId);
         var citationsSum = await _websiteRepository.GetCitationSummaryAsync(request.OrganizationId);
@@ -85,7 +116,7 @@ public class GenerateExecutiveSummaryCommandHandler : IRequestHandler<GenerateEx
         var recsSum = await _websiteRepository.GetGeoRecommendationSummaryAsync(request.OrganizationId);
 
         var systemPrompt = "You are an expert in Generative Engine Optimization (GEO), AI Search Visibility, Executive Reporting, SEO, Competitive Intelligence, and Digital Strategy.";
-        
+
         var userPrompt = $@"Your task is to create a professional executive summary based on all previous analyses.
 
 ## Input
@@ -491,7 +522,7 @@ Return ONLY the JSON object.";
                 };
 
                 await _websiteRepository.InsertExecutiveSummaryAsync(summary);
-                return new GenerateExecutiveSummaryResult { Success = true };
+                return new GenerateExecutiveSummaryResult { Success = true, data = parsed };
             }
             else
             {
