@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Citationly.Application.Interfaces;
 using Citationly.Application.Interfaces.Competitors;
@@ -6,6 +7,7 @@ namespace Citationly.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
+[Authorize]
 public class CompetitorController : ControllerBase
 {
     private readonly ICompetitorRankingService _rankingService;

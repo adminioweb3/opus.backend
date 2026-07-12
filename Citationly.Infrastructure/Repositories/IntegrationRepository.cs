@@ -34,4 +34,12 @@ public class IntegrationRepository : IIntegrationRepository
             "SELECT * FROM sp_GetIntegrationsByOrg(@OrganizationId)",
             new { OrganizationId = organizationId });
     }
+
+    public async Task<Integration?> GetIntegrationByOrgAndPlatformAsync(Guid organizationId, string platformName)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        return await connection.QuerySingleOrDefaultAsync<Integration>(
+            "SELECT * FROM Integrations WHERE OrganizationId = @OrganizationId AND PlatformName = @PlatformName LIMIT 1",
+            new { OrganizationId = organizationId, PlatformName = platformName });
+    }
 }

@@ -1,4 +1,5 @@
 using MediatR;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Citationly.Application.Features.Report;
 
@@ -6,6 +7,7 @@ namespace Citationly.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
+[Authorize]
 public class ReportController : ControllerBase
 {
     private readonly IMediator _mediator;

@@ -26,6 +26,19 @@ public static class DependencyInjection
         services.AddScoped<Citationly.Application.Features.PromptIntelligence.Services.IRecommendationEngineService, Citationly.Application.Features.PromptIntelligence.Services.RecommendationEngineService>();
         services.AddScoped<Citationly.Application.Features.PromptIntelligence.Services.IPromptExecutionService, Citationly.Application.Features.PromptIntelligence.Services.PromptExecutionService>();
 
+        // GEO Dashboard
+        services.AddScoped<Citationly.Application.Features.GeoDashboard.GeoDashboardAggregator>();
+        services.AddScoped<Citationly.Application.Interfaces.GeoDashboard.IGeoPillarService, Citationly.Application.Features.GeoDashboard.GeoPillarService>();
+        services.AddScoped<Citationly.Application.Interfaces.GeoDashboard.IPromptCoverageService, Citationly.Application.Features.GeoDashboard.PromptCoverageService>();
+        services.AddScoped<Citationly.Application.Interfaces.GeoDashboard.IActivityFeedService, Citationly.Application.Features.GeoDashboard.ActivityFeedService>();
+        services.AddScoped<Citationly.Application.Interfaces.GeoDashboard.IEngineScanService, Citationly.Application.Features.GeoDashboard.EngineScanService>();
+
+        // Command Center
+        services.AddScoped<Citationly.Application.Features.CommandCenter.CommandCenterAggregator>();
+
+        // Opportunity Finder
+        services.AddScoped<Citationly.Application.Features.Opportunities.OpportunityFinderAggregator>();
+
         return services;
     }
 }
