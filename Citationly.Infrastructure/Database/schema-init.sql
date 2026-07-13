@@ -1,31 +1,18 @@
--- Enable UUID extension
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+-- Safe, idempotent schema bootstrap — runs automatically at API startup (see
+-- DatabaseMigrator/Program.cs). Every statement is CREATE ... IF NOT EXISTS / CREATE OR
+-- REPLACE, so it is safe to execute on every boot against an already-initialized database.
+--
+-- This is deliberately NOT the same file as Database/init.sql, which opens with destructive
+-- DROP TABLE ... CASCADE statements meant only for resetting a local dev database by hand via
+-- the DbInit console tool — that file must never run automatically, especially not in
+-- production, or it would wipe all real data on every deploy/restart.
 
--- Drop tables to reset DB
-DROP TABLE IF EXISTS ExtractedLinks CASCADE;
-DROP TABLE IF EXISTS ExtractedImages CASCADE;
-DROP TABLE IF EXISTS WebsiteMetadata CASCADE;
-DROP TABLE IF EXISTS ScrapedPages CASCADE;
-DROP TABLE IF EXISTS ScrapingJobs CASCADE;
-DROP TABLE IF EXISTS ShareOfVoice CASCADE;
-DROP TABLE IF EXISTS HistoricalScans CASCADE;
-DROP TABLE IF EXISTS BrandMentions CASCADE;
-DROP TABLE IF EXISTS AiSearchPrompts CASCADE;
-DROP TABLE IF EXISTS Competitors CASCADE;
-DROP TABLE IF EXISTS Embeddings CASCADE;
-DROP TABLE IF EXISTS Integrations CASCADE;
-DROP TABLE IF EXISTS Recommendations CASCADE;
-DROP TABLE IF EXISTS CrawledPages CASCADE;
-DROP TABLE IF EXISTS Websites CASCADE;
-DROP TABLE IF EXISTS Users CASCADE;
-DROP TABLE IF EXISTS Organizations CASCADE;
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- Organizations (Tenants)
 CREATE TABLE IF NOT EXISTS Organizations (
     Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     Name VARCHAR(255) NOT NULL,
-    PlanType VARCHAR(50) NOT NULL DEFAULT 'Trial',
-    TrialEndsAt TIMESTAMP WITH TIME ZONE DEFAULT (CURRENT_TIMESTAMP + INTERVAL '7 days'),
     CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -65,17 +52,17 @@ CREATE TABLE IF NOT EXISTS Recommendations (
     CrawledPageId UUID REFERENCES CrawledPages(Id) ON DELETE CASCADE,
     Title VARCHAR(255) NOT NULL,
     Description TEXT,
-    ActionType VARCHAR(100), -- e.g., 'Content Update', 'Meta Tag'
-    Priority VARCHAR(50), -- 'High', 'Medium', 'Low'
+    ActionType VARCHAR(100),
+    Priority VARCHAR(50),
     Status VARCHAR(50) DEFAULT 'Pending',
     CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Stored Procedures (Functions in Postgres)
 
--- 1. Create or Get User based on Firebase Login
--- Drop first: CREATE OR REPLACE can't change a function's return signature, and this one
--- gained PlanType/TrialEndsAt output columns.
+-- Postgres refuses CREATE OR REPLACE when the return signature changes (this function
+-- gained PlanType/TrialEndsAt output columns) — drop the old signature first so the
+-- migration is safe to run against a database that already has the 3-column version.
 DROP FUNCTION IF EXISTS sp_CreateOrGetUser(VARCHAR, VARCHAR, VARCHAR);
 
 CREATE OR REPLACE FUNCTION sp_CreateOrGetUser(
@@ -99,17 +86,13 @@ BEGIN
     -- requests can't both fall through the "not found" branch and create duplicate rows.
     PERFORM pg_advisory_xact_lock(hashtext(p_FirebaseUid));
 
-    -- Check if user exists
     SELECT u.Id, u.OrganizationId, u.Role INTO v_UserId, v_OrganizationId, v_Role
     FROM Users u WHERE u.FirebaseUid = p_FirebaseUid;
 
-    -- If not exists, create a new Organization and User
     IF v_UserId IS NULL THEN
-        -- Create default organization for new user
         INSERT INTO Organizations (Name) VALUES (p_DisplayName || '''s Org')
         RETURNING Id INTO v_OrganizationId;
 
-        -- Create user as Admin
         INSERT INTO Users (OrganizationId, FirebaseUid, Email, DisplayName, Role)
         VALUES (v_OrganizationId, p_FirebaseUid, p_Email, p_DisplayName, 'Admin')
         RETURNING Id INTO v_UserId;
@@ -123,7 +106,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- 2. Bulk Insert Crawled Pages
 CREATE OR REPLACE FUNCTION sp_InsertCrawledPage(
     p_WebsiteId UUID,
     p_Url VARCHAR,
@@ -136,12 +118,11 @@ BEGIN
     INSERT INTO CrawledPages (WebsiteId, Url, Title, Content)
     VALUES (p_WebsiteId, p_Url, p_Title, p_Content)
     RETURNING Id INTO v_PageId;
-    
+
     RETURN v_PageId;
 END;
 $$ LANGUAGE plpgsql;
 
--- 3. Insert Recommendation
 CREATE OR REPLACE FUNCTION sp_InsertRecommendation(
     p_WebsiteId UUID,
     p_CrawledPageId UUID,
@@ -156,7 +137,7 @@ BEGIN
     INSERT INTO Recommendations (WebsiteId, CrawledPageId, Title, Description, ActionType, Priority)
     VALUES (p_WebsiteId, p_CrawledPageId, p_Title, p_Description, p_ActionType, p_Priority)
     RETURNING Id INTO v_RecommendationId;
-    
+
     RETURN v_RecommendationId;
 END;
 $$ LANGUAGE plpgsql;
@@ -165,15 +146,14 @@ $$ LANGUAGE plpgsql;
 CREATE TABLE IF NOT EXISTS Integrations (
     Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
-    PlatformName VARCHAR(100) NOT NULL, -- e.g., 'WordPress', 'Shopify'
+    PlatformName VARCHAR(100) NOT NULL,
     ApiUrl VARCHAR(2048),
-    ApiKey VARCHAR(1024), -- Plain text for MVP as agreed
+    ApiKey VARCHAR(1024),
     CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(OrganizationId, PlatformName)
 );
 
--- 4. Insert or Update Integration
 CREATE OR REPLACE FUNCTION sp_UpsertIntegration(
     p_OrganizationId UUID,
     p_PlatformName VARCHAR,
@@ -190,12 +170,11 @@ BEGIN
         ApiKey = EXCLUDED.ApiKey,
         UpdatedAt = CURRENT_TIMESTAMP
     RETURNING Id INTO v_IntegrationId;
-    
+
     RETURN v_IntegrationId;
 END;
 $$ LANGUAGE plpgsql;
 
--- 5. Get Integrations by Organization
 CREATE OR REPLACE FUNCTION sp_GetIntegrationsByOrg(
     p_OrganizationId UUID
 ) RETURNS TABLE (
@@ -206,7 +185,7 @@ CREATE OR REPLACE FUNCTION sp_GetIntegrationsByOrg(
     UpdatedAt TIMESTAMP WITH TIME ZONE
 ) AS $$
 BEGIN
-    RETURN QUERY 
+    RETURN QUERY
     SELECT i.Id, i.PlatformName, i.ApiUrl, i.CreatedAt, i.UpdatedAt
     FROM Integrations i
     WHERE i.OrganizationId = p_OrganizationId;
@@ -217,14 +196,13 @@ $$ LANGUAGE plpgsql;
 CREATE TABLE IF NOT EXISTS Embeddings (
     Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
-    ReferenceId UUID NOT NULL, -- Could be a CrawledPageId or RecommendationId
-    ReferenceType VARCHAR(50) NOT NULL, -- 'Page', 'Recommendation'
+    ReferenceId UUID NOT NULL,
+    ReferenceType VARCHAR(50) NOT NULL,
     TextContent TEXT NOT NULL,
     Vector FLOAT8[] NOT NULL,
     CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- 6. Insert Embedding
 CREATE OR REPLACE FUNCTION sp_InsertEmbedding(
     p_OrganizationId UUID,
     p_ReferenceId UUID,
@@ -238,12 +216,11 @@ BEGIN
     INSERT INTO Embeddings (OrganizationId, ReferenceId, ReferenceType, TextContent, Vector)
     VALUES (p_OrganizationId, p_ReferenceId, p_ReferenceType, p_TextContent, p_Vector)
     RETURNING Id INTO v_EmbeddingId;
-    
+
     RETURN v_EmbeddingId;
 END;
 $$ LANGUAGE plpgsql;
 
--- 7. Get All Embeddings by Organization
 CREATE OR REPLACE FUNCTION sp_GetEmbeddingsByOrg(
     p_OrganizationId UUID
 ) RETURNS TABLE (
@@ -254,14 +231,12 @@ CREATE OR REPLACE FUNCTION sp_GetEmbeddingsByOrg(
     Vector FLOAT8[]
 ) AS $$
 BEGIN
-    RETURN QUERY 
+    RETURN QUERY
     SELECT e.Id, e.ReferenceId, e.ReferenceType, e.TextContent, e.Vector
     FROM Embeddings e
     WHERE e.OrganizationId = p_OrganizationId;
 END;
 $$ LANGUAGE plpgsql;
-
--- 8. Competitor Engine Tables
 
 CREATE TABLE IF NOT EXISTS Competitors (
     Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -325,8 +300,8 @@ CREATE TABLE IF NOT EXISTS ScrapingJobs (
     OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
     WebsiteId UUID REFERENCES Websites(Id) ON DELETE SET NULL,
     Url VARCHAR(2048) NOT NULL,
-    Status VARCHAR(50) DEFAULT 'Pending', -- Pending, Processing, Completed, Failed
-    ScrapeType VARCHAR(50) DEFAULT 'Single', -- Single, Website
+    Status VARCHAR(50) DEFAULT 'Pending',
+    ScrapeType VARCHAR(50) DEFAULT 'Single',
     TotalPages INT DEFAULT 0,
     ProcessedPages INT DEFAULT 0,
     MaxPages INT DEFAULT 100,
@@ -353,14 +328,13 @@ CREATE TABLE IF NOT EXISTS ScrapedPages (
     WordCount INT DEFAULT 0,
     ImageCount INT DEFAULT 0,
     LinkCount INT DEFAULT 0,
-    Images JSONB DEFAULT '[]'::jsonb, -- Kept for UI backwards compatibility & speed
-    InternalLinks JSONB DEFAULT '[]'::jsonb, -- Kept for UI backwards compatibility & speed
-    ExternalLinks JSONB DEFAULT '[]'::jsonb, -- Kept for UI backwards compatibility & speed
+    Images JSONB DEFAULT '[]'::jsonb,
+    InternalLinks JSONB DEFAULT '[]'::jsonb,
+    ExternalLinks JSONB DEFAULT '[]'::jsonb,
     Headings JSONB DEFAULT '[]'::jsonb,
     ScrapedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Normalized tables requested by the user
 CREATE TABLE IF NOT EXISTS ExtractedImages (
     Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     PageId UUID REFERENCES ScrapedPages(Id) ON DELETE CASCADE,
@@ -372,7 +346,7 @@ CREATE TABLE IF NOT EXISTS ExtractedLinks (
     Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     PageId UUID REFERENCES ScrapedPages(Id) ON DELETE CASCADE,
     Url VARCHAR(2048) NOT NULL,
-    LinkType VARCHAR(50) -- Internal, External
+    LinkType VARCHAR(50)
 );
 
 CREATE TABLE IF NOT EXISTS WebsiteMetadata (
@@ -391,3 +365,12 @@ CREATE TABLE IF NOT EXISTS WebsiteMetadata (
     CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Trial subscription tracking
+-- ADD COLUMN IF NOT EXISTS skips its whole clause — including the DEFAULT — once the column
+-- already exists from an earlier run of this script, so the default never actually lands on
+-- re-runs. Set it explicitly and separately every time; ALTER COLUMN SET DEFAULT is safe to
+-- repeat regardless of whether the column is brand new or has existed since before this fix.
+ALTER TABLE Organizations ADD COLUMN IF NOT EXISTS PlanType VARCHAR(50) NOT NULL DEFAULT 'Trial';
+ALTER TABLE Organizations ADD COLUMN IF NOT EXISTS TrialEndsAt TIMESTAMP WITH TIME ZONE;
+ALTER TABLE Organizations ALTER COLUMN TrialEndsAt SET DEFAULT (CURRENT_TIMESTAMP + INTERVAL '7 days');
+UPDATE Organizations SET TrialEndsAt = CreatedAt + INTERVAL '7 days' WHERE TrialEndsAt IS NULL;

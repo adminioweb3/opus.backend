@@ -17,16 +17,22 @@ public class SyncUserResult
     public string Role { get; set; } = string.Empty;
     public string OrganizationName { get; set; } = string.Empty;
     public string WebsiteDomain { get; set; } = string.Empty;
+    public bool NeedsOnboarding { get; set; }
+    public string PlanType { get; set; } = "Trial";
+    public DateTime? TrialEndsAt { get; set; }
+    public bool IsTrialExpired { get; set; }
 }
 
 public class SyncUserCommandHandler : IRequestHandler<SyncUserCommand, SyncUserResult>
 {
     private readonly IUserRepository _repository;
+    private readonly IWebsiteRepository _websiteRepository;
     private readonly IDbConnectionFactory _dbConnectionFactory;
 
-    public SyncUserCommandHandler(IUserRepository repository, IDbConnectionFactory dbConnectionFactory)
+    public SyncUserCommandHandler(IUserRepository repository, IWebsiteRepository websiteRepository, IDbConnectionFactory dbConnectionFactory)
     {
         _repository = repository;
+        _websiteRepository = websiteRepository;
         _dbConnectionFactory = dbConnectionFactory;
     }
 
@@ -48,13 +54,27 @@ public class SyncUserCommandHandler : IRequestHandler<SyncUserCommand, SyncUserR
             "SELECT DomainUrl FROM Websites WHERE OrganizationId = @OrganizationId ORDER BY CreatedAt ASC LIMIT 1",
             new { OrganizationId = result.OrganizationId });
 
+        // The real "has completed onboarding" signal is a WebsiteProfile (created early, during
+        // /onboarding/analyze) — NOT Websites.DomainUrl, which is only populated conditionally,
+        // late, at the checkout step, and would falsely mark real returning users as needing
+        // onboarding again.
+        var profile = await _websiteRepository.GetLatestWebsiteProfileAsync(result.OrganizationId);
+        var needsOnboarding = profile == null;
+
+        var trialEndsAt = result.TrialEndsAt;
+        var isTrialExpired = trialEndsAt.HasValue && trialEndsAt.Value < DateTime.UtcNow;
+
         return new SyncUserResult
         {
             UserId = result.UserId,
             OrganizationId = result.OrganizationId,
             Role = result.Role,
             OrganizationName = orgName ?? string.Empty,
-            WebsiteDomain = websiteDomain ?? string.Empty
+            WebsiteDomain = websiteDomain ?? string.Empty,
+            NeedsOnboarding = needsOnboarding,
+            PlanType = result.PlanType ?? "Trial",
+            TrialEndsAt = trialEndsAt,
+            IsTrialExpired = isTrialExpired,
         };
     }
 }

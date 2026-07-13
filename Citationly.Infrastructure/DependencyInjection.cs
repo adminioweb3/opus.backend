@@ -22,6 +22,12 @@ public static class DependencyInjection
         services.AddScoped<IScrapingJobRepository, ScrapingJobRepository>();
         services.AddScoped<IAiVisibilityRepository, AiVisibilityRepository>();
         services.AddScoped<IAnalysisRepository, AnalysisRepository>();
+        services.AddScoped<IOpportunitySnapshotRepository, OpportunitySnapshotRepository>();
+        services.AddScoped<IVisibilitySnapshotRepository, VisibilitySnapshotRepository>();
+        services.AddScoped<ICitationScanSnapshotRepository, CitationScanSnapshotRepository>();
+        services.AddScoped<IBrandPulseSnapshotRepository, BrandPulseSnapshotRepository>();
+        services.AddScoped<ICompetitorSnapshotRepository, CompetitorSnapshotRepository>();
+        services.AddScoped<ICommandCenterRepository, CommandCenterRepository>();
         services.AddScoped<IAnalysisOrchestrator, Citationly.Application.Features.AnalysisEngine.AnalysisOrchestrator>();
         services.AddScoped<IWebScraperService, WebScraperService>();
         services.AddScoped<IAiAnalysisService, DummyAiAnalysisService>();
@@ -90,6 +96,7 @@ public static class DependencyInjection
         services.AddScoped<IMetricsCalculationService, MetricsCalculationService>();
         
         services.AddHostedService<Citationly.Infrastructure.BackgroundJobs.RecurringScrapeService>();
+        services.AddScoped<Citationly.Infrastructure.BackgroundJobs.DashboardScanRecurringJobs>();
         return services;
     }
 }

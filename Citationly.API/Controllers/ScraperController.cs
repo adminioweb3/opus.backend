@@ -3,11 +3,13 @@ using System.Text.Json;
 using Citationly.Application.Interfaces;
 using Citationly.Domain.Entities;
 using Hangfire;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Citationly.API.Controllers;
 
 [ApiController]
+[Authorize]
 [Route("api/[controller]")]
 public class ScraperController : ControllerBase
 {

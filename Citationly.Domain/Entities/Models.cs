@@ -507,3 +507,144 @@ public class PromptHistory
     public string SearchEngine { get; set; } = string.Empty;
     public DateTime RecordedAt { get; set; } = DateTime.UtcNow;
 }
+
+// ===================================================================================
+// Dashboard feature entities (Visibility Radar, Citation Intelligence, Brand Pulse,
+// Command Center, Opportunity Finder, Competitor Watch). Each maps 1:1 onto a table that
+// already exists in the working dev database (created by earlier, since-lost repository
+// code) — property names match the live Postgres columns exactly so no data migration is
+// needed; repositories just need to be rebuilt against this already-correct schema.
+// ===================================================================================
+
+public class VisibilityScanSummary
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public DateOnly ScanDate { get; set; }
+    public int CompositeScore { get; set; }
+    public int DirectPct { get; set; }
+    public int MentionsPct { get; set; }
+    public int IndirectPct { get; set; }
+    public int ComparativePct { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class VisibilityPlatformSnapshot
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public DateOnly ScanDate { get; set; }
+    public string Platform { get; set; } = string.Empty;
+    public int Score { get; set; }
+    public int Citations { get; set; }
+    public string Status { get; set; } = "Developing";
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class CitationScanSummary
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public DateOnly ScanDate { get; set; }
+    public int CompositeQualityScore { get; set; }
+    public int AverageAuthorityScore { get; set; }
+    public int AverageInfluenceScore { get; set; }
+    public int CitationSignal { get; set; }
+    public int ModelsReferencingCount { get; set; }
+    public int ModelsTrackedCount { get; set; }
+    // Self-healed column (ALTER TABLE ... ADD COLUMN IF NOT EXISTS) — holds the AI-generated
+    // per-platform citation breakdown the frontend's `platforms[]` field needs.
+    public string PlatformsJson { get; set; } = "[]";
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class CitationSourceSnapshot
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public DateOnly ScanDate { get; set; }
+    public string Source { get; set; } = string.Empty;
+    public string? Category { get; set; }
+    public int AuthorityScore { get; set; }
+    public int InfluenceScore { get; set; }
+    public int CitationFrequency { get; set; }
+    public int CompetitorCoverage { get; set; }
+    public int OpportunityScore { get; set; }
+    public int MentionProbability { get; set; }
+    public string? Reason { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class BrandPulseScanSummary
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public DateOnly ScanDate { get; set; }
+    public int BrandHealth { get; set; }
+    public int AiConfidence { get; set; }
+    public int MessagingConsistency { get; set; }
+    public int BrandTrust { get; set; }
+    public int SentimentPositive { get; set; }
+    public int SentimentNeutral { get; set; }
+    public int SentimentNegative { get; set; }
+    public string AlertsJson { get; set; } = "[]";
+    public string ModelInsightsJson { get; set; } = "[]";
+    public string AccuracyFlagsJson { get; set; } = "[]";
+    public string PromptEvidenceJson { get; set; } = "[]";
+    // Self-healed column — the frontend's `shareOfPerception[]` field.
+    public string SharePerceptionJson { get; set; } = "[]";
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class CommandCenterInsightSnapshot
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public DateOnly ScanDate { get; set; }
+    public string InsightsJson { get; set; } = "[]";
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class OpportunitySnapshot
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public DateOnly ScanDate { get; set; }
+    public string OpportunityKey { get; set; } = string.Empty;
+    public string Category { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+    public string? Summary { get; set; }
+    public string? WhyItMatters { get; set; }
+    public int Score { get; set; }
+    public int Effort { get; set; }
+    public double EstimatedGainPct { get; set; }
+    public string? Eta { get; set; }
+    public string? CompetitorContext { get; set; }
+    public string ChecklistJson { get; set; } = "[]";
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class CompetitorSnapshot
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public Guid? CompetitorId { get; set; }
+    public bool IsYou { get; set; }
+    public DateOnly ScanDate { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public int Score { get; set; }
+    public int Rank { get; set; }
+    public int ShareOfVoice { get; set; }
+    public int ShareOfVoiceChange { get; set; }
+    public int Visibility { get; set; }
+    public int VisibilityChange { get; set; }
+    public string Threat { get; set; } = "low";
+    public string ModelsJson { get; set; } = "{}";
+    public string? Tagline { get; set; }
+    public string? WebsiteUrl { get; set; }
+    // Self-healed columns — the frontend's `citations.share`/`citations.total`/`content.velocity`.
+    public int CitationsShare { get; set; }
+    public int CitationsTotal { get; set; }
+    public string ContentVelocity { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}

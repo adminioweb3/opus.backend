@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Citationly.Application.Interfaces;
 using Citationly.Application.Interfaces.Competitors;
@@ -5,6 +6,7 @@ using Citationly.Application.Interfaces.Competitors;
 namespace Citationly.API.Controllers;
 
 [ApiController]
+[Authorize]
 [Route("api/[controller]")]
 public class CompetitorController : ControllerBase
 {

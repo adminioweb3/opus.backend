@@ -26,6 +26,9 @@ public static class DependencyInjection
         services.AddScoped<Citationly.Application.Features.PromptIntelligence.Services.IRecommendationEngineService, Citationly.Application.Features.PromptIntelligence.Services.RecommendationEngineService>();
         services.AddScoped<Citationly.Application.Features.PromptIntelligence.Services.IPromptExecutionService, Citationly.Application.Features.PromptIntelligence.Services.PromptExecutionService>();
 
+        // GEO Dashboard — pure read-aggregation service (no interface; backs GET /dashboard/geo-dashboard)
+        services.AddScoped<Citationly.Application.Features.GeoDashboard.GeoDashboardAggregator>();
+
         return services;
     }
 }
