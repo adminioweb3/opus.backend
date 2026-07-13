@@ -122,7 +122,24 @@ if (app.Environment.IsDevelopment())
     app.UseHangfireDashboard("/hangfire");
 }
 
-// Middleware pipeline
+app.UseExceptionHandler(errorApp =>
+{
+    // Re-apply CORS here: an unhandled exception clears the response
+    // (including any headers UseCors already set), which is why the
+    // browser reports a CORS failure on top of the real 500.
+    errorApp.UseCors("AllowAll");
+    errorApp.Run(async context =>
+    {
+        var exceptionFeature = context.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerPathFeature>();
+        var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+        logger.LogError(exceptionFeature?.Error, "Unhandled exception on {Path}", exceptionFeature?.Path);
+
+        context.Response.ContentType = "application/json";
+        context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        await context.Response.WriteAsJsonAsync(new { message = "An unexpected error occurred." });
+    });
+});
+
 app.UseHttpsRedirection();
 app.UseCors("AllowAll");
 
