@@ -112,8 +112,11 @@ if (!string.IsNullOrEmpty(firebaseProjectId))
 var app = builder.Build();
 
 // Self-healing migration: adds trial-subscription columns to Organizations (for orgs created
-// before this feature existed) and re-applies sp_CreateOrGetUser with its advisory-lock fix,
-// since init.sql only runs against a fresh database, not this live one.
+// before this feature existed), backfills Websites.DomainUrl on databases created before that
+// column existed (production was 500ing with "column domainurl does not exist" — WebsiteRepository
+// has always required it, so the live table just predates the current schema), and re-applies
+// sp_CreateOrGetUser with its advisory-lock fix, since init.sql only runs against a fresh
+// database, not this live one.
 using (var migrationScope = app.Services.CreateScope())
 {
     var dbConnectionFactory = migrationScope.ServiceProvider.GetRequiredService<Citationly.Application.Interfaces.IDbConnectionFactory>();
@@ -122,6 +125,8 @@ using (var migrationScope = app.Services.CreateScope())
         ALTER TABLE Organizations ADD COLUMN IF NOT EXISTS PlanType VARCHAR(50) NOT NULL DEFAULT 'Trial';
         ALTER TABLE Organizations ADD COLUMN IF NOT EXISTS TrialEndsAt TIMESTAMP WITH TIME ZONE;
         UPDATE Organizations SET TrialEndsAt = CreatedAt + INTERVAL '7 days' WHERE TrialEndsAt IS NULL;
+
+        ALTER TABLE Websites ADD COLUMN IF NOT EXISTS DomainUrl VARCHAR(255) NOT NULL DEFAULT '';
 
         CREATE OR REPLACE FUNCTION sp_CreateOrGetUser(
             p_FirebaseUid VARCHAR,
