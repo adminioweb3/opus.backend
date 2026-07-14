@@ -1,14 +1,8 @@
-using System.Data;
 using Dapper;
+using System.Data;
 
 namespace Citationly.Infrastructure.Data;
 
-// Dapper 2.1.79 (the version pinned across this project) reads Postgres `date` columns into
-// DateOnly fine via the underlying ADO reader, but has no built-in support for writing a
-// DateOnly value as a query parameter — SqlMapper.LookupDbType has no case for it and throws
-// NotSupportedException on every INSERT/UPDATE that binds a DateOnly property (e.g. every
-// "ScanDate" column across the snapshot/scan-summary tables). Registering explicit handlers
-// once at startup (see Program.cs) fixes every repository at once instead of patching each one.
 public class DateOnlyTypeHandler : SqlMapper.TypeHandler<DateOnly>
 {
     public override void SetValue(IDbDataParameter parameter, DateOnly value)
@@ -17,12 +11,16 @@ public class DateOnlyTypeHandler : SqlMapper.TypeHandler<DateOnly>
         parameter.Value = value.ToDateTime(TimeOnly.MinValue);
     }
 
-    public override DateOnly Parse(object value) => value switch
+    public override DateOnly Parse(object value)
     {
-        DateOnly d => d,
-        DateTime dt => DateOnly.FromDateTime(dt),
-        _ => DateOnly.FromDateTime(Convert.ToDateTime(value)),
-    };
+        if (value is DateOnly dateOnly)
+            return dateOnly;
+
+        if (value is DateTime dateTime)
+            return DateOnly.FromDateTime(dateTime);
+
+        throw new InvalidCastException($"Cannot cast {value?.GetType().Name} to DateOnly.");
+    }
 }
 
 public class NullableDateOnlyTypeHandler : SqlMapper.TypeHandler<DateOnly?>
@@ -30,14 +28,20 @@ public class NullableDateOnlyTypeHandler : SqlMapper.TypeHandler<DateOnly?>
     public override void SetValue(IDbDataParameter parameter, DateOnly? value)
     {
         parameter.DbType = DbType.Date;
-        parameter.Value = value.HasValue ? value.Value.ToDateTime(TimeOnly.MinValue) : DBNull.Value;
+        parameter.Value = value is null ? DBNull.Value : value.Value.ToDateTime(TimeOnly.MinValue);
     }
 
-    public override DateOnly? Parse(object value) => value switch
+    public override DateOnly? Parse(object value)
     {
-        null or DBNull => null,
-        DateOnly d => d,
-        DateTime dt => DateOnly.FromDateTime(dt),
-        _ => DateOnly.FromDateTime(Convert.ToDateTime(value)),
-    };
+        if (value is null || value is DBNull)
+            return null;
+
+        if (value is DateOnly dateOnly)
+            return dateOnly;
+
+        if (value is DateTime dateTime)
+            return DateOnly.FromDateTime(dateTime);
+
+        throw new InvalidCastException($"Cannot cast {value.GetType().Name} to DateOnly?.");
+    }
 }

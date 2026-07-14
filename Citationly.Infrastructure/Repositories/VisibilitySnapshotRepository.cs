@@ -1,6 +1,6 @@
-using Dapper;
 using Citationly.Application.Interfaces;
 using Citationly.Domain.Entities;
+using Dapper;
 
 namespace Citationly.Infrastructure.Repositories;
 
@@ -13,180 +13,137 @@ public class VisibilitySnapshotRepository : IVisibilitySnapshotRepository
         _dbConnectionFactory = dbConnectionFactory;
     }
 
-    private static async Task EnsureSchemaAsync(System.Data.IDbConnection connection)
+    public async Task EnsureTableCreatedAsync()
     {
+        using var connection = _dbConnectionFactory.CreateConnection();
         await connection.ExecuteAsync(@"
             CREATE TABLE IF NOT EXISTS VisibilityScanSummaries (
-                Id UUID PRIMARY KEY,
+                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 OrganizationId UUID NOT NULL,
                 ScanDate DATE NOT NULL,
-                CompositeScore INTEGER NOT NULL,
-                DirectPct INTEGER NOT NULL,
-                MentionsPct INTEGER NOT NULL,
-                IndirectPct INTEGER NOT NULL,
-                ComparativePct INTEGER NOT NULL,
-                CreatedAt TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                CompositeScore INT NOT NULL DEFAULT 0,
+                DirectPct INT NOT NULL DEFAULT 0,
+                MentionsPct INT NOT NULL DEFAULT 0,
+                IndirectPct INT NOT NULL DEFAULT 0,
+                ComparativePct INT NOT NULL DEFAULT 0,
+                CreatedAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             );
-            CREATE INDEX IF NOT EXISTS ix_visibilityscansummaries_org_date ON VisibilityScanSummaries (OrganizationId, ScanDate);
+            CREATE INDEX IF NOT EXISTS idx_visibilityscansummaries_org_scandate ON VisibilityScanSummaries (OrganizationId, ScanDate);
 
             CREATE TABLE IF NOT EXISTS VisibilityPlatformSnapshots (
-                Id UUID PRIMARY KEY,
+                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 OrganizationId UUID NOT NULL,
                 ScanDate DATE NOT NULL,
                 Platform VARCHAR(255) NOT NULL,
-                Score INTEGER NOT NULL,
-                Citations INTEGER NOT NULL,
+                Score INT NOT NULL DEFAULT 0,
+                Citations INT NOT NULL DEFAULT 0,
                 Status VARCHAR(20) NOT NULL DEFAULT 'Developing',
-                CreatedAt TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                CreatedAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             );
-            CREATE INDEX IF NOT EXISTS ix_visibilityplatformsnapshots_org_date ON VisibilityPlatformSnapshots (OrganizationId, ScanDate);
+            CREATE INDEX IF NOT EXISTS idx_visibilityplatformsnapshots_org_scandate ON VisibilityPlatformSnapshots (OrganizationId, ScanDate);
         ");
+    }
+
+    public async Task DeleteByScanDateAsync(Guid organizationId, DateOnly scanDate)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        await connection.ExecuteAsync(
+            "DELETE FROM VisibilityScanSummaries WHERE OrganizationId = @OrganizationId AND ScanDate = @ScanDate",
+            new { OrganizationId = organizationId, ScanDate = scanDate });
+        await connection.ExecuteAsync(
+            "DELETE FROM VisibilityPlatformSnapshots WHERE OrganizationId = @OrganizationId AND ScanDate = @ScanDate",
+            new { OrganizationId = organizationId, ScanDate = scanDate });
+    }
+
+    public async Task InsertSummaryAsync(VisibilityScanSummary summary)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        await connection.ExecuteAsync(
+            @"INSERT INTO VisibilityScanSummaries
+                (OrganizationId, ScanDate, CompositeScore, DirectPct, MentionsPct, IndirectPct, ComparativePct)
+              VALUES
+                (@OrganizationId, @ScanDate, @CompositeScore, @DirectPct, @MentionsPct, @IndirectPct, @ComparativePct)",
+            summary);
+    }
+
+    public async Task InsertPlatformSnapshotAsync(VisibilityPlatformSnapshot snapshot)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        await connection.ExecuteAsync(
+            @"INSERT INTO VisibilityPlatformSnapshots
+                (OrganizationId, ScanDate, Platform, Score, Citations, Status)
+              VALUES
+                (@OrganizationId, @ScanDate, @Platform, @Score, @Citations, @Status)",
+            snapshot);
     }
 
     public async Task<DateOnly?> GetLatestScanDateAsync(Guid organizationId)
     {
         using var connection = _dbConnectionFactory.CreateConnection();
-        await EnsureSchemaAsync(connection);
-
-        var raw = await connection.ExecuteScalarAsync(
+        // Raw ExecuteScalarAsync (not a typed Query) to sidestep Dapper's Nullable<T> conversion
+        // path: Npgsql returns a native DateOnly for non-null "date" columns, which the shared
+        // DateOnlyTypeHandler/Convert.ChangeType can't reconcile with DBNull for MAX() over zero rows.
+        var result = await connection.ExecuteScalarAsync(
             "SELECT MAX(ScanDate) FROM VisibilityScanSummaries WHERE OrganizationId = @OrganizationId",
             new { OrganizationId = organizationId });
 
-        DateOnly? latest = raw switch
+        return result switch
         {
             null or DBNull => null,
             DateOnly d => d,
             DateTime dt => DateOnly.FromDateTime(dt),
             _ => null
         };
-
-        return latest;
     }
 
-    public async Task<VisibilityScanSummary?> GetLatestSummaryAsync(Guid organizationId)
+    public async Task<VisibilityScanSummary?> GetSummaryByScanDateAsync(Guid organizationId, DateOnly scanDate)
     {
         using var connection = _dbConnectionFactory.CreateConnection();
-        await EnsureSchemaAsync(connection);
-
-        return await connection.QueryFirstOrDefaultAsync<VisibilityScanSummary>(@"
-            SELECT * FROM VisibilityScanSummaries
-            WHERE OrganizationId = @OrganizationId
-            ORDER BY ScanDate DESC, CreatedAt DESC
-            LIMIT 1",
-            new { OrganizationId = organizationId });
+        return await connection.QueryFirstOrDefaultAsync<VisibilityScanSummary>(
+            "SELECT * FROM VisibilityScanSummaries WHERE OrganizationId = @OrganizationId AND ScanDate = @ScanDate",
+            new { OrganizationId = organizationId, ScanDate = scanDate });
     }
 
-    public async Task<List<VisibilityScanSummary>> GetHistoryAsync(Guid organizationId, int days)
+    public async Task<List<VisibilityPlatformSnapshot>> GetPlatformSnapshotsByScanDateAsync(Guid organizationId, DateOnly scanDate)
     {
         using var connection = _dbConnectionFactory.CreateConnection();
-        await EnsureSchemaAsync(connection);
-
-        var rows = await connection.QueryAsync<VisibilityScanSummary>(@"
-            SELECT * FROM VisibilityScanSummaries
-            WHERE OrganizationId = @OrganizationId
-              AND ScanDate >= CURRENT_DATE - CAST(@Days AS INTEGER) * INTERVAL '1 day'
-            ORDER BY ScanDate ASC",
-            new { OrganizationId = organizationId, Days = days });
-
-        return rows.ToList();
+        var results = await connection.QueryAsync<VisibilityPlatformSnapshot>(
+            "SELECT * FROM VisibilityPlatformSnapshots WHERE OrganizationId = @OrganizationId AND ScanDate = @ScanDate ORDER BY Score DESC",
+            new { OrganizationId = organizationId, ScanDate = scanDate });
+        return results.ToList();
     }
 
-    public async Task<List<VisibilityPlatformSnapshot>> GetLatestPlatformsAsync(Guid organizationId)
+    public async Task<List<VisibilityScanSummary>> GetRecentSummaryHistoryAsync(Guid organizationId, int maxScanDates = 13)
     {
         using var connection = _dbConnectionFactory.CreateConnection();
-        await EnsureSchemaAsync(connection);
-
-        var rows = await connection.QueryAsync<VisibilityPlatformSnapshot>(@"
-            SELECT * FROM VisibilityPlatformSnapshots
-            WHERE OrganizationId = @OrganizationId
-              AND ScanDate = (
-                  SELECT MAX(ScanDate) FROM VisibilityPlatformSnapshots WHERE OrganizationId = @OrganizationId
-              )
-            ORDER BY Platform ASC",
-            new { OrganizationId = organizationId });
-
-        return rows.ToList();
+        var results = await connection.QueryAsync<VisibilityScanSummary>(
+            @"SELECT * FROM VisibilityScanSummaries
+              WHERE OrganizationId = @OrganizationId
+                AND ScanDate IN (
+                    SELECT DISTINCT ScanDate FROM VisibilityScanSummaries
+                    WHERE OrganizationId = @OrganizationId
+                    ORDER BY ScanDate DESC
+                    LIMIT @MaxScanDates
+                )
+              ORDER BY ScanDate ASC",
+            new { OrganizationId = organizationId, MaxScanDates = maxScanDates });
+        return results.ToList();
     }
 
-    public async Task<Dictionary<string, List<int>>> GetPlatformSparklinesAsync(Guid organizationId, int days)
+    public async Task<List<VisibilityPlatformSnapshot>> GetRecentPlatformHistoryAsync(Guid organizationId, int maxScanDates = 13)
     {
         using var connection = _dbConnectionFactory.CreateConnection();
-        await EnsureSchemaAsync(connection);
-
-        var rows = await connection.QueryAsync<(string Platform, int Score, DateOnly ScanDate)>(@"
-            SELECT Platform, Score, ScanDate FROM VisibilityPlatformSnapshots
-            WHERE OrganizationId = @OrganizationId
-              AND ScanDate >= CURRENT_DATE - CAST(@Days AS INTEGER) * INTERVAL '1 day'
-            ORDER BY Platform ASC, ScanDate ASC",
-            new { OrganizationId = organizationId, Days = days });
-
-        var result = new Dictionary<string, List<int>>();
-        foreach (var row in rows)
-        {
-            if (!result.TryGetValue(row.Platform, out var list))
-            {
-                list = new List<int>();
-                result[row.Platform] = list;
-            }
-            list.Add(row.Score);
-        }
-
-        foreach (var key in result.Keys.ToList())
-        {
-            var list = result[key];
-            if (list.Count > 12)
-            {
-                result[key] = list.Skip(list.Count - 12).ToList();
-            }
-        }
-
-        return result;
-    }
-
-    public async Task SaveSnapshotAsync(VisibilityScanSummary summary, List<VisibilityPlatformSnapshot> platforms)
-    {
-        using var connection = _dbConnectionFactory.CreateConnection();
-        await EnsureSchemaAsync(connection);
-
-        if (connection.State != System.Data.ConnectionState.Open)
-        {
-            connection.Open();
-        }
-
-        var scanDate = summary.ScanDate == default ? DateOnly.FromDateTime(DateTime.UtcNow) : summary.ScanDate;
-        var now = DateTime.UtcNow;
-
-        summary.Id = summary.Id == Guid.Empty ? Guid.NewGuid() : summary.Id;
-        summary.ScanDate = scanDate;
-        summary.CreatedAt = now;
-
-        using var transaction = connection.BeginTransaction();
-        try
-        {
-            await connection.ExecuteAsync(@"
-                INSERT INTO VisibilityScanSummaries (Id, OrganizationId, ScanDate, CompositeScore, DirectPct, MentionsPct, IndirectPct, ComparativePct, CreatedAt)
-                VALUES (@Id, @OrganizationId, @ScanDate, @CompositeScore, @DirectPct, @MentionsPct, @IndirectPct, @ComparativePct, @CreatedAt)",
-                summary, transaction: transaction);
-
-            foreach (var platform in platforms)
-            {
-                platform.Id = platform.Id == Guid.Empty ? Guid.NewGuid() : platform.Id;
-                platform.OrganizationId = summary.OrganizationId;
-                platform.ScanDate = scanDate;
-                platform.CreatedAt = now;
-
-                await connection.ExecuteAsync(@"
-                    INSERT INTO VisibilityPlatformSnapshots (Id, OrganizationId, ScanDate, Platform, Score, Citations, Status, CreatedAt)
-                    VALUES (@Id, @OrganizationId, @ScanDate, @Platform, @Score, @Citations, @Status, @CreatedAt)",
-                    platform, transaction: transaction);
-            }
-
-            transaction.Commit();
-        }
-        catch
-        {
-            transaction.Rollback();
-            throw;
-        }
+        var results = await connection.QueryAsync<VisibilityPlatformSnapshot>(
+            @"SELECT * FROM VisibilityPlatformSnapshots
+              WHERE OrganizationId = @OrganizationId
+                AND ScanDate IN (
+                    SELECT DISTINCT ScanDate FROM VisibilityPlatformSnapshots
+                    WHERE OrganizationId = @OrganizationId
+                    ORDER BY ScanDate DESC
+                    LIMIT @MaxScanDates
+                )
+              ORDER BY ScanDate ASC",
+            new { OrganizationId = organizationId, MaxScanDates = maxScanDates });
+        return results.ToList();
     }
 }

@@ -64,24 +64,26 @@ Mention Probability (0-100)
 Estimate the probability that this source would mention or reference the business if its content and authority improve.
 
 ------------------------------------------------
-Return exactly this schema array:
-[
-  {{
-    ""id"": """", // MUST match exactly the Input Id
-    ""authorityScore"": 0,
-    ""influenceScore"": 0,
-    ""citationFrequency"": 0,
-    ""competitorCoverage"": 0,
-    ""opportunityScore"": 0,
-    ""mentionProbability"": 0,
-    ""reason"": """"
-  }}
-]
+Return exactly this schema (a JSON object with one top-level ""results"" array — NOT a bare array):
+{{
+  ""results"": [
+    {{
+      ""id"": """", // MUST match exactly the Input Id
+      ""authorityScore"": 0,
+      ""influenceScore"": 0,
+      ""citationFrequency"": 0,
+      ""competitorCoverage"": 0,
+      ""opportunityScore"": 0,
+      ""mentionProbability"": 0,
+      ""reason"": """"
+    }}
+  ]
+}}
 
 Reason
 Provide a concise explanation (maximum 30 words) describing why this source is influential for AI-generated answers and why it represents an opportunity (or challenge) for the business.
 
-Return ONLY the JSON array.";
+Return ONLY the JSON object.";
 
         var responseContent = await _openRouterService.GenerateContentAsync(
             prompt: userPrompt,
@@ -109,7 +111,23 @@ Return ONLY the JSON array.";
             NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
         };
 
-        var parsed = JsonSerializer.Deserialize<List<EnrichedCitationDto>>(responseContent, options);
+        List<EnrichedCitationDto>? parsed;
+        try
+        {
+            using var doc = JsonDocument.Parse(responseContent);
+            var root = doc.RootElement;
+            var arrayElement = root.ValueKind == JsonValueKind.Array
+                ? root
+                : root.TryGetProperty("results", out var resultsEl) ? resultsEl : default;
+
+            parsed = arrayElement.ValueKind == JsonValueKind.Array
+                ? JsonSerializer.Deserialize<List<EnrichedCitationDto>>(arrayElement.GetRawText(), options)
+                : null;
+        }
+        catch (Exception)
+        {
+            parsed = null;
+        }
 
         if (parsed == null)
             return sourcesToEnrich;

@@ -1,7 +1,7 @@
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using MediatR;
 using Citationly.Application.Interfaces;
+using Citationly.Application.Interfaces.Citations;
 using Citationly.Domain.Entities;
 
 namespace Citationly.Application.Features.Citations;
@@ -11,308 +11,125 @@ public class RunCitationScanCommand : IRequest<RunCitationScanResult>
     public Guid OrganizationId { get; set; }
 }
 
-public class RunCitationScanResult
-{
-    public bool Success { get; set; }
-    public string? Error { get; set; }
-    public CitationScanSummary? Summary { get; set; }
-    public List<CitationSourceSnapshot> Sources { get; set; } = new();
-}
-
-// ---- Shapes used purely to deserialize the AI's JSON response ----
-
-internal class CitationScanAiResponse
-{
-    public int CompositeQualityScore { get; set; }
-    public int AverageAuthorityScore { get; set; }
-    public int AverageInfluenceScore { get; set; }
-    public int CitationSignal { get; set; }
-    public int ModelsReferencingCount { get; set; }
-    public int ModelsTrackedCount { get; set; }
-    public List<CitationAiPlatform>? Platforms { get; set; }
-    public List<CitationAiSource>? Sources { get; set; }
-}
-
-internal class CitationAiPlatform
-{
-    public string? Name { get; set; }
-    public int Citations { get; set; }
-    public int Visibility { get; set; }
-    public int Quality { get; set; }
-    public double GrowthPct { get; set; }
-    public string? Status { get; set; }
-}
-
-internal class CitationAiSource
-{
-    public string? Source { get; set; }
-    public string? Category { get; set; }
-    public int AuthorityScore { get; set; }
-    public int InfluenceScore { get; set; }
-    public int CitationFrequency { get; set; }
-    public int OpportunityScore { get; set; }
-    public int CompetitorCoverage { get; set; }
-    public int MentionProbability { get; set; }
-    public string? Reason { get; set; }
-}
+public record RunCitationScanResult(bool Success, string Message);
 
 public class RunCitationScanCommandHandler : IRequestHandler<RunCitationScanCommand, RunCitationScanResult>
 {
-    private readonly ICitationScanSnapshotRepository _citationRepository;
-    private readonly IWebsiteRepository _websiteRepository;
-    private readonly IOpenAiService _openAiService;
+    private const int SourcesPerScan = 30;
 
-    private static readonly string[] DefaultPlatformNames = { "ChatGPT", "Claude", "Gemini", "Perplexity" };
+    private readonly IWebsiteRepository _websiteRepository;
+    private readonly ICitationDiscoveryService _discoveryService;
+    private readonly ICitationEnrichmentService _enrichmentService;
+    private readonly ICitationScanSnapshotRepository _snapshotRepo;
+    private readonly IVisibilitySnapshotRepository _visibilitySnapshotRepo;
 
     public RunCitationScanCommandHandler(
-        ICitationScanSnapshotRepository citationRepository,
         IWebsiteRepository websiteRepository,
-        IOpenAiService openAiService)
+        ICitationDiscoveryService discoveryService,
+        ICitationEnrichmentService enrichmentService,
+        ICitationScanSnapshotRepository snapshotRepo,
+        IVisibilitySnapshotRepository visibilitySnapshotRepo)
     {
-        _citationRepository = citationRepository;
         _websiteRepository = websiteRepository;
-        _openAiService = openAiService;
+        _discoveryService = discoveryService;
+        _enrichmentService = enrichmentService;
+        _snapshotRepo = snapshotRepo;
+        _visibilitySnapshotRepo = visibilitySnapshotRepo;
     }
 
     public async Task<RunCitationScanResult> Handle(RunCitationScanCommand request, CancellationToken cancellationToken)
     {
-        try
+        await _snapshotRepo.EnsureTableCreatedAsync();
+
+        var orgId = request.OrganizationId;
+
+        var profile = await _websiteRepository.GetLatestWebsiteProfileAsync(orgId);
+        if (profile == null)
         {
-            var profile = await _websiteRepository.GetLatestWebsiteProfileAsync(request.OrganizationId);
-            var websiteUrl = profile?.WebsiteUrl ?? "an unspecified website";
-            var businessName = profile?.BusinessName ?? "the business";
-            var profileJson = string.IsNullOrWhiteSpace(profile?.RawProfileJson) ? "{}" : profile!.RawProfileJson;
-
-            var systemPrompt = "You are an expert Generative Engine Optimization (GEO) and AI Citation Intelligence analyst. " +
-                "You estimate how well a business's content is cited, referenced, and trusted as a source across major AI " +
-                "search/answer platforms, and identify realistic third-party sources (publications, review sites, docs/wikis, " +
-                "directories) that could cite or already cite this business.";
-
-            var userPrompt = $@"Business: {businessName}
-Website: {websiteUrl}
-Website Profile (JSON, may be partial): {profileJson}
-
-Analyze this business's ""citation quality"" — how authoritatively and how often it is cited/referenced by AI models when
-answering questions in its industry — and identify realistic citation sources relevant to its domain.
-
-Return ONLY a single valid JSON object (no markdown fences, no commentary) with EXACTLY this shape:
-{{
-  ""compositeQualityScore"": 0-100 integer, overall citation quality composite score,
-  ""averageAuthorityScore"": 0-100 integer, average authority score across sources,
-  ""averageInfluenceScore"": 0-100 integer, average influence score across sources,
-  ""citationSignal"": 0-100 integer, strength of the citation signal AI models pick up on,
-  ""modelsReferencingCount"": integer, how many of the tracked AI models currently reference this business (out of modelsTrackedCount),
-  ""modelsTrackedCount"": integer, total number of AI models tracked (use 4),
-  ""platforms"": [
-    {{
-      ""name"": one of ""ChatGPT"", ""Claude"", ""Gemini"", ""Perplexity"" (include all 4, exactly once each, in this order),
-      ""citations"": integer count of citations observed/estimated on this platform,
-      ""visibility"": 0-100 integer visibility score on this platform,
-      ""quality"": 0-100 integer citation quality score on this platform,
-      ""growthPct"": number, estimated percentage growth/decline trend (can be negative),
-      ""status"": short status label such as ""Strong"", ""Improving"", ""Stable"", ""Declining"", or ""Developing""
-    }}
-  ],
-  ""sources"": [
-    {{
-      ""source"": realistic source name (industry publication, review site, docs/wiki, or directory relevant to this business's domain),
-      ""category"": short category label e.g. ""Industry Publication"", ""Review Site"", ""Documentation"", ""Directory"", ""Forum"",
-      ""authorityScore"": 0-100 integer,
-      ""influenceScore"": 0-100 integer,
-      ""citationFrequency"": 0-100 integer,
-      ""opportunityScore"": 0-100 integer representing how valuable it would be to get cited more by this source,
-      ""competitorCoverage"": 0-100 integer representing how much competitors are already covered by this source,
-      ""mentionProbability"": 0-100 integer,
-      ""reason"": concise 1-2 sentence explanation grounded in the business's actual domain/industry
-    }}
-  ]
-}}
-
-Include exactly 4 items in ""platforms"" (ChatGPT, Claude, Gemini, Perplexity, in that order) and between 6 and 8 items in
-""sources"". Ground every source and score in the business's real domain/industry context from the website profile above.
-Never invent specific factual claims about the business — scores are predictive estimates only. Return ONLY the JSON object.";
-
-            var responseContent = await _openAiService.GenerateContentAsync(
-                prompt: userPrompt,
-                systemPrompt: systemPrompt,
-                requireJson: true,
-                model: "gpt-4o-mini");
-
-            var parsed = ParseAiResponse(responseContent);
-
-            var scanDate = DateOnly.FromDateTime(DateTime.UtcNow);
-
-            var platforms = NormalizePlatforms(parsed.Platforms);
-
-            var summary = new CitationScanSummary
-            {
-                Id = Guid.NewGuid(),
-                OrganizationId = request.OrganizationId,
-                ScanDate = scanDate,
-                CompositeQualityScore = Clamp(parsed.CompositeQualityScore),
-                AverageAuthorityScore = Clamp(parsed.AverageAuthorityScore),
-                AverageInfluenceScore = Clamp(parsed.AverageInfluenceScore),
-                CitationSignal = Clamp(parsed.CitationSignal),
-                ModelsReferencingCount = Math.Max(0, parsed.ModelsReferencingCount),
-                ModelsTrackedCount = parsed.ModelsTrackedCount > 0 ? parsed.ModelsTrackedCount : 4,
-                PlatformsJson = JsonSerializer.Serialize(platforms),
-                CreatedAt = DateTime.UtcNow
-            };
-
-            var sources = NormalizeSources(parsed.Sources, request.OrganizationId, scanDate);
-
-            await _citationRepository.SaveSnapshotAsync(summary, sources);
-
-            return new RunCitationScanResult
-            {
-                Success = true,
-                Summary = summary,
-                Sources = sources
-            };
-        }
-        catch (Exception ex)
-        {
-            return new RunCitationScanResult { Success = false, Error = ex.Message };
-        }
-    }
-
-    private static CitationScanAiResponse ParseAiResponse(string? rawResponse)
-    {
-        var fallback = new CitationScanAiResponse
-        {
-            CompositeQualityScore = 50,
-            AverageAuthorityScore = 50,
-            AverageInfluenceScore = 50,
-            CitationSignal = 50,
-            ModelsReferencingCount = 1,
-            ModelsTrackedCount = 4,
-            Platforms = new List<CitationAiPlatform>(),
-            Sources = new List<CitationAiSource>()
-        };
-
-        if (string.IsNullOrWhiteSpace(rawResponse))
-        {
-            return fallback;
+            return new RunCitationScanResult(false, "No analyzed data found yet for this organization. Complete onboarding analysis first, then run a citation scan.");
         }
 
-        try
-        {
-            var content = rawResponse.Trim();
-
-            if (content.StartsWith("```json", StringComparison.OrdinalIgnoreCase))
-            {
-                content = content.Substring(7);
-            }
-            else if (content.StartsWith("```"))
-            {
-                content = content.Substring(3);
-            }
-            if (content.EndsWith("```"))
-            {
-                content = content.Substring(0, content.Length - 3);
-            }
-            content = content.Trim();
-
-            var options = new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true,
-                NumberHandling = JsonNumberHandling.AllowReadingFromString
-            };
-
-            var parsed = JsonSerializer.Deserialize<CitationScanAiResponse>(content, options);
-            return parsed ?? fallback;
-        }
-        catch
-        {
-            return fallback;
-        }
-    }
-
-    private static List<CitationAiPlatform> NormalizePlatforms(List<CitationAiPlatform>? aiPlatforms)
-    {
-        var byName = (aiPlatforms ?? new List<CitationAiPlatform>())
-            .Where(p => !string.IsNullOrWhiteSpace(p.Name))
-            .GroupBy(p => p.Name!.Trim(), StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
-
-        var result = new List<CitationAiPlatform>();
-        foreach (var name in DefaultPlatformNames)
-        {
-            if (byName.TryGetValue(name, out var match))
-            {
-                result.Add(new CitationAiPlatform
-                {
-                    Name = name,
-                    Citations = Math.Max(0, match.Citations),
-                    Visibility = Clamp(match.Visibility),
-                    Quality = Clamp(match.Quality),
-                    GrowthPct = match.GrowthPct,
-                    Status = string.IsNullOrWhiteSpace(match.Status) ? "Developing" : match.Status
-                });
-            }
-            else
-            {
-                result.Add(new CitationAiPlatform
-                {
-                    Name = name,
-                    Citations = 0,
-                    Visibility = 0,
-                    Quality = 0,
-                    GrowthPct = 0,
-                    Status = "Developing"
-                });
-            }
-        }
-        return result;
-    }
-
-    private static List<CitationSourceSnapshot> NormalizeSources(List<CitationAiSource>? aiSources, Guid organizationId, DateOnly scanDate)
-    {
-        var sources = aiSources ?? new List<CitationAiSource>();
-
-        var normalized = sources
-            .Where(s => !string.IsNullOrWhiteSpace(s.Source))
-            .Select(s => new CitationSourceSnapshot
-            {
-                Id = Guid.NewGuid(),
-                OrganizationId = organizationId,
-                ScanDate = scanDate,
-                Source = s.Source!.Trim(),
-                Category = string.IsNullOrWhiteSpace(s.Category) ? null : s.Category!.Trim(),
-                AuthorityScore = Clamp(s.AuthorityScore),
-                InfluenceScore = Clamp(s.InfluenceScore),
-                CitationFrequency = Clamp(s.CitationFrequency),
-                CompetitorCoverage = Clamp(s.CompetitorCoverage),
-                OpportunityScore = Clamp(s.OpportunityScore),
-                MentionProbability = Clamp(s.MentionProbability),
-                Reason = s.Reason,
-                CreatedAt = DateTime.UtcNow
-            })
+        // Reuse already-discovered sources (from onboarding or a prior scan) so we don't
+        // re-run the expensive discovery call every week — only re-score (enrich) them.
+        var existingSources = (await _websiteRepository.GetCitationSourcesAsync(orgId))
+            .OrderBy(s => s.Rank)
+            .Take(SourcesPerScan)
             .ToList();
 
-        if (normalized.Count == 0)
+        List<CitationSource> candidates;
+        if (existingSources.Count > 0)
         {
-            // Sane fallback so the dashboard never shows a completely empty state after a scan.
-            normalized.Add(new CitationSourceSnapshot
+            candidates = existingSources;
+        }
+        else
+        {
+            var prompts = (await _websiteRepository.GetAiSearchPromptsAsync(orgId)).ToList();
+            var platformVisibilities = await _websiteRepository.GetPlatformVisibilitiesAsync(orgId);
+
+            var promptAnalysisJson = JsonSerializer.Serialize(prompts.Select(p => new { Query = p.QueryString, p.VisibilityScore, p.BrandStrength }));
+            var platformScoresJson = JsonSerializer.Serialize(platformVisibilities.Select(p => new { p.Platform, p.VisibilityScore }));
+
+            var discovered = await _discoveryService.DiscoverCitationsAsync(orgId, profile.WebsiteUrl, profile.RawProfileJson, promptAnalysisJson, platformScoresJson);
+            candidates = discovered.OrderBy(s => s.Rank).Take(SourcesPerScan).ToList();
+        }
+
+        if (candidates.Count == 0)
+        {
+            return new RunCitationScanResult(false, "No citation sources could be identified for this organization.");
+        }
+
+        // Real AI scoring for this week's snapshot — always re-scored fresh, regardless of
+        // whether these sources were already enriched by the onboarding pipeline, so the
+        // weekly trend reflects a genuinely re-judged (not stale, cached) assessment.
+        var enriched = await _enrichmentService.EnrichCitationsAsync(orgId, profile.RawProfileJson, candidates);
+
+        var avgAuthority = (int)Math.Round(enriched.Average(s => s.AuthorityScore));
+        var avgInfluence = (int)Math.Round(enriched.Average(s => s.InfluenceScore));
+        var citationSignal = (int)Math.Round(enriched.Average(s => s.CitationFrequency));
+        var compositeQuality = (int)Math.Round((avgAuthority + avgInfluence) / 2.0);
+
+        // "Models referencing" reuses the sibling Visibility scan's latest real per-platform
+        // scores rather than re-deriving platform coverage from scratch.
+        var visLatestDate = await _visibilitySnapshotRepo.GetLatestScanDateAsync(orgId);
+        var platformSnaps = visLatestDate.HasValue
+            ? await _visibilitySnapshotRepo.GetPlatformSnapshotsByScanDateAsync(orgId, visLatestDate.Value)
+            : new List<VisibilityPlatformSnapshot>();
+        var modelsTracked = platformSnaps.Count > 0 ? platformSnaps.Count : 9;
+        var modelsReferencing = platformSnaps.Count(p => p.Score >= 20);
+
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        await _snapshotRepo.DeleteByScanDateAsync(orgId, today);
+
+        await _snapshotRepo.InsertSummaryAsync(new CitationScanSummary
+        {
+            OrganizationId = orgId,
+            ScanDate = today,
+            CompositeQualityScore = compositeQuality,
+            AverageAuthorityScore = avgAuthority,
+            AverageInfluenceScore = avgInfluence,
+            CitationSignal = citationSignal,
+            ModelsReferencingCount = modelsReferencing,
+            ModelsTrackedCount = modelsTracked
+        });
+
+        foreach (var source in enriched)
+        {
+            await _snapshotRepo.InsertSourceSnapshotAsync(new CitationSourceSnapshot
             {
-                Id = Guid.NewGuid(),
-                OrganizationId = organizationId,
-                ScanDate = scanDate,
-                Source = "Industry Publications",
-                Category = "Industry Publication",
-                AuthorityScore = 50,
-                InfluenceScore = 50,
-                CitationFrequency = 30,
-                CompetitorCoverage = 40,
-                OpportunityScore = 50,
-                MentionProbability = 30,
-                Reason = "Fallback source generated because the AI response could not be parsed.",
-                CreatedAt = DateTime.UtcNow
+                OrganizationId = orgId,
+                ScanDate = today,
+                Source = source.Source,
+                Category = source.Category,
+                AuthorityScore = source.AuthorityScore,
+                InfluenceScore = source.InfluenceScore,
+                CitationFrequency = source.CitationFrequency,
+                CompetitorCoverage = source.CompetitorCoverage,
+                OpportunityScore = source.OpportunityScore,
+                MentionProbability = source.MentionProbability,
+                Reason = source.Reason
             });
         }
 
-        return normalized;
+        return new RunCitationScanResult(true, "Citation scan complete.");
     }
-
-    private static int Clamp(int value) => Math.Clamp(value, 0, 100);
 }

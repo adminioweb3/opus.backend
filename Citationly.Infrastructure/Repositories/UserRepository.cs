@@ -12,10 +12,10 @@ public class UserRepository : IUserRepository
         _dbConnectionFactory = dbConnectionFactory;
     }
 
-    public async Task<(Guid UserId, Guid OrganizationId, string Role, string PlanType, DateTime? TrialEndsAt)> CreateOrGetUserAsync(string firebaseUid, string email, string displayName)
+    public async Task<(Guid UserId, Guid OrganizationId, string Role)> CreateOrGetUserAsync(string firebaseUid, string email, string displayName)
     {
         using var connection = _dbConnectionFactory.CreateConnection();
-        var result = await connection.QuerySingleOrDefaultAsync<(Guid UserId, Guid OrganizationId, string Role, string PlanType, DateTime? TrialEndsAt)>(
+        var result = await connection.QuerySingleOrDefaultAsync<(Guid UserId, Guid OrganizationId, string Role)>(
             "SELECT * FROM sp_CreateOrGetUser(@FirebaseUid, @Email, @DisplayName)",
             new { FirebaseUid = firebaseUid, Email = email, DisplayName = displayName });
 

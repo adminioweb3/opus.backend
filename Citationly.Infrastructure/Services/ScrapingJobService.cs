@@ -20,9 +20,22 @@ public class ScrapingJobService : IScrapingJobService
         var job = await _repository.GetJobAsync(jobId);
         if (job == null) return;
 
+        // Guards against this job being processed twice (e.g. a stray Hangfire retry, or the
+        // job somehow getting enqueued a second time) — without this, a second run would
+        // re-crawl the whole site and insert every page a second time.
+        if (job.Status == "Processing" || job.Status == "Completed") return;
+
         job.Status = "Processing";
         job.StartedAt = DateTime.UtcNow;
-        await _repository.UpdateJobAsync(job);
+        try
+        {
+            await _repository.UpdateJobAsync(job);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Failed to mark job {jobId} as Processing: {ex.Message}");
+            return;
+        }
 
         var pagesToProcess = new List<ScrapedPage>();
 
@@ -138,7 +151,14 @@ public class ScrapingJobService : IScrapingJobService
         }
 
         job.CompletedAt = DateTime.UtcNow;
-        await _repository.UpdateJobAsync(job);
+        try
+        {
+            await _repository.UpdateJobAsync(job);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Failed to mark job {jobId} as {job.Status}: {ex.Message}");
+        }
     }
     
     private class ImageObj

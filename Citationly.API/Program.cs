@@ -7,17 +7,10 @@ using Microsoft.IdentityModel.Tokens;
 using Scalar.AspNetCore;
 using Hangfire;
 using Hangfire.PostgreSql;
+using Dapper;
 
 using Citationly.Application;
 using Citationly.Infrastructure;
-using Citationly.Infrastructure.Data;
-using Citationly.Infrastructure.Database;
-
-// Dapper 2.1.79 has no built-in support for writing a DateOnly value as a query parameter
-// (it reads DateOnly columns fine, but throws NotSupportedException on INSERT/UPDATE) — every
-// snapshot/scan-summary repository's "ScanDate" column hits this. Register once, globally.
-Dapper.SqlMapper.AddTypeHandler(new DateOnlyTypeHandler());
-Dapper.SqlMapper.AddTypeHandler(new NullableDateOnlyTypeHandler());
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -25,6 +18,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddHttpClient();
+builder.Services.AddMemoryCache();
 
 // OpenAPI & Swagger
 builder.Services.AddOpenApi();
@@ -48,11 +42,15 @@ builder.Services.AddHangfireServer();
 // Configure CORS
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowAll", policy =>
+    options.AddPolicy("AllowFrontend", policy =>
     {
-        policy.AllowAnyOrigin()
-              .AllowAnyMethod()
-              .AllowAnyHeader();
+        policy.WithOrigins(
+            "https://citationly.ai",
+            "https://www.citationly.ai",
+            "http://localhost:3000"
+        )
+        .AllowAnyHeader()
+        .AllowAnyMethod();
     });
 });
 
@@ -75,60 +73,92 @@ if (!string.IsNullOrEmpty(firebaseProjectId))
                 ValidateLifetime = true
             };
 
-            options.Events = new JwtBearerEvents
+            // The "demo-token" bypass below is only wired up in Development — it's a hardcoded
+            // skeleton key (any bearer "demo-token" authenticates as demo-user-id) and must never
+            // be reachable outside local/dev environments.
+            if (builder.Environment.IsDevelopment())
             {
-                OnMessageReceived = context =>
+                options.Events = new JwtBearerEvents
                 {
-                    // Dev-only convenience bypass — must never be reachable in production,
-                    // or anyone could authenticate as demo-user-id with a fixed, public token.
                     // Read the raw header directly: at this point in the pipeline the framework
                     // hasn't populated context.Token yet (that extraction happens AFTER
                     // OnMessageReceived returns, only if still empty), so comparing against
                     // context.Token here would never match.
-                    var rawAuthHeader = context.Request.Headers["Authorization"].ToString();
-                    var bearerToken = rawAuthHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
-                        ? rawAuthHeader["Bearer ".Length..].Trim()
-                        : null;
-
-                    if (builder.Environment.IsDevelopment() && bearerToken == "demo-token")
+                    OnMessageReceived = context =>
                     {
-                        var claims = new[]
+                        var rawAuthHeader = context.Request.Headers["Authorization"].ToString();
+                        var bearerToken = rawAuthHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+                            ? rawAuthHeader["Bearer ".Length..].Trim()
+                            : null;
+
+                        if (bearerToken == "demo-token")
                         {
-                            new System.Security.Claims.Claim(
-                                System.Security.Claims.ClaimTypes.NameIdentifier,
-                                "demo-user-id"
-                            ),
-                            new System.Security.Claims.Claim(
-                                System.Security.Claims.ClaimTypes.Email,
-                                "demo@example.com"
-                            )
-                        };
-
-                        var identity = new System.Security.Claims.ClaimsIdentity(claims, "Demo");
-                        context.Principal = new System.Security.Claims.ClaimsPrincipal(identity);
-                        context.Success();
+                            var claims = new[]
+                            {
+                                new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.NameIdentifier, "demo-user-id"),
+                                new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Email, "demo@example.com")
+                            };
+                            var identity = new System.Security.Claims.ClaimsIdentity(claims, "Demo");
+                            context.Principal = new System.Security.Claims.ClaimsPrincipal(identity);
+                            context.Success();
+                        }
+                        return Task.CompletedTask;
                     }
-
-                    return Task.CompletedTask;
-                }
-            };
+                };
+            }
         });
 }
 
 var app = builder.Build();
 
-// Bootstrap the database schema on every startup — safe to run repeatedly (every statement
-// is CREATE ... IF NOT EXISTS / CREATE OR REPLACE), and is what lets a brand-new production
-// database create its own schema on first boot instead of 500ing on every request because
-// the tables were never created. Logs and continues on failure rather than crashing startup.
-if (!string.IsNullOrEmpty(connectionString))
+// Self-healing migration: adds trial-subscription columns to Organizations (for orgs created
+// before this feature existed) and re-applies sp_CreateOrGetUser with its advisory-lock fix,
+// since init.sql only runs against a fresh database, not this live one.
+using (var migrationScope = app.Services.CreateScope())
 {
-    var migrationLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("SchemaMigrator");
-    await SchemaMigrator.RunAsync(connectionString, migrationLogger);
-}
-else
-{
-    app.Logger.LogWarning("No DefaultConnection connection string configured — skipping schema bootstrap and expecting every database call to fail.");
+    var dbConnectionFactory = migrationScope.ServiceProvider.GetRequiredService<Citationly.Application.Interfaces.IDbConnectionFactory>();
+    using var migrationConnection = dbConnectionFactory.CreateConnection();
+    await migrationConnection.ExecuteAsync(@"
+        ALTER TABLE Organizations ADD COLUMN IF NOT EXISTS PlanType VARCHAR(50) NOT NULL DEFAULT 'Trial';
+        ALTER TABLE Organizations ADD COLUMN IF NOT EXISTS TrialEndsAt TIMESTAMP WITH TIME ZONE;
+        UPDATE Organizations SET TrialEndsAt = CreatedAt + INTERVAL '7 days' WHERE TrialEndsAt IS NULL;
+
+        CREATE OR REPLACE FUNCTION sp_CreateOrGetUser(
+            p_FirebaseUid VARCHAR,
+            p_Email VARCHAR,
+            p_DisplayName VARCHAR
+        )
+        RETURNS TABLE (
+            UserId UUID,
+            OrganizationId UUID,
+            Role VARCHAR
+        ) AS $$
+        DECLARE
+            v_UserId UUID;
+            v_OrganizationId UUID;
+            v_Role VARCHAR;
+        BEGIN
+            PERFORM pg_advisory_xact_lock(hashtext(p_FirebaseUid));
+
+            SELECT u.Id, u.OrganizationId, u.Role INTO v_UserId, v_OrganizationId, v_Role
+            FROM Users u WHERE u.FirebaseUid = p_FirebaseUid;
+
+            IF v_UserId IS NULL THEN
+                INSERT INTO Organizations (Name, PlanType, TrialEndsAt)
+                VALUES (p_DisplayName || '''s Org', 'Trial', CURRENT_TIMESTAMP + INTERVAL '7 days')
+                RETURNING Id INTO v_OrganizationId;
+
+                INSERT INTO Users (OrganizationId, FirebaseUid, Email, DisplayName, Role)
+                VALUES (v_OrganizationId, p_FirebaseUid, p_Email, p_DisplayName, 'Admin')
+                RETURNING Id INTO v_UserId;
+
+                v_Role := 'Admin';
+            END IF;
+
+            RETURN QUERY SELECT v_UserId, v_OrganizationId, v_Role;
+        END;
+        $$ LANGUAGE plpgsql;
+    ");
 }
 
 // Trust forwarded headers from Nginx
@@ -144,13 +174,14 @@ app.UseForwardedHeaders(new ForwardedHeadersOptions
 // making production failures nearly impossible to diagnose from outside.
 app.UseExceptionHandler(errorApp =>
 {
+    // Re-apply CORS here: an unhandled exception clears the response (including any headers
+    // UseCors already set), which is why the browser reports a CORS failure on top of the real 500.
+    errorApp.UseCors("AllowFrontend");
     errorApp.Run(async context =>
     {
-        var exceptionFeature = context.Features.Get<IExceptionHandlerFeature>();
-        if (exceptionFeature is not null)
-        {
-            app.Logger.LogError(exceptionFeature.Error, "Unhandled exception on {Path}", exceptionFeature.Path);
-        }
+        var exceptionFeature = context.Features.Get<IExceptionHandlerPathFeature>();
+        var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+        logger.LogError(exceptionFeature?.Error, "Unhandled exception on {Path}", exceptionFeature?.Path);
 
         context.Response.ContentType = "application/json";
         context.Response.StatusCode = StatusCodes.Status500InternalServerError;
@@ -175,35 +206,54 @@ app.UseSwaggerUI(c =>
 });
 
 // Hangfire's dashboard can trigger/delete background jobs — keep it development-only rather
-// than exposing job control to anyone who can reach the production URL. Ask if you want this
-// reachable in production too; it should be put behind its own auth filter first if so.
+// than exposing job control to anyone who can reach the production URL.
 if (app.Environment.IsDevelopment())
 {
     app.UseHangfireDashboard("/hangfire");
 }
 
-// Middleware pipeline
+// Daily check: re-runs a GEO scan for any organization whose last scan is 7+ days old
+// (or has none yet), so scans stay fresh automatically without a manual "Run GEO scan" click.
+RecurringJob.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.GeoScanRecurringJob>(
+    "geo-scan-7-day-check", job => job.RunAsync(), Cron.Daily);
+
+// Daily check: re-scans an organization's competitors + own rank once its last CompetitorSnapshot
+// is 7+ days old (or missing), so Competitor Watch stays fresh automatically.
+RecurringJob.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.CompetitorScanRecurringJob>(
+    "competitor-scan-7-day-check", job => job.RunAsync(), Cron.Daily);
+
+// Daily check: re-scans an organization's per-platform AI visibility once its last
+// VisibilityScanSummary is 7+ days old (or missing), so Visibility Radar stays fresh automatically.
+RecurringJob.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.VisibilityScanRecurringJob>(
+    "visibility-scan-7-day-check", job => job.RunAsync(), Cron.Daily);
+
+// Daily check: re-scans an organization's citation sources once its last CitationScanSummary
+// is 7+ days old (or missing), so Citation Intelligence stays fresh automatically.
+RecurringJob.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.CitationScanRecurringJob>(
+    "citation-scan-7-day-check", job => job.RunAsync(), Cron.Daily);
+
+// Daily check: re-scans an organization's brand pulse once its last BrandPulseScanSummary
+// is 7+ days old (or missing), so Brand Pulse stays fresh automatically.
+RecurringJob.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.BrandPulseScanRecurringJob>(
+    "brand-pulse-scan-7-day-check", job => job.RunAsync(), Cron.Daily);
+
+// Daily check: regenerates Command Center's business-insights summary once its last
+// CommandCenterInsightSnapshot is 7+ days old (or missing).
+RecurringJob.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.CommandCenterInsightsRecurringJob>(
+    "command-center-insights-7-day-check", job => job.RunAsync(), Cron.Daily);
+
+// Daily check: re-scans an organization's opportunities once its last OpportunitySnapshot
+// is 7+ days old (or missing), so Opportunity Finder stays fresh automatically.
+RecurringJob.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.OpportunityScanRecurringJob>(
+    "opportunity-scan-7-day-check", job => job.RunAsync(), Cron.Daily);
+
 app.UseHttpsRedirection();
-app.UseCors("AllowAll");
+app.UseCors("AllowFrontend");
 
 app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
 app.MapGet("/", () => "Citationly API is running");
-
-// Daily recurring scans — keep every org's dashboard data fresh (7-day cadence) even for
-// orgs that don't visit the page; each GET endpoint also bootstraps/refreshes on-demand, so
-// this is a belt-and-braces background pass, visible/triggerable manually via /hangfire.
-RecurringJob.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.DashboardScanRecurringJobs>(
-    "visibility-radar-daily-scan", job => job.RunVisibilityScansAsync(), Cron.Daily);
-RecurringJob.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.DashboardScanRecurringJobs>(
-    "citation-intelligence-daily-scan", job => job.RunCitationScansAsync(), Cron.Daily);
-RecurringJob.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.DashboardScanRecurringJobs>(
-    "brand-pulse-daily-scan", job => job.RunBrandPulseScansAsync(), Cron.Daily);
-RecurringJob.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.DashboardScanRecurringJobs>(
-    "command-center-daily-insights", job => job.RunCommandCenterInsightsAsync(), Cron.Daily);
-RecurringJob.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.DashboardScanRecurringJobs>(
-    "competitor-watch-daily-scan", job => job.RunCompetitorScansAsync(), Cron.Daily);
 
 app.Run();

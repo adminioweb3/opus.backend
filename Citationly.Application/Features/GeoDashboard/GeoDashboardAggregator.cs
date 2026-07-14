@@ -1,360 +1,203 @@
+using MediatR;
+using Citationly.Application.Dtos;
+using Citationly.Application.Helpers;
+using Citationly.Application.Features.Metrics;
 using Citationly.Application.Interfaces;
-using Citationly.Domain.Entities;
+using Citationly.Application.Interfaces.GeoDashboard;
 
 namespace Citationly.Application.Features.GeoDashboard;
 
 /// <summary>
-/// Pure read-aggregation service backing GET /dashboard/geo-dashboard.
-/// It performs NO writes and NO AI calls — it stitches together data that already has
-/// working repository methods elsewhere in the codebase (IWebsiteRepository /
-/// IMetricsRepository), which are themselves populated by the Onboarding analysis
-/// pipeline. This class owns no tables of its own.
-///
-/// Mapping assumptions (documented per the feature spec):
-///  - hallucinationRisk  = 100 - ExecutiveSummaryData.OverallContentScore (a content-quality
-///    proxy: better structured/accurate content -> lower hallucination risk).
-///  - seoHealth          = ExecutiveSummaryData.OverallSEOScore (direct mapping).
-///  - aeoReadiness       = ExecutiveSummaryData.OverallAIVisibilityScore (answer-engine
-///    optimization readiness tracks how visible the brand already is in AI answers).
-///  - geoReadiness       = ExecutiveSummaryData.OverallGEOScore (direct mapping, same value
-///    used for header.compositeScore since GEO score IS the composite score).
-///  - visibilityScore/citationScore/sentimentScore/competitorScore come from the latest
-///    HistoricalScan row, with change/direction computed against the previous row
-///    (independent of the "range" filter, per the "current metrics always reflect latest
-///    scan" rule).
-///  - ExecutiveSummaryData has no historical time series (InsertExecutiveSummaryAsync
-///    deletes prior rows for the org before inserting), so the four score entries derived
-///    from it (hallucinationRisk/seoHealth/aeoReadiness/geoReadiness) cannot have a real
-///    delta — they are reported flat ("+0%", direction "up") rather than fabricating a
-///    trend that doesn't exist.
-///  - trend[] uses HistoricalScan rows bounded by "range", score = average of the 4
-///    per-scan scores (a single composite trend line, matching the "AI visibility trend"
-///    chart's "Composite score across the selected timeframe" description), day = a
-///    1-based sequential index across the ranged rows.
-///  - shareOfVoice[] comes directly from ShareOfVoice rows for the latest scan date.
-///  - header.industryAverage is not backed by any real external benchmark data source in
-///    this codebase, so a small honest fixed estimate (72) is used rather than inventing a
-///    precise-sounding number; documented here rather than hidden.
-///  - header.enginesScanned = distinct PlatformName count from PlatformVisibilities (falls
-///    back to 4 if none tracked yet). header.promptsTracked = AiSearchPrompts count.
-///  - header.status is "live"/"stale" (lowercase, exact strings) because the frontend hero
-///    badge in geo-dashboard/page.tsx checks `header?.status === "live"` literally — status
-///    is NOT the "On Track"/"Needs Attention" phrase originally suggested, the frontend file
-///    is the authoritative contract and was followed instead. "live" = latest scan is within
-///    8 days (matches the page copy: "refreshes every 7 days").
-///  - pillars[] are the 5 numeric ExecutiveSummaryData category scores (AI Visibility, SEO,
-///    Brand Authority, Content, overall GEO) rather than parsing the free-text
-///    Strengths/Weaknesses/Opportunities/Threats JSON blobs, since those are prose bullet
-///    lists, not 0-100 scored categories suited to a pillar bar chart.
-///  - promptTypeCoverage[] groups AiSearchPrompts by their Intent field (a real, already
-///    populated per-prompt column) rather than GeoRecommendation.Category, since "prompt
-///    type coverage" maps far more naturally onto tracked search-prompt intents than onto
-///    recommendation categories. percentage = average VisibilityScore within that intent
-///    group; direction is a >=60 threshold proxy since there's no historical per-intent
-///    series to diff against.
-///  - opportunityInsight is derived from the single highest-priority GeoRecommendation
-///    (Critical > High > Medium > Low, most recent as tiebreaker), or null if none exist.
-///  - winsAndLosses is always an honest empty array — there is no existing data source in
-///    this codebase that records individual answer-slot win/loss events, so nothing is
-///    fabricated here.
-///  - verifyInsight is a static-but-real navigational CTA pointing at the GEO optimizer
-///    recommendations page.
+/// Fans out to all GEO-dashboard services concurrently and assembles the full response DTO.
+/// Derives weakestPillarInsight and opportunityInsight in-memory (no extra DB calls).
 /// </summary>
 public class GeoDashboardAggregator
 {
-    private const int FullHistoryDays = 3650; // effectively "all time" for latest/previous scan lookups
-    private const int DefaultIndustryAverage = 72;
-    private const int DefaultEnginesScanned = 4;
+    private readonly IAiVisibilityRepository _visibilityRepo;
+    private readonly IGeoPillarService _pillarService;
+    private readonly IPromptCoverageService _coverageService;
+    private readonly IActivityFeedService _activityService;
+    private readonly IEngineScanService _engineScanService;
+    private readonly IMediator _mediator;
 
-    private readonly IWebsiteRepository _websiteRepository;
-    private readonly IMetricsRepository _metricsRepository;
-
-    public GeoDashboardAggregator(IWebsiteRepository websiteRepository, IMetricsRepository metricsRepository)
+    public GeoDashboardAggregator(
+        IAiVisibilityRepository visibilityRepo,
+        IGeoPillarService pillarService,
+        IPromptCoverageService coverageService,
+        IActivityFeedService activityService,
+        IEngineScanService engineScanService,
+        IMediator mediator)
     {
-        _websiteRepository = websiteRepository;
-        _metricsRepository = metricsRepository;
+        _visibilityRepo = visibilityRepo;
+        _pillarService = pillarService;
+        _coverageService = coverageService;
+        _activityService = activityService;
+        _engineScanService = engineScanService;
+        _mediator = mediator;
     }
 
-    public async Task<GeoDashboardData> BuildAsync(Guid organizationId, string range)
+    public async Task<GeoDashboardDto> BuildAsync(Guid organizationId, string range)
     {
-        var days = ParseRangeDays(range);
-
-        var executiveSummary = await _websiteRepository.GetExecutiveSummaryAsync(organizationId);
-        if (executiveSummary == null)
+        // First-ever visit for this org: no scan has run yet. Try to bootstrap real data
+        // from whatever onboarding analysis already exists (persona/region/executive summary,
+        // website profile, competitors) instead of showing fabricated numbers.
+        var hasAnyScan = (await _visibilityRepo.GetHistoricalScansByOrgAsync(organizationId)).Count > 0;
+        if (!hasAnyScan)
         {
-            return BuildEmpty();
+            await _mediator.Send(new RunScanCommand { OrganizationId = organizationId });
         }
 
-        var fullHistory = (await _metricsRepository.GetHistoricalScansAsync(organizationId, FullHistoryDays))
-            .OrderBy(s => s.ScanDate)
-            .ToList();
-        var rangedHistory = days == FullHistoryDays
-            ? fullHistory
-            : (await _metricsRepository.GetHistoricalScansAsync(organizationId, days))
-                .OrderBy(s => s.ScanDate)
-                .ToList();
+        // ── Fan-out: fire all data fetches concurrently ─────────────
+        var scansTask      = _visibilityRepo.GetHistoricalScansByOrgAsync(organizationId);
+        var sovTask         = _visibilityRepo.GetShareOfVoiceByOrgAsync(organizationId);
+        var competitorsTask = _visibilityRepo.GetCompetitorsByOrgAsync(organizationId);
+        var pillarsTask     = _pillarService.GetPillarsAsync(organizationId, range);
+        var coverageTask    = _coverageService.GetCoverageAsync(organizationId, range);
+        var activityTask    = _activityService.GetRecentEventsAsync(organizationId);
+        var engineTask      = _engineScanService.GetScanStatsAsync(organizationId);
 
-        var shareOfVoiceRows = (await _metricsRepository.GetShareOfVoiceAsync(organizationId, DateTime.UtcNow))
-            .OrderByDescending(s => s.SharePercentage)
-            .ToList();
+        await Task.WhenAll(scansTask, sovTask, competitorsTask, pillarsTask, coverageTask, activityTask, engineTask);
 
-        var geoRecommendations = (await _websiteRepository.GetGeoRecommendationsAsync(organizationId)).ToList();
-        var aiSearchPrompts = (await _websiteRepository.GetAiSearchPromptsAsync(organizationId)).ToList();
-        var platformVisibilities = (await _websiteRepository.GetPlatformVisibilitiesAsync(organizationId)).ToList();
-        var promptsTracked = await _websiteRepository.GetAiSearchPromptCountAsync(organizationId);
+        var scans       = scansTask.Result;
+        var sovDb       = sovTask.Result;
+        var competitors = competitorsTask.Result;
+        var pillars     = pillarsTask.Result;
+        var coverage    = coverageTask.Result;
+        var activity    = activityTask.Result;
+        var (enginesScanned, promptsTracked) = engineTask.Result;
 
-        var latestScan = fullHistory.LastOrDefault();
-        var previousScan = fullHistory.Count >= 2 ? fullHistory[^2] : null;
+        // ── Scores ────────────────────────────────────────────────────
+        var latestScan   = scans.LastOrDefault();
+        var previousScan = scans.Count > 1 ? scans[scans.Count - 2] : null;
+        var hasData      = latestScan != null;
 
-        var scores = BuildScoreCard(executiveSummary, latestScan, previousScan);
-        var trend = BuildTrend(rangedHistory);
-        var shareOfVoice = shareOfVoiceRows
-            .Select(s => new ShareOfVoiceEntry { Name = s.CompetitorName, Value = s.SharePercentage, Color = s.ColorCode })
-            .ToList();
+        ScoreCardDto scores;
 
-        var pillars = BuildPillars(executiveSummary);
-        var weakestPillarInsight = BuildWeakestPillarInsight(pillars);
-        var promptTypeCoverage = BuildPromptTypeCoverage(aiSearchPrompts);
-        var opportunityInsight = BuildOpportunityInsight(geoRecommendations);
-
-        var header = BuildHeader(executiveSummary, latestScan, previousScan, platformVisibilities, promptsTracked, aiSearchPrompts.Count);
-
-        return new GeoDashboardData
+        if (latestScan == null)
         {
-            HasData = true,
-            Scores = scores,
-            Trend = trend,
-            ShareOfVoice = shareOfVoice,
-            Header = header,
-            Pillars = pillars,
-            WeakestPillarInsight = weakestPillarInsight,
-            PromptTypeCoverage = promptTypeCoverage,
-            OpportunityInsight = opportunityInsight,
-            WinsAndLosses = new List<WinLossEvent>(), // honest empty — no real win/loss event source exists yet
-            VerifyInsight = new GeoInsight
-            {
-                Message = "Review your latest GEO recommendations to verify progress.",
-                CtaLabel = "View recommendations",
-                CtaLink = "/dashboard/geo-optimizer"
-            }
-        };
-    }
-
-    private static int ParseRangeDays(string? range) => range switch
-    {
-        "7d" => 7,
-        "30d" => 30,
-        "90d" => 90,
-        _ => 30
-    };
-
-    private static GeoScoreCard BuildScoreCard(ExecutiveSummaryData exec, HistoricalScan? latest, HistoricalScan? previous)
-    {
-        return new GeoScoreCard
+            // No scan exists (the org has no onboarding analysis to bootstrap from either) —
+            // an honest zeroed-out state rather than fabricated numbers.
+            var empty = new ScoreEntryDto(0, "+0%", "up");
+            scores = new ScoreCardDto(empty, empty, empty, empty, empty, empty, empty, empty);
+        }
+        else
         {
-            VisibilityScore = BuildDeltaEntry(latest?.VisibilityScore ?? 0, previous?.VisibilityScore),
-            CitationScore = BuildDeltaEntry(latest?.CitationScore ?? 0, previous?.CitationScore),
-            SentimentScore = BuildDeltaEntry(latest?.SentimentScore ?? 0, previous?.SentimentScore),
-            CompetitorScore = BuildDeltaEntry(latest?.CompetitorScore ?? 0, previous?.CompetitorScore),
-            HallucinationRisk = BuildFlatEntry(Math.Clamp(100 - exec.OverallContentScore, 0, 100)),
-            SeoHealth = BuildFlatEntry(Math.Clamp(exec.OverallSEOScore, 0, 100)),
-            AeoReadiness = BuildFlatEntry(Math.Clamp(exec.OverallAIVisibilityScore, 0, 100)),
-            GeoReadiness = BuildFlatEntry(Math.Clamp(exec.OverallGEOScore, 0, 100))
-        };
-    }
-
-    private static ScoreEntry BuildDeltaEntry(int current, int? previous)
-    {
-        if (previous is null || previous.Value == 0)
-        {
-            return new ScoreEntry { Value = current, Change = "+0%", Direction = "up" };
+            scores = new ScoreCardDto(
+                new ScoreEntryDto(latestScan.VisibilityScore,   GetChangeStr(latestScan.VisibilityScore,   previousScan?.VisibilityScore),   GetDirection(latestScan.VisibilityScore,   previousScan?.VisibilityScore)),
+                new ScoreEntryDto(latestScan.CitationScore,     GetChangeStr(latestScan.CitationScore,     previousScan?.CitationScore),     GetDirection(latestScan.CitationScore,     previousScan?.CitationScore)),
+                new ScoreEntryDto(latestScan.SentimentScore,    GetChangeStr(latestScan.SentimentScore,    previousScan?.SentimentScore),    GetDirection(latestScan.SentimentScore,    previousScan?.SentimentScore)),
+                new ScoreEntryDto(latestScan.CompetitorScore,   GetChangeStr(latestScan.CompetitorScore,   previousScan?.CompetitorScore),   GetDirection(latestScan.CompetitorScore,   previousScan?.CompetitorScore)),
+                new ScoreEntryDto(latestScan.HallucinationRisk, GetChangeStr(latestScan.HallucinationRisk, previousScan?.HallucinationRisk), GetDirection(latestScan.HallucinationRisk, previousScan?.HallucinationRisk)),
+                new ScoreEntryDto(latestScan.SeoHealth,         GetChangeStr(latestScan.SeoHealth,         previousScan?.SeoHealth),         GetDirection(latestScan.SeoHealth,         previousScan?.SeoHealth)),
+                new ScoreEntryDto(latestScan.AeoReadiness,      GetChangeStr(latestScan.AeoReadiness,      previousScan?.AeoReadiness),      GetDirection(latestScan.AeoReadiness,      previousScan?.AeoReadiness)),
+                new ScoreEntryDto(latestScan.GeoReadiness,      GetChangeStr(latestScan.GeoReadiness,      previousScan?.GeoReadiness),      GetDirection(latestScan.GeoReadiness,      previousScan?.GeoReadiness)));
         }
 
-        var diff = current - previous.Value;
-        var pct = Math.Round(diff / (double)previous.Value * 100, 1);
-        var direction = diff >= 0 ? "up" : "down";
-        var sign = diff >= 0 ? "+" : "";
-        return new ScoreEntry { Value = current, Change = $"{sign}{pct}%", Direction = direction };
-    }
-
-    private static ScoreEntry BuildFlatEntry(int value) => new() { Value = value, Change = "+0%", Direction = "up" };
-
-    private static List<TrendPoint> BuildTrend(List<HistoricalScan> rangedHistory)
-    {
-        var points = new List<TrendPoint>();
-        for (var i = 0; i < rangedHistory.Count; i++)
-        {
-            var s = rangedHistory[i];
-            var avg = (int)Math.Round((s.VisibilityScore + s.CitationScore + s.SentimentScore + s.CompetitorScore) / 4.0);
-            points.Add(new TrendPoint { Day = i + 1, Score = avg });
-        }
-        return points;
-    }
-
-    private static List<GeoPillar> BuildPillars(ExecutiveSummaryData exec)
-    {
-        return new List<GeoPillar>
-        {
-            new() { Key = "aiVisibility", Label = "AI Visibility", Description = "How often you're surfaced in AI-generated answers.", Score = Math.Clamp(exec.OverallAIVisibilityScore, 0, 100) },
-            new() { Key = "seo", Label = "SEO Health", Description = "Traditional search engine optimization foundation.", Score = Math.Clamp(exec.OverallSEOScore, 0, 100) },
-            new() { Key = "brandAuthority", Label = "Brand Authority", Description = "Strength and trust signals associated with your brand.", Score = Math.Clamp(exec.OverallBrandAuthority, 0, 100) },
-            new() { Key = "content", Label = "Content Quality", Description = "Depth, accuracy and structure of your content for AI parsing.", Score = Math.Clamp(exec.OverallContentScore, 0, 100) },
-            new() { Key = "geo", Label = "Overall GEO", Description = "Composite Generative Engine Optimization score.", Score = Math.Clamp(exec.OverallGEOScore, 0, 100) }
-        };
-    }
-
-    private static string PillarCtaLink(string pillarKey) => pillarKey switch
-    {
-        "aiVisibility" => "/dashboard/visibility-radar",
-        "brandAuthority" => "/dashboard/brand-pulse",
-        "seo" => "/dashboard/geo-optimizer",
-        "content" => "/dashboard/geo-optimizer",
-        "geo" => "/dashboard/geo-optimizer",
-        _ => "/dashboard/geo-optimizer"
-    };
-
-    private static WeakestPillarInsight? BuildWeakestPillarInsight(List<GeoPillar> pillars)
-    {
-        if (pillars.Count == 0) return null;
-
-        var weakest = pillars.OrderBy(p => p.Score).First();
-        return new WeakestPillarInsight
-        {
-            PillarKey = weakest.Key,
-            Score = weakest.Score,
-            Message = $"Your {weakest.Label} score is trailing your other pillars — prioritizing improvements here has the biggest impact on your composite score.",
-            CtaLabel = "Fix this now",
-            CtaLink = PillarCtaLink(weakest.Key)
-        };
-    }
-
-    private static List<PromptTypeCoverageItem> BuildPromptTypeCoverage(List<AiSearchPrompt> prompts)
-    {
-        if (prompts.Count == 0) return new List<PromptTypeCoverageItem>();
-
-        return prompts
-            .GroupBy(p => string.IsNullOrWhiteSpace(p.Intent) ? "General" : p.Intent!)
-            .Select(g =>
-            {
-                var count = g.Count();
-                var avgVisibility = (int)Math.Round(g.Average(p => (double)p.VisibilityScore));
-                var example = g.Select(p => p.QueryString).FirstOrDefault(q => !string.IsNullOrWhiteSpace(q)) ?? "No sample prompt yet";
-                if (example.Length > 80) example = example[..77] + "...";
-
-                return new PromptTypeCoverageItem
-                {
-                    Type = g.Key,
-                    Example = example,
-                    Note = $"{count} prompt{(count == 1 ? "" : "s")} tracked in this category",
-                    Percentage = Math.Clamp(avgVisibility, 0, 100),
-                    Direction = avgVisibility >= 60 ? "up" : "down"
-                };
-            })
-            .OrderByDescending(p => p.Percentage)
-            .Take(5)
+        // ── Trend ─────────────────────────────────────────────────────
+        var trend = scans
+            .Select((s, idx) => new TrendPointDto(idx + 1, s.VisibilityScore))
             .ToList();
-    }
 
-    private static readonly Dictionary<string, int> PriorityRank = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["Critical"] = 0,
-        ["High"] = 1,
-        ["Medium"] = 2,
-        ["Low"] = 3
-    };
+        // ── Share of voice ────────────────────────────────────────────
+        List<ShareOfVoiceEntryDto> shareOfVoice;
+        var latestScanDate = sovDb.OrderByDescending(s => s.ScanDate).FirstOrDefault()?.ScanDate;
 
-    private static GeoInsight? BuildOpportunityInsight(List<GeoRecommendation> recommendations)
-    {
-        if (recommendations.Count == 0) return null;
+        shareOfVoice = latestScanDate != null
+            ? sovDb.Where(s => s.ScanDate == latestScanDate)
+                   .Select(s => new ShareOfVoiceEntryDto(s.CompetitorName, s.SharePercentage, s.ColorCode))
+                   .ToList()
+            : new List<ShareOfVoiceEntryDto>();
 
-        var top = recommendations
-            .OrderBy(r => PriorityRank.TryGetValue(r.Priority, out var rank) ? rank : 99)
-            .ThenByDescending(r => r.CreatedAt)
-            .First();
-
-        var message = string.IsNullOrWhiteSpace(top.Description)
-            ? top.Title
-            : $"{top.Title} — {top.Description}";
-        if (message.Length > 180) message = message[..177] + "...";
-
-        return new GeoInsight
+        // ── Header (composite from scorecard) ───────────────────────
+        int compositeScore = (int)Math.Round(new[]
         {
-            Message = message,
-            CtaLabel = "View recommendation",
-            CtaLink = "/dashboard/geo-optimizer"
-        };
-    }
+            scores.VisibilityScore.Value,
+            scores.CitationScore.Value,
+            scores.SentimentScore.Value,
+            scores.CompetitorScore.Value,
+            scores.HallucinationRisk.Value,
+            scores.SeoHealth.Value,
+            scores.AeoReadiness.Value,
+            scores.GeoReadiness.Value
+        }.Average());
 
-    private static GeoDashboardHeader BuildHeader(
-        ExecutiveSummaryData exec,
-        HistoricalScan? latest,
-        HistoricalScan? previous,
-        List<PlatformVisibility> platformVisibilities,
-        int promptsTracked,
-        int aiSearchPromptCount)
-    {
-        var compositeScore = Math.Clamp(exec.OverallGEOScore, 0, 100);
-        var grade = ComputeGrade(compositeScore);
-        var industryAverage = DefaultIndustryAverage;
-        var deltaVsIndustry = compositeScore - industryAverage;
+        // For composite change, use the GeoReadiness change as a proxy (it represents overall GEO)
+        var compositeChange = scores.GeoReadiness.Change;
 
-        int? previousAvg = previous != null
-            ? (int)Math.Round((previous.VisibilityScore + previous.CitationScore + previous.SentimentScore + previous.CompetitorScore) / 4.0)
-            : null;
-        var currentAvg = latest != null
-            ? (int)Math.Round((latest.VisibilityScore + latest.CitationScore + latest.SentimentScore + latest.CompetitorScore) / 4.0)
+        // Industry average is approximated from tracked competitors' real authority scores
+        // (there's no external cross-tenant benchmark data source). With no competitors tracked
+        // yet, there's nothing honest to compare against, so it matches the composite (zero delta).
+        var industryAverage = competitors.Count > 0
+            ? (int)Math.Round(competitors.Average(c => c.Authority))
             : compositeScore;
-        var compositeChange = BuildDeltaEntry(currentAvg, previousAvg).Change;
 
-        var enginesScanned = platformVisibilities.Select(p => p.Platform).Distinct().Count();
-        if (enginesScanned == 0) enginesScanned = DefaultEnginesScanned;
+        var header = new GeoDashboardHeaderDto(
+            CompositeScore:  compositeScore,
+            Grade:           GradeCalculator.ToGrade(compositeScore),
+            IndustryAverage: industryAverage,
+            DeltaVsIndustry: compositeScore - industryAverage,
+            CompositeChange: compositeChange,
+            EnginesScanned:  enginesScanned,
+            PromptsTracked:  promptsTracked,
+            Status:          hasData ? "live" : "pending");
 
-        var effectivePromptsTracked = promptsTracked > 0 ? promptsTracked : aiSearchPromptCount;
-
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        var status = latest != null && (today.DayNumber - latest.ScanDate.DayNumber) <= 8 ? "live" : "stale";
-
-        return new GeoDashboardHeader
+        // ── Weakest pillar insight (derived) ────────────────────────
+        WeakestPillarInsightDto? weakestInsight = null;
+        if (pillars.Count > 0)
         {
-            CompositeScore = compositeScore,
-            Grade = grade,
-            IndustryAverage = industryAverage,
-            DeltaVsIndustry = deltaVsIndustry,
-            CompositeChange = compositeChange,
-            EnginesScanned = enginesScanned,
-            PromptsTracked = effectivePromptsTracked,
-            Status = status
-        };
+            var weakest = pillars.MinBy(p => p.Score)!;
+            weakestInsight = new WeakestPillarInsightDto(
+                PillarKey: weakest.Key,
+                Score:     weakest.Score,
+                Message:   "Audit your key pages to find exactly what to fix.",
+                CtaLabel:  "Run Page auditor",
+                CtaLink:   "/geo-engine/page-auditor");
+        }
+
+        // ── Opportunity insight (derived) ───────────────────────────
+        OpportunityInsightDto? opportunityInsight = null;
+        if (coverage.Count > 0)
+        {
+            var lowestCoverage = coverage.MinBy(c => c.Percentage)!;
+            opportunityInsight = new OpportunityInsightDto(
+                Message:  $"{lowestCoverage.Type} prompts ({lowestCoverage.Percentage}%) are your biggest untapped surface — turn them into prioritized missions.",
+                CtaLabel: "Open Opportunity Finder",
+                CtaLink:  "/opportunity-finder");
+        }
+
+        // ── Verify insight (static) ─────────────────────────────────
+        var verifyInsight = new VerifyInsightDto(
+            Message:  "Verify any of these answers live before acting on them.",
+            CtaLabel: "Test in Answer simulator",
+            CtaLink:  "/geo-engine/answer-simulator");
+
+        // ── Assemble ────────────────────────────────────────────────
+        return new GeoDashboardDto(
+            HasData:              hasData,
+            Scores:               scores,
+            Trend:                trend,
+            ShareOfVoice:         shareOfVoice,
+            Header:               header,
+            Pillars:              pillars,
+            WeakestPillarInsight: weakestInsight,
+            PromptTypeCoverage:   coverage,
+            OpportunityInsight:   opportunityInsight,
+            WinsAndLosses:        activity,
+            VerifyInsight:        verifyInsight);
     }
 
-    private static string ComputeGrade(int score) => score switch
+    // ── Private helpers (moved from controller) ─────────────────────
+    private static string GetChangeStr(int current, int? prev)
     {
-        >= 90 => "A",
-        >= 80 => "B",
-        >= 70 => "C",
-        _ => "D"
-    };
+        if (prev is null or 0) return "+0%";
+        var diff = current - prev.Value;
+        var pct = Math.Round((decimal)diff / prev.Value * 100, 1);
+        return pct >= 0 ? $"+{pct}%" : $"{pct}%";
+    }
 
-    private static GeoDashboardData BuildEmpty()
+    private static string GetDirection(int current, int? prev)
     {
-        return new GeoDashboardData
-        {
-            HasData = false,
-            Scores = new GeoScoreCard(),
-            Trend = new List<TrendPoint>(),
-            ShareOfVoice = new List<ShareOfVoiceEntry>(),
-            Header = new GeoDashboardHeader { Grade = "—", Status = "stale" },
-            Pillars = new List<GeoPillar>(),
-            WeakestPillarInsight = null,
-            PromptTypeCoverage = new List<PromptTypeCoverageItem>(),
-            OpportunityInsight = null,
-            WinsAndLosses = new List<WinLossEvent>(),
-            VerifyInsight = new GeoInsight
-            {
-                Message = "Review your latest GEO recommendations to verify progress.",
-                CtaLabel = "View recommendations",
-                CtaLink = "/dashboard/geo-optimizer"
-            }
-        };
+        if (prev == null) return "up";
+        return current >= prev.Value ? "up" : "down";
     }
 }

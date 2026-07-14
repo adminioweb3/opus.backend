@@ -8,6 +8,7 @@ namespace Citationly.API.Controllers;
 [ApiController]
 [Authorize]
 [Route("api/[controller]")]
+[Authorize]
 public class CompetitorController : ControllerBase
 {
     private readonly ICompetitorRankingService _rankingService;

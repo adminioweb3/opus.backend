@@ -14,6 +14,8 @@ DROP TABLE IF EXISTS AiSearchPrompts CASCADE;
 DROP TABLE IF EXISTS Competitors CASCADE;
 DROP TABLE IF EXISTS Embeddings CASCADE;
 DROP TABLE IF EXISTS Integrations CASCADE;
+DROP TABLE IF EXISTS SourceFolders CASCADE;
+DROP TABLE IF EXISTS KnowledgeBases CASCADE;
 DROP TABLE IF EXISTS Recommendations CASCADE;
 DROP TABLE IF EXISTS CrawledPages CASCADE;
 DROP TABLE IF EXISTS Websites CASCADE;
@@ -48,6 +50,60 @@ CREATE TABLE IF NOT EXISTS Websites (
     CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Knowledge Bases
+CREATE TABLE IF NOT EXISTS KnowledgeBases (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+    Name VARCHAR(255) NOT NULL,
+    Icon VARCHAR(100) DEFAULT 'Building2',
+    Tint VARCHAR(50) DEFAULT '#6366F1',
+    Bg VARCHAR(50) DEFAULT '#EEEEFE',
+    Description TEXT,
+    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Source Folders (user-named groupings of scraped/crawled sources within a knowledge base)
+CREATE TABLE IF NOT EXISTS SourceFolders (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    KnowledgeBaseId UUID REFERENCES KnowledgeBases(Id) ON DELETE CASCADE,
+    Name VARCHAR(255) NOT NULL,
+    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Content Drafts (Content Studio: AI-generated blog posts, social posts, landing copy, etc.)
+CREATE TABLE IF NOT EXISTS ContentDrafts (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+    Title VARCHAR(512) NOT NULL DEFAULT '',
+    ContentType VARCHAR(100) NOT NULL DEFAULT '',
+    Content TEXT NOT NULL DEFAULT '',
+    WordCount INT NOT NULL DEFAULT 0,
+    Status VARCHAR(50) NOT NULL DEFAULT 'Draft', -- Draft, Optimized, Published
+    RequestJson JSONB NOT NULL DEFAULT '{}'::jsonb,
+    CompetitorUrl VARCHAR(2048),
+    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Content Optimizations (one row per optimization run against a ContentDraft)
+CREATE TABLE IF NOT EXISTS ContentOptimizations (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    ContentDraftId UUID REFERENCES ContentDrafts(Id) ON DELETE CASCADE,
+    OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+    SeoScore INT NOT NULL DEFAULT 0,
+    ReadabilityScore INT NOT NULL DEFAULT 0,
+    HumanizedScore INT NOT NULL DEFAULT 0,
+    AiScore INT NOT NULL DEFAULT 0,
+    KeywordDensity NUMERIC(5,2) NOT NULL DEFAULT 0,
+    PrimaryKeyword VARCHAR(255) NOT NULL DEFAULT '',
+    RecommendationsJson JSONB NOT NULL DEFAULT '[]'::jsonb,
+    InternalLinksJson JSONB NOT NULL DEFAULT '[]'::jsonb,
+    CitationRecsJson JSONB NOT NULL DEFAULT '[]'::jsonb,
+    OptimizedContent TEXT NOT NULL DEFAULT '',
+    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Crawled Pages
 CREATE TABLE IF NOT EXISTS CrawledPages (
     Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -74,10 +130,6 @@ CREATE TABLE IF NOT EXISTS Recommendations (
 -- Stored Procedures (Functions in Postgres)
 
 -- 1. Create or Get User based on Firebase Login
--- Drop first: CREATE OR REPLACE can't change a function's return signature, and this one
--- gained PlanType/TrialEndsAt output columns.
-DROP FUNCTION IF EXISTS sp_CreateOrGetUser(VARCHAR, VARCHAR, VARCHAR);
-
 CREATE OR REPLACE FUNCTION sp_CreateOrGetUser(
     p_FirebaseUid VARCHAR,
     p_Email VARCHAR,
@@ -86,17 +138,16 @@ CREATE OR REPLACE FUNCTION sp_CreateOrGetUser(
 RETURNS TABLE (
     UserId UUID,
     OrganizationId UUID,
-    Role VARCHAR,
-    PlanType VARCHAR,
-    TrialEndsAt TIMESTAMP WITH TIME ZONE
+    Role VARCHAR
 ) AS $$
 DECLARE
     v_UserId UUID;
     v_OrganizationId UUID;
     v_Role VARCHAR;
 BEGIN
-    -- Serialize concurrent first-syncs for the same Firebase UID so two simultaneous
-    -- requests can't both fall through the "not found" branch and create duplicate rows.
+    -- Serializes concurrent first-sync calls for the same Firebase UID (e.g. React StrictMode
+    -- double-invoke, double-click, multi-tab) so only one can create the Organization/User rows;
+    -- the rest block here, then see the row already exists once they proceed.
     PERFORM pg_advisory_xact_lock(hashtext(p_FirebaseUid));
 
     -- Check if user exists
@@ -105,8 +156,9 @@ BEGIN
 
     -- If not exists, create a new Organization and User
     IF v_UserId IS NULL THEN
-        -- Create default organization for new user
-        INSERT INTO Organizations (Name) VALUES (p_DisplayName || '''s Org')
+        -- Create default organization for new user, starting on a 7-day trial
+        INSERT INTO Organizations (Name, PlanType, TrialEndsAt)
+        VALUES (p_DisplayName || '''s Org', 'Trial', CURRENT_TIMESTAMP + INTERVAL '7 days')
         RETURNING Id INTO v_OrganizationId;
 
         -- Create user as Admin
@@ -117,9 +169,7 @@ BEGIN
         v_Role := 'Admin';
     END IF;
 
-    RETURN QUERY
-    SELECT v_UserId, v_OrganizationId, v_Role, o.PlanType, o.TrialEndsAt
-    FROM Organizations o WHERE o.Id = v_OrganizationId;
+    RETURN QUERY SELECT v_UserId, v_OrganizationId, v_Role;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -172,6 +222,12 @@ CREATE TABLE IF NOT EXISTS Integrations (
     UpdatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(OrganizationId, PlatformName)
 );
+
+-- Publishing: tracks the real deploy result of a ContentDraft against a connected CMS integration
+ALTER TABLE ContentDrafts ADD COLUMN IF NOT EXISTS PublishedUrl VARCHAR(2048);
+ALTER TABLE ContentDrafts ADD COLUMN IF NOT EXISTS PublishedAt TIMESTAMP WITH TIME ZONE;
+ALTER TABLE ContentDrafts ADD COLUMN IF NOT EXISTS IntegrationId UUID REFERENCES Integrations(Id) ON DELETE SET NULL;
+ALTER TABLE ContentDrafts ADD COLUMN IF NOT EXISTS PublishError TEXT;
 
 -- 4. Insert or Update Integration
 CREATE OR REPLACE FUNCTION sp_UpsertIntegration(
@@ -278,6 +334,28 @@ CREATE TABLE IF NOT EXISTS Competitors (
     CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Competitor Watch: real, AI-judged snapshots taken every scan (7-day recurring),
+-- so rank/trend/share-of-voice-change are comparisons over time, not per-request randomness.
+CREATE TABLE IF NOT EXISTS CompetitorSnapshots (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+    CompetitorId UUID REFERENCES Competitors(Id) ON DELETE CASCADE,
+    IsYou BOOLEAN NOT NULL DEFAULT false,
+    ScanDate DATE NOT NULL,
+    Name VARCHAR(255) NOT NULL,
+    Score INT NOT NULL DEFAULT 0,
+    Rank INT NOT NULL DEFAULT 0,
+    ShareOfVoice INT NOT NULL DEFAULT 0,
+    ShareOfVoiceChange INT NOT NULL DEFAULT 0,
+    Visibility INT NOT NULL DEFAULT 0,
+    VisibilityChange INT NOT NULL DEFAULT 0,
+    Threat VARCHAR(10) NOT NULL DEFAULT 'low',
+    ModelsJson JSONB NOT NULL DEFAULT '{}'::jsonb,
+    Tagline VARCHAR(512),
+    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_competitorsnapshots_org_scandate ON CompetitorSnapshots (OrganizationId, ScanDate);
+
 CREATE TABLE IF NOT EXISTS AiSearchPrompts (
     Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
@@ -304,6 +382,10 @@ CREATE TABLE IF NOT EXISTS HistoricalScans (
     CitationScore INT DEFAULT 0,
     SentimentScore INT DEFAULT 0,
     CompetitorScore INT DEFAULT 0,
+    HallucinationRisk INT DEFAULT 0,
+    SeoHealth INT DEFAULT 0,
+    AeoReadiness INT DEFAULT 0,
+    GeoReadiness INT DEFAULT 0,
     CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(OrganizationId, ScanDate)
 );
@@ -324,6 +406,8 @@ CREATE TABLE IF NOT EXISTS ScrapingJobs (
     Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
     WebsiteId UUID REFERENCES Websites(Id) ON DELETE SET NULL,
+    KnowledgeBaseId UUID REFERENCES KnowledgeBases(Id) ON DELETE SET NULL,
+    FolderId UUID REFERENCES SourceFolders(Id) ON DELETE SET NULL,
     Url VARCHAR(2048) NOT NULL,
     Status VARCHAR(50) DEFAULT 'Pending', -- Pending, Processing, Completed, Failed
     ScrapeType VARCHAR(50) DEFAULT 'Single', -- Single, Website
@@ -359,6 +443,9 @@ CREATE TABLE IF NOT EXISTS ScrapedPages (
     Headings JSONB DEFAULT '[]'::jsonb,
     ScrapedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Prevents the same URL from being stored twice under the same crawl/scrape job
+CREATE UNIQUE INDEX IF NOT EXISTS idx_scrapedpages_job_url ON ScrapedPages (JobId, Url);
 
 -- Normalized tables requested by the user
 CREATE TABLE IF NOT EXISTS ExtractedImages (

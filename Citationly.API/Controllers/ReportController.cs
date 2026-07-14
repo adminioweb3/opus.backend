@@ -8,6 +8,7 @@ namespace Citationly.API.Controllers;
 [ApiController]
 [Authorize]
 [Route("api/[controller]")]
+[Authorize]
 public class ReportController : ControllerBase
 {
     private readonly IMediator _mediator;

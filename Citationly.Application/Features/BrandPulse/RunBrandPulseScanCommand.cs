@@ -1,6 +1,5 @@
+using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization;
-using Dapper;
 using MediatR;
 using Citationly.Application.Interfaces;
 using Citationly.Domain.Entities;
@@ -12,287 +11,257 @@ public class RunBrandPulseScanCommand : IRequest<RunBrandPulseScanResult>
     public Guid OrganizationId { get; set; }
 }
 
-public class RunBrandPulseScanResult
-{
-    public bool Success { get; set; }
-    public string? Error { get; set; }
-    public BrandPulseScanSummary? Summary { get; set; }
-}
-
-/// <summary>
-/// Internal shape used only to deserialize the single AI JSON response.
-/// </summary>
-internal class BrandPulseAiResult
-{
-    public int BrandHealth { get; set; } = 65;
-    public int AiConfidence { get; set; } = 60;
-    public int MessagingConsistency { get; set; } = 60;
-    public int BrandTrust { get; set; } = 60;
-    public int SentimentPositive { get; set; } = 50;
-    public int SentimentNeutral { get; set; } = 35;
-    public int SentimentNegative { get; set; } = 15;
-    public List<ShareOfPerceptionItem>? SharePerception { get; set; }
-    public List<ModelInsightItem>? ModelInsights { get; set; }
-    public List<BrandAlertItem>? Alerts { get; set; }
-    public List<AccuracyFlagItem>? AccuracyFlags { get; set; }
-    public List<PromptEvidenceItem>? PromptEvidence { get; set; }
-}
+public record RunBrandPulseScanResult(bool Success, string Message);
 
 public class RunBrandPulseScanCommandHandler : IRequestHandler<RunBrandPulseScanCommand, RunBrandPulseScanResult>
 {
-    private readonly IBrandPulseSnapshotRepository _brandPulseSnapshotRepository;
     private readonly IWebsiteRepository _websiteRepository;
+    private readonly IAiVisibilityRepository _visibilityRepo;
+    private readonly ICompetitorSnapshotRepository _competitorSnapshotRepo;
+    private readonly IVisibilitySnapshotRepository _visibilitySnapshotRepo;
+    private readonly IBrandPulseSnapshotRepository _snapshotRepo;
     private readonly IOpenAiService _openAiService;
-    private readonly IDbConnectionFactory _dbConnectionFactory;
 
     public RunBrandPulseScanCommandHandler(
-        IBrandPulseSnapshotRepository brandPulseSnapshotRepository,
         IWebsiteRepository websiteRepository,
-        IOpenAiService openAiService,
-        IDbConnectionFactory dbConnectionFactory)
+        IAiVisibilityRepository visibilityRepo,
+        ICompetitorSnapshotRepository competitorSnapshotRepo,
+        IVisibilitySnapshotRepository visibilitySnapshotRepo,
+        IBrandPulseSnapshotRepository snapshotRepo,
+        IOpenAiService openAiService)
     {
-        _brandPulseSnapshotRepository = brandPulseSnapshotRepository;
         _websiteRepository = websiteRepository;
+        _visibilityRepo = visibilityRepo;
+        _competitorSnapshotRepo = competitorSnapshotRepo;
+        _visibilitySnapshotRepo = visibilitySnapshotRepo;
+        _snapshotRepo = snapshotRepo;
         _openAiService = openAiService;
-        _dbConnectionFactory = dbConnectionFactory;
     }
 
     public async Task<RunBrandPulseScanResult> Handle(RunBrandPulseScanCommand request, CancellationToken cancellationToken)
     {
+        await _snapshotRepo.EnsureTableCreatedAsync();
+
+        var orgId = request.OrganizationId;
+
+        var profile = await _websiteRepository.GetLatestWebsiteProfileAsync(orgId);
+        if (profile == null)
+        {
+            return new RunBrandPulseScanResult(false, "No analyzed data found yet for this organization. Complete onboarding analysis first, then run a brand pulse scan.");
+        }
+
+        var executiveSummary = await _websiteRepository.GetExecutiveSummaryAsync(orgId);
+        var scans = (await _visibilityRepo.GetHistoricalScansByOrgAsync(orgId)).OrderBy(s => s.ScanDate).ToList();
+        var latestScan = scans.LastOrDefault();
+        var prompts = (await _websiteRepository.GetAiSearchPromptsAsync(orgId)).ToList();
+
+        // Real, already-computed weekly data from the sibling Competitor/Visibility scans —
+        // reused here rather than re-derived, so share-of-perception and per-model
+        // confidence stay consistent with what those pages already show.
+        var competitorScanDate = await _competitorSnapshotRepo.GetLatestScanDateAsync(orgId);
+        var competitorSnapshots = competitorScanDate.HasValue
+            ? await _competitorSnapshotRepo.GetSnapshotsByScanDateAsync(orgId, competitorScanDate.Value)
+            : new List<CompetitorSnapshot>();
+
+        var visibilityScanDate = await _visibilitySnapshotRepo.GetLatestScanDateAsync(orgId);
+        var platformSnapshots = visibilityScanDate.HasValue
+            ? await _visibilitySnapshotRepo.GetPlatformSnapshotsByScanDateAsync(orgId, visibilityScanDate.Value)
+            : new List<VisibilityPlatformSnapshot>();
+
+        var (systemPrompt, userPrompt) = BuildPrompt(profile, executiveSummary, latestScan, prompts, competitorSnapshots, platformSnapshots);
+        var raw = await _openAiService.GenerateContentAsync(userPrompt, systemPrompt, requireJson: true);
+        var judged = ParseJudgment(raw, latestScan);
+
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        await _snapshotRepo.DeleteByScanDateAsync(orgId, today);
+
+        // Merge AI-judged sentiment/themes with the real, already-computed platform score —
+        // the confidence number itself is real data, not an AI guess.
+        var modelInsights = platformSnapshots.Select(p =>
+        {
+            var match = judged.ModelInsights.FirstOrDefault(m => string.Equals(m.Platform, p.Platform, StringComparison.OrdinalIgnoreCase));
+            return new
+            {
+                platform = p.Platform,
+                confidence = p.Score,
+                sentiment = match?.Sentiment ?? "neu",
+                themes = match?.Themes ?? new List<string>(),
+                flag = match?.Flag ?? false
+            };
+        }).ToList();
+
+        await _snapshotRepo.InsertSummaryAsync(new BrandPulseScanSummary
+        {
+            OrganizationId = orgId,
+            ScanDate = today,
+            BrandHealth = judged.BrandHealth,
+            AiConfidence = judged.AiConfidence,
+            MessagingConsistency = judged.MessagingConsistency,
+            BrandTrust = judged.BrandTrust,
+            SentimentPositive = judged.SentimentPositive,
+            SentimentNeutral = judged.SentimentNeutral,
+            SentimentNegative = judged.SentimentNegative,
+            AlertsJson = JsonSerializer.Serialize(judged.Alerts),
+            ModelInsightsJson = JsonSerializer.Serialize(modelInsights),
+            AccuracyFlagsJson = JsonSerializer.Serialize(judged.AccuracyFlags),
+            PromptEvidenceJson = JsonSerializer.Serialize(judged.PromptEvidence)
+        });
+
+        return new RunBrandPulseScanResult(true, "Brand pulse scan complete.");
+    }
+
+    private static (string SystemPrompt, string UserPrompt) BuildPrompt(
+        WebsiteProfile profile,
+        ExecutiveSummaryData? executiveSummary,
+        HistoricalScan? latestScan,
+        List<AiSearchPrompt> prompts,
+        List<CompetitorSnapshot> competitorSnapshots,
+        List<VisibilityPlatformSnapshot> platformSnapshots)
+    {
+        const string systemPrompt =
+            "You are a brand intelligence analyst reviewing how AI search engines portray a business. " +
+            "Based ONLY on the real signals provided, respond with ONLY a JSON object with EXACTLY these keys: " +
+            "\"brandHealth\" (int 0-100), \"aiConfidence\" (int 0-100), \"messagingConsistency\" (int 0-100), \"brandTrust\" (int 0-100), " +
+            "\"sentimentMix\": {\"positive\":int,\"neutral\":int,\"negative\":int} (must sum to 100), " +
+            "\"alerts\": array of 2-3 {\"type\":\"risk\"|\"warning\"|\"win\",\"title\":string,\"message\":string}, " +
+            "\"modelInsights\": array, one entry per platform listed below, of {\"platform\":string (must exactly match a listed platform name),\"sentiment\":\"pos\"|\"neu\"|\"neg\",\"themes\":array of 1-3 short theme strings,\"flag\":bool (true if this platform shows a notable accuracy or consistency concern)}, " +
+            "\"accuracyFlags\": array of 2-4 {\"claim\":string,\"severity\":\"High\"|\"Medium\"|\"Low\",\"detail\":string,\"models\":array of platform name strings}, " +
+            "\"promptEvidence\": array of 3-5 {\"prompt\":string (a realistic buyer question),\"sentiment\":\"pos\"|\"neu\"|\"neg\",\"sources\":array of 2-3 short source name strings}. " +
+            "Ground every claim in the real business signals given — do not invent unrelated facts.";
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"BUSINESS: {profile.BusinessName} ({profile.WebsiteUrl})");
+        var rawProfile = profile.RawProfileJson;
+        if (rawProfile.Length > 2000) rawProfile = rawProfile[..2000];
+        sb.AppendLine($"WEBSITE PROFILE: {rawProfile}");
+
+        if (executiveSummary != null)
+        {
+            sb.AppendLine($"EXECUTIVE SUMMARY: {executiveSummary.BusinessOverview}");
+            sb.AppendLine($"Current AI visibility: {executiveSummary.CurrentAIVisibility}");
+            sb.AppendLine($"Competitor position: {executiveSummary.CompetitorPosition}");
+        }
+
+        if (latestScan != null)
+        {
+            sb.AppendLine($"LATEST REAL SCAN SCORES: visibility {latestScan.VisibilityScore}, citation {latestScan.CitationScore}, sentiment {latestScan.SentimentScore}, competitor {latestScan.CompetitorScore}, hallucinationRisk {latestScan.HallucinationRisk}.");
+        }
+
+        if (prompts.Count > 0)
+        {
+            var avgBrand = prompts.Average(p => p.BrandStrength);
+            var avgContent = prompts.Average(p => p.ContentStrength);
+            var sample = prompts.Take(8).Select(p => p.QueryString);
+            sb.AppendLine($"PROMPT SIGNALS: {prompts.Count} real prompts analyzed, avg brand strength {avgBrand:F0}, avg content strength {avgContent:F0}.");
+            sb.AppendLine("Sample real prompts: " + string.Join(" | ", sample));
+        }
+
+        if (competitorSnapshots.Count > 0)
+        {
+            sb.AppendLine("REAL COMPETITIVE STANDING (share of voice): " +
+                string.Join(", ", competitorSnapshots.OrderBy(c => c.Rank).Select(c => $"{c.Name}={c.ShareOfVoice}%")));
+        }
+
+        if (platformSnapshots.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine($"PLATFORMS TO PRODUCE modelInsights FOR (use these exact names, {platformSnapshots.Count} total):");
+            foreach (var p in platformSnapshots)
+            {
+                sb.AppendLine($"- {p.Platform} (real visibility score: {p.Score}, status: {p.Status})");
+            }
+        }
+
+        return (systemPrompt, sb.ToString());
+    }
+
+    private record ModelInsightJudged(string Platform, string Sentiment, List<string> Themes, bool Flag);
+
+    private record JudgedResult(
+        int BrandHealth, int AiConfidence, int MessagingConsistency, int BrandTrust,
+        int SentimentPositive, int SentimentNeutral, int SentimentNegative,
+        List<object> Alerts, List<ModelInsightJudged> ModelInsights, List<object> AccuracyFlags, List<object> PromptEvidence);
+
+    private static JudgedResult ParseJudgment(string raw, HistoricalScan? latestScan)
+    {
+        var fallbackHealth = latestScan?.VisibilityScore ?? 50;
+        var fallbackTrust = latestScan?.SentimentScore ?? 50;
+        var fallbackConfidence = latestScan != null ? Math.Clamp(100 - latestScan.HallucinationRisk, 0, 100) : 50;
+
         try
         {
-            // Ground in the org's real website profile / domain where available. Tolerate absence.
-            string websiteUrl = "unknown";
-            string businessName = "the organization";
-            string websiteProfileContext = "No detailed website profile is available yet.";
+            using var doc = JsonDocument.Parse(raw);
+            var root = doc.RootElement;
 
-            var profile = await _websiteRepository.GetLatestWebsiteProfileAsync(request.OrganizationId);
-            if (profile != null)
+            int GetInt(JsonElement el, string key, int fallback) =>
+                el.ValueKind == JsonValueKind.Object && el.TryGetProperty(key, out var v) && v.TryGetInt32(out var iv) ? Math.Clamp(iv, 0, 100) : fallback;
+
+            var brandHealth = GetInt(root, "brandHealth", fallbackHealth);
+            var aiConfidence = GetInt(root, "aiConfidence", fallbackConfidence);
+            var messagingConsistency = GetInt(root, "messagingConsistency", 60);
+            var brandTrust = GetInt(root, "brandTrust", fallbackTrust);
+
+            int posP = 55, neuP = 35, negP = 10;
+            if (root.TryGetProperty("sentimentMix", out var sm) && sm.ValueKind == JsonValueKind.Object)
             {
-                websiteUrl = string.IsNullOrWhiteSpace(profile.WebsiteUrl) ? websiteUrl : profile.WebsiteUrl;
-                businessName = string.IsNullOrWhiteSpace(profile.BusinessName) ? businessName : profile.BusinessName;
-                websiteProfileContext = string.IsNullOrWhiteSpace(profile.RawProfileJson) ? websiteProfileContext : profile.RawProfileJson;
-            }
-
-            // Optional: ground the "you" share of voice from the competitive analysis snapshot if it exists.
-            // The competitorsnapshots table may not exist yet for a brand-new org — tolerate that.
-            string competitorContext = "No prior competitive share-of-voice snapshot is available.";
-            try
-            {
-                using var connection = _dbConnectionFactory.CreateConnection();
-                var youSnapshot = await connection.QueryFirstOrDefaultAsync<CompetitorSnapshot>(@"
-                    SELECT * FROM CompetitorSnapshots
-                    WHERE OrganizationId = @OrganizationId AND IsYou = true
-                    ORDER BY ScanDate DESC
-                    LIMIT 1",
-                    new { OrganizationId = request.OrganizationId });
-
-                if (youSnapshot != null)
+                posP = GetInt(sm, "positive", posP);
+                neuP = GetInt(sm, "neutral", neuP);
+                negP = GetInt(sm, "negative", negP);
+                var total = posP + neuP + negP;
+                if (total > 0 && total != 100)
                 {
-                    competitorContext = $"The organization's most recent competitive-analysis share of voice was {youSnapshot.ShareOfVoice}% " +
-                                         $"(visibility score {youSnapshot.Visibility}, threat level context: {youSnapshot.Threat}).";
+                    posP = (int)Math.Round(posP / (double)total * 100);
+                    neuP = (int)Math.Round(neuP / (double)total * 100);
+                    negP = 100 - posP - neuP;
                 }
             }
-            catch
+
+            List<object> ParseObjectArray(string key)
             {
-                // Table doesn't exist yet or query failed — this is optional context only, ignore.
+                var list = new List<object>();
+                if (root.TryGetProperty(key, out var arr) && arr.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in arr.EnumerateArray())
+                    {
+                        list.Add(JsonSerializer.Deserialize<object>(item.GetRawText())!);
+                    }
+                }
+                return list;
             }
 
-            var systemPrompt = "You are an expert brand strategist and AI-search reputation analyst who evaluates how a brand is perceived, " +
-                                "represented, and trusted across generative AI platforms like ChatGPT, Claude, Gemini, and Perplexity.";
+            var alerts = ParseObjectArray("alerts");
+            var accuracyFlags = ParseObjectArray("accuracyFlags");
+            var promptEvidence = ParseObjectArray("promptEvidence");
 
-            var userPrompt = $@"Analyze the AI-perceived brand health of the following business and produce a ""Brand Pulse"" report.
-
-## Business
-Name: {businessName}
-Website: {websiteUrl}
-
-## Website Profile Context
-{websiteProfileContext}
-
-## Competitive Context
-{competitorContext}
-
-## Objective
-Estimate how this brand is currently perceived and represented across AI models (ChatGPT, Claude, Gemini, Perplexity), covering
-overall brand health, how confidently AI models discuss the brand, how consistent the brand messaging is across models,
-how much the brand is trusted, the sentiment mix in AI-generated answers, how perceived share is split between this brand
-and its competitors, per-model insights, risk/warning/win alerts, factual accuracy flags, and example prompt evidence.
-
-## Instructions
-1. Ground your estimates in the business context provided; never invent specific factual claims you cannot support.
-2. Return ONLY valid JSON. Do not wrap in markdown or backticks. Do not include any explanation text.
-3. sentimentPositive + sentimentNeutral + sentimentNegative should sum to approximately 100.
-4. sharePerception must contain 4-5 items: the organization itself plus 3-4 competitors (use real competitor names if inferable
-   from the competitive context, otherwise use generic labels like ""Competitor A"", ""Competitor B"", ""Competitor C""). Each item's
-   value is a percentage share; values across all items should sum to approximately 100. Use distinct hex color strings for ""color"".
-5. modelInsights must contain exactly 4 items, one each for ""ChatGPT"", ""Claude"", ""Gemini"", and ""Perplexity"".
-6. alerts must contain 1-3 items with type one of ""risk"", ""warning"", ""win"".
-7. accuracyFlags must contain 0-2 items (empty array if nothing notable) with severity one of ""High"", ""Medium"", ""Low"".
-8. promptEvidence must contain 2-3 items representing realistic example prompts a customer might ask an AI model about this brand.
-
-Return exactly this JSON schema:
-{{
-  ""brandHealth"": 0,
-  ""aiConfidence"": 0,
-  ""messagingConsistency"": 0,
-  ""brandTrust"": 0,
-  ""sentimentPositive"": 0,
-  ""sentimentNeutral"": 0,
-  ""sentimentNegative"": 0,
-  ""sharePerception"": [
-    {{ ""name"": """", ""value"": 0, ""color"": ""#000000"" }}
-  ],
-  ""modelInsights"": [
-    {{ ""platform"": ""ChatGPT"", ""confidence"": 0, ""sentiment"": ""pos"", ""themes"": [""""], ""flag"": false }}
-  ],
-  ""alerts"": [
-    {{ ""type"": ""warning"", ""title"": """", ""message"": """" }}
-  ],
-  ""accuracyFlags"": [
-    {{ ""claim"": """", ""severity"": ""Medium"", ""detail"": """", ""models"": [""""] }}
-  ],
-  ""promptEvidence"": [
-    {{ ""prompt"": """", ""sentiment"": ""pos"", ""sources"": [""""] }}
-  ]
-}}
-
-Return ONLY the JSON object.";
-
-            var aiResult = new BrandPulseAiResult();
-
-            try
+            var modelInsights = new List<ModelInsightJudged>();
+            if (root.TryGetProperty("modelInsights", out var miArr) && miArr.ValueKind == JsonValueKind.Array)
             {
-                var responseContent = await _openAiService.GenerateContentAsync(
-                    prompt: userPrompt,
-                    systemPrompt: systemPrompt,
-                    requireJson: true,
-                    model: "gpt-4o-mini");
-
-                responseContent = StripJsonFences(responseContent);
-
-                var options = new JsonSerializerOptions
+                foreach (var item in miArr.EnumerateArray())
                 {
-                    PropertyNameCaseInsensitive = true,
-                    NumberHandling = JsonNumberHandling.AllowReadingFromString
-                };
-
-                var parsed = JsonSerializer.Deserialize<BrandPulseAiResult>(responseContent, options);
-                if (parsed != null)
-                {
-                    aiResult = parsed;
+                    var platform = item.TryGetProperty("platform", out var pn) ? pn.GetString() ?? "" : "";
+                    var sentiment = item.TryGetProperty("sentiment", out var sv) ? sv.GetString() ?? "neu" : "neu";
+                    var flag = item.TryGetProperty("flag", out var fv) && fv.ValueKind == JsonValueKind.True;
+                    var themes = new List<string>();
+                    if (item.TryGetProperty("themes", out var th) && th.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var t in th.EnumerateArray())
+                        {
+                            if (t.ValueKind == JsonValueKind.String) themes.Add(t.GetString() ?? "");
+                        }
+                    }
+                    if (!string.IsNullOrWhiteSpace(platform))
+                        modelInsights.Add(new ModelInsightJudged(platform, sentiment, themes, flag));
                 }
             }
-            catch
-            {
-                // Malformed AI response — fall back to the sane defaults already set on aiResult.
-            }
 
-            // Defensive normalization / fallback defaults per field.
-            var summary = new BrandPulseScanSummary
-            {
-                Id = Guid.NewGuid(),
-                OrganizationId = request.OrganizationId,
-                ScanDate = DateOnly.FromDateTime(DateTime.UtcNow),
-                BrandHealth = ClampScore(aiResult.BrandHealth, 65),
-                AiConfidence = ClampScore(aiResult.AiConfidence, 60),
-                MessagingConsistency = ClampScore(aiResult.MessagingConsistency, 60),
-                BrandTrust = ClampScore(aiResult.BrandTrust, 60),
-                SentimentPositive = ClampScore(aiResult.SentimentPositive, 50),
-                SentimentNeutral = ClampScore(aiResult.SentimentNeutral, 35),
-                SentimentNegative = ClampScore(aiResult.SentimentNegative, 15),
-                SharePerceptionJson = SerializeOrDefault(aiResult.SharePerception, DefaultSharePerception(businessName)),
-                ModelInsightsJson = SerializeOrDefault(aiResult.ModelInsights, DefaultModelInsights()),
-                AlertsJson = SerializeOrDefault(aiResult.Alerts, DefaultAlerts()),
-                AccuracyFlagsJson = SerializeOrDefault(aiResult.AccuracyFlags, new List<AccuracyFlagItem>()),
-                PromptEvidenceJson = SerializeOrDefault(aiResult.PromptEvidence, DefaultPromptEvidence(businessName)),
-                CreatedAt = DateTime.UtcNow
-            };
-
-            await _brandPulseSnapshotRepository.SaveSnapshotAsync(summary);
-
-            return new RunBrandPulseScanResult
-            {
-                Success = true,
-                Summary = summary
-            };
+            return new JudgedResult(brandHealth, aiConfidence, messagingConsistency, brandTrust, posP, neuP, negP, alerts, modelInsights, accuracyFlags, promptEvidence);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            return new RunBrandPulseScanResult { Success = false, Error = ex.Message };
+            return new JudgedResult(
+                fallbackHealth, fallbackConfidence, 60, fallbackTrust,
+                55, 35, 10,
+                new List<object>(), new List<ModelInsightJudged>(), new List<object>(), new List<object>());
         }
     }
-
-    private static string StripJsonFences(string content)
-    {
-        content = content.Trim();
-        if (content.StartsWith("```json"))
-        {
-            content = content.Substring(7);
-            if (content.EndsWith("```"))
-                content = content.Substring(0, content.Length - 3);
-        }
-        else if (content.StartsWith("```"))
-        {
-            content = content.Substring(3);
-            if (content.EndsWith("```"))
-                content = content.Substring(0, content.Length - 3);
-        }
-        return content.Trim();
-    }
-
-    private static int ClampScore(int value, int fallback)
-    {
-        if (value < 0 || value > 100) return fallback;
-        return value;
-    }
-
-    private static string SerializeOrDefault<T>(T? value, T fallback) where T : class
-    {
-        try
-        {
-            var toSerialize = value ?? fallback;
-            return JsonSerializer.Serialize(toSerialize);
-        }
-        catch
-        {
-            return JsonSerializer.Serialize(fallback);
-        }
-    }
-
-    private static List<ShareOfPerceptionItem> DefaultSharePerception(string businessName) => new()
-    {
-        new ShareOfPerceptionItem { Name = businessName, Value = 30, Color = "#6366F1" },
-        new ShareOfPerceptionItem { Name = "Competitor A", Value = 25, Color = "#F59E0B" },
-        new ShareOfPerceptionItem { Name = "Competitor B", Value = 25, Color = "#10B981" },
-        new ShareOfPerceptionItem { Name = "Competitor C", Value = 20, Color = "#EF4444" }
-    };
-
-    private static List<ModelInsightItem> DefaultModelInsights() => new()
-    {
-        new ModelInsightItem { Platform = "ChatGPT", Confidence = 60, Sentiment = "neu", Themes = new() { "General awareness" }, Flag = false },
-        new ModelInsightItem { Platform = "Claude", Confidence = 55, Sentiment = "neu", Themes = new() { "Limited data" }, Flag = false },
-        new ModelInsightItem { Platform = "Gemini", Confidence = 55, Sentiment = "neu", Themes = new() { "Limited data" }, Flag = false },
-        new ModelInsightItem { Platform = "Perplexity", Confidence = 55, Sentiment = "neu", Themes = new() { "Limited data" }, Flag = false }
-    };
-
-    private static List<BrandAlertItem> DefaultAlerts() => new()
-    {
-        new BrandAlertItem
-        {
-            Type = "warning",
-            Title = "Limited AI visibility data",
-            Message = "We don't yet have enough grounded data to fully assess this brand's AI perception. Re-scan after connecting more content sources."
-        }
-    };
-
-    private static List<PromptEvidenceItem> DefaultPromptEvidence(string businessName) => new()
-    {
-        new PromptEvidenceItem
-        {
-            Prompt = $"What do you know about {businessName}?",
-            Sentiment = "neu",
-            Sources = new() { "General knowledge" }
-        }
-    };
 }

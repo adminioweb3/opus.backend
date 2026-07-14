@@ -1,6 +1,6 @@
-using Dapper;
 using Citationly.Application.Interfaces;
 using Citationly.Domain.Entities;
+using Dapper;
 
 namespace Citationly.Infrastructure.Repositories;
 
@@ -13,144 +13,92 @@ public class BrandPulseSnapshotRepository : IBrandPulseSnapshotRepository
         _dbConnectionFactory = dbConnectionFactory;
     }
 
-    private static async Task EnsureSchemaAsync(System.Data.IDbConnection connection)
+    public async Task EnsureTableCreatedAsync()
     {
-        // Self-healing schema — matches the existing live table exactly (safe/idempotent against the dev DB).
+        using var connection = _dbConnectionFactory.CreateConnection();
         await connection.ExecuteAsync(@"
             CREATE TABLE IF NOT EXISTS BrandPulseScanSummaries (
                 Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 OrganizationId UUID NOT NULL,
                 ScanDate DATE NOT NULL,
-                BrandHealth INT NOT NULL,
-                AiConfidence INT NOT NULL,
-                MessagingConsistency INT NOT NULL,
-                BrandTrust INT NOT NULL,
-                SentimentPositive INT NOT NULL,
-                SentimentNeutral INT NOT NULL,
-                SentimentNegative INT NOT NULL,
+                BrandHealth INT NOT NULL DEFAULT 0,
+                AiConfidence INT NOT NULL DEFAULT 0,
+                MessagingConsistency INT NOT NULL DEFAULT 0,
+                BrandTrust INT NOT NULL DEFAULT 0,
+                SentimentPositive INT NOT NULL DEFAULT 0,
+                SentimentNeutral INT NOT NULL DEFAULT 0,
+                SentimentNegative INT NOT NULL DEFAULT 0,
                 AlertsJson JSONB NOT NULL DEFAULT '[]'::jsonb,
                 ModelInsightsJson JSONB NOT NULL DEFAULT '[]'::jsonb,
                 AccuracyFlagsJson JSONB NOT NULL DEFAULT '[]'::jsonb,
                 PromptEvidenceJson JSONB NOT NULL DEFAULT '[]'::jsonb,
-                CreatedAt TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                CreatedAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             );
-
-            CREATE INDEX IF NOT EXISTS ix_brandpulsescansummaries_org_scandate
-                ON BrandPulseScanSummaries (OrganizationId, ScanDate);
+            CREATE INDEX IF NOT EXISTS idx_brandpulsescansummaries_org_scandate ON BrandPulseScanSummaries (OrganizationId, ScanDate);
         ");
+    }
 
-        // Self-heal the additional SharePerceptionJson column that isn't part of the original live schema yet.
-        await connection.ExecuteAsync(@"
-            DO $$
-            BEGIN
-                BEGIN
-                    ALTER TABLE BrandPulseScanSummaries ADD COLUMN SharePerceptionJson JSONB NOT NULL DEFAULT '[]'::jsonb;
-                EXCEPTION WHEN duplicate_column THEN null;
-                END;
-            END $$;
-        ");
+    public async Task DeleteByScanDateAsync(Guid organizationId, DateOnly scanDate)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        await connection.ExecuteAsync(
+            "DELETE FROM BrandPulseScanSummaries WHERE OrganizationId = @OrganizationId AND ScanDate = @ScanDate",
+            new { OrganizationId = organizationId, ScanDate = scanDate });
+    }
+
+    public async Task InsertSummaryAsync(BrandPulseScanSummary summary)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        await connection.ExecuteAsync(
+            @"INSERT INTO BrandPulseScanSummaries
+                (OrganizationId, ScanDate, BrandHealth, AiConfidence, MessagingConsistency, BrandTrust,
+                 SentimentPositive, SentimentNeutral, SentimentNegative,
+                 AlertsJson, ModelInsightsJson, AccuracyFlagsJson, PromptEvidenceJson)
+              VALUES
+                (@OrganizationId, @ScanDate, @BrandHealth, @AiConfidence, @MessagingConsistency, @BrandTrust,
+                 @SentimentPositive, @SentimentNeutral, @SentimentNegative,
+                 @AlertsJson::jsonb, @ModelInsightsJson::jsonb, @AccuracyFlagsJson::jsonb, @PromptEvidenceJson::jsonb)",
+            summary);
     }
 
     public async Task<DateOnly?> GetLatestScanDateAsync(Guid organizationId)
     {
         using var connection = _dbConnectionFactory.CreateConnection();
-        await EnsureSchemaAsync(connection);
-
-        var raw = await connection.ExecuteScalarAsync(
+        var result = await connection.ExecuteScalarAsync(
             "SELECT MAX(ScanDate) FROM BrandPulseScanSummaries WHERE OrganizationId = @OrganizationId",
             new { OrganizationId = organizationId });
 
-        DateOnly? latest = raw switch
+        return result switch
         {
             null or DBNull => null,
             DateOnly d => d,
             DateTime dt => DateOnly.FromDateTime(dt),
             _ => null
         };
-
-        return latest;
     }
 
-    public async Task<BrandPulseScanSummary?> GetLatestSummaryAsync(Guid organizationId)
+    public async Task<BrandPulseScanSummary?> GetSummaryByScanDateAsync(Guid organizationId, DateOnly scanDate)
     {
         using var connection = _dbConnectionFactory.CreateConnection();
-        await EnsureSchemaAsync(connection);
-
-        return await connection.QueryFirstOrDefaultAsync<BrandPulseScanSummary>(@"
-            SELECT * FROM BrandPulseScanSummaries
-            WHERE OrganizationId = @OrganizationId
-            ORDER BY ScanDate DESC, CreatedAt DESC
-            LIMIT 1",
-            new { OrganizationId = organizationId });
+        return await connection.QueryFirstOrDefaultAsync<BrandPulseScanSummary>(
+            "SELECT * FROM BrandPulseScanSummaries WHERE OrganizationId = @OrganizationId AND ScanDate = @ScanDate",
+            new { OrganizationId = organizationId, ScanDate = scanDate });
     }
 
-    public async Task<BrandPulseScanSummary?> GetPreviousSummaryAsync(Guid organizationId, DateOnly beforeDate)
+    public async Task<List<BrandPulseScanSummary>> GetRecentSummaryHistoryAsync(Guid organizationId, int maxScanDates = 13)
     {
         using var connection = _dbConnectionFactory.CreateConnection();
-        await EnsureSchemaAsync(connection);
-
-        return await connection.QueryFirstOrDefaultAsync<BrandPulseScanSummary>(@"
-            SELECT * FROM BrandPulseScanSummaries
-            WHERE OrganizationId = @OrganizationId AND ScanDate < @BeforeDate
-            ORDER BY ScanDate DESC, CreatedAt DESC
-            LIMIT 1",
-            new { OrganizationId = organizationId, BeforeDate = beforeDate });
-    }
-
-    public async Task<IEnumerable<BrandPulseScanSummary>> GetHistoryAsync(Guid organizationId, int days)
-    {
-        using var connection = _dbConnectionFactory.CreateConnection();
-        await EnsureSchemaAsync(connection);
-
-        return await connection.QueryAsync<BrandPulseScanSummary>(@"
-            SELECT * FROM BrandPulseScanSummaries
-            WHERE OrganizationId = @OrganizationId
-              AND ScanDate >= CURRENT_DATE - make_interval(days => @Days)
-            ORDER BY ScanDate ASC",
-            new { OrganizationId = organizationId, Days = days });
-    }
-
-    public async Task SaveSnapshotAsync(BrandPulseScanSummary summary)
-    {
-        using var connection = _dbConnectionFactory.CreateConnection();
-        await EnsureSchemaAsync(connection);
-
-        if (summary.Id == Guid.Empty)
-        {
-            summary.Id = Guid.NewGuid();
-        }
-        if (summary.CreatedAt == default)
-        {
-            summary.CreatedAt = DateTime.UtcNow;
-        }
-
-        await connection.ExecuteAsync(@"
-            INSERT INTO BrandPulseScanSummaries
-                (Id, OrganizationId, ScanDate, BrandHealth, AiConfidence, MessagingConsistency, BrandTrust,
-                 SentimentPositive, SentimentNeutral, SentimentNegative,
-                 AlertsJson, ModelInsightsJson, AccuracyFlagsJson, PromptEvidenceJson, SharePerceptionJson, CreatedAt)
-            VALUES
-                (@Id, @OrganizationId, @ScanDate, @BrandHealth, @AiConfidence, @MessagingConsistency, @BrandTrust,
-                 @SentimentPositive, @SentimentNeutral, @SentimentNegative,
-                 @AlertsJson::jsonb, @ModelInsightsJson::jsonb, @AccuracyFlagsJson::jsonb, @PromptEvidenceJson::jsonb, @SharePerceptionJson::jsonb, @CreatedAt)",
-            new
-            {
-                summary.Id,
-                summary.OrganizationId,
-                summary.ScanDate,
-                summary.BrandHealth,
-                summary.AiConfidence,
-                summary.MessagingConsistency,
-                summary.BrandTrust,
-                summary.SentimentPositive,
-                summary.SentimentNeutral,
-                summary.SentimentNegative,
-                summary.AlertsJson,
-                summary.ModelInsightsJson,
-                summary.AccuracyFlagsJson,
-                summary.PromptEvidenceJson,
-                summary.SharePerceptionJson,
-                summary.CreatedAt
-            });
+        var results = await connection.QueryAsync<BrandPulseScanSummary>(
+            @"SELECT * FROM BrandPulseScanSummaries
+              WHERE OrganizationId = @OrganizationId
+                AND ScanDate IN (
+                    SELECT DISTINCT ScanDate FROM BrandPulseScanSummaries
+                    WHERE OrganizationId = @OrganizationId
+                    ORDER BY ScanDate DESC
+                    LIMIT @MaxScanDates
+                )
+              ORDER BY ScanDate ASC",
+            new { OrganizationId = organizationId, MaxScanDates = maxScanDates });
+        return results.ToList();
     }
 }

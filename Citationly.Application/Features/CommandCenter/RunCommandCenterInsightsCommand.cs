@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using MediatR;
 using Citationly.Application.Interfaces;
@@ -7,152 +8,128 @@ namespace Citationly.Application.Features.CommandCenter;
 public class RunCommandCenterInsightsCommand : IRequest<RunCommandCenterInsightsResult>
 {
     public Guid OrganizationId { get; set; }
-
-    /// <summary>Number of days the sibling metrics' history/trend arrays should be bounded to (7/30/90). Defaults to 30.</summary>
-    public int RangeDays { get; set; } = 30;
 }
 
-public class RunCommandCenterInsightsResult
-{
-    public bool Success { get; set; }
-    public string? Error { get; set; }
-    public List<string> Insights { get; set; } = new();
-    public CommandCenterSiblingData? SiblingData { get; set; }
-}
-
-internal class InsightsAiResponse
-{
-    public List<string>? Insights { get; set; }
-}
+public record RunCommandCenterInsightsResult(bool Success, string Message);
 
 public class RunCommandCenterInsightsCommandHandler : IRequestHandler<RunCommandCenterInsightsCommand, RunCommandCenterInsightsResult>
 {
-    private readonly ICommandCenterRepository _commandCenterRepository;
+    private readonly IWebsiteRepository _websiteRepository;
+    private readonly IAiVisibilityRepository _visibilityRepo;
+    private readonly ICompetitorSnapshotRepository _competitorSnapshotRepo;
+    private readonly IVisibilitySnapshotRepository _visibilitySnapshotRepo;
+    private readonly ICitationScanSnapshotRepository _citationSnapshotRepo;
+    private readonly IBrandPulseSnapshotRepository _brandPulseSnapshotRepo;
+    private readonly ICommandCenterInsightRepository _snapshotRepo;
     private readonly IOpenAiService _openAiService;
 
-    private static readonly List<string> FallbackInsights = new()
-    {
-        "Your AI visibility metrics are being tracked across visibility, citation quality, brand health and share of voice.",
-        "Run more scans across your feature dashboards to unlock deeper, data-driven executive insights here."
-    };
-
     public RunCommandCenterInsightsCommandHandler(
-        ICommandCenterRepository commandCenterRepository,
+        IWebsiteRepository websiteRepository,
+        IAiVisibilityRepository visibilityRepo,
+        ICompetitorSnapshotRepository competitorSnapshotRepo,
+        IVisibilitySnapshotRepository visibilitySnapshotRepo,
+        ICitationScanSnapshotRepository citationSnapshotRepo,
+        IBrandPulseSnapshotRepository brandPulseSnapshotRepo,
+        ICommandCenterInsightRepository snapshotRepo,
         IOpenAiService openAiService)
     {
-        _commandCenterRepository = commandCenterRepository;
+        _websiteRepository = websiteRepository;
+        _visibilityRepo = visibilityRepo;
+        _competitorSnapshotRepo = competitorSnapshotRepo;
+        _visibilitySnapshotRepo = visibilitySnapshotRepo;
+        _citationSnapshotRepo = citationSnapshotRepo;
+        _brandPulseSnapshotRepo = brandPulseSnapshotRepo;
+        _snapshotRepo = snapshotRepo;
         _openAiService = openAiService;
     }
 
     public async Task<RunCommandCenterInsightsResult> Handle(RunCommandCenterInsightsCommand request, CancellationToken cancellationToken)
     {
+        await _snapshotRepo.EnsureTableCreatedAsync();
+
+        var orgId = request.OrganizationId;
+
+        var profile = await _websiteRepository.GetLatestWebsiteProfileAsync(orgId);
+        if (profile == null)
+        {
+            return new RunCommandCenterInsightsResult(false, "No analyzed data found yet for this organization.");
+        }
+
+        var scans = (await _visibilityRepo.GetHistoricalScansByOrgAsync(orgId)).OrderBy(s => s.ScanDate).ToList();
+        var latestScan = scans.LastOrDefault();
+        var previousScan = scans.Count > 1 ? scans[^2] : null;
+
+        var competitorScanDate = await _competitorSnapshotRepo.GetLatestScanDateAsync(orgId);
+        var competitorSnapshots = competitorScanDate.HasValue
+            ? await _competitorSnapshotRepo.GetSnapshotsByScanDateAsync(orgId, competitorScanDate.Value)
+            : new();
+        var you = competitorSnapshots.FirstOrDefault(s => s.IsYou);
+
+        var visLatestDate = await _visibilitySnapshotRepo.GetLatestScanDateAsync(orgId);
+        var visSummary = visLatestDate.HasValue ? await _visibilitySnapshotRepo.GetSummaryByScanDateAsync(orgId, visLatestDate.Value) : null;
+
+        var citLatestDate = await _citationSnapshotRepo.GetLatestScanDateAsync(orgId);
+        var citSummary = citLatestDate.HasValue ? await _citationSnapshotRepo.GetSummaryByScanDateAsync(orgId, citLatestDate.Value) : null;
+
+        var bpLatestDate = await _brandPulseSnapshotRepo.GetLatestScanDateAsync(orgId);
+        var bpSummary = bpLatestDate.HasValue ? await _brandPulseSnapshotRepo.GetSummaryByScanDateAsync(orgId, bpLatestDate.Value) : null;
+
+        const string systemPrompt =
+            "You are writing a short executive summary for a business dashboard. " +
+            "Based ONLY on the real metrics provided, return ONLY a JSON object with EXACTLY this key: " +
+            "\"insights\": an array of 4-6 short sentences (max ~20 words each), each referencing a SPECIFIC real number given below, " +
+            "wrapping the key number/phrase in <b></b> tags (e.g. \"AI visibility is now <b>84/100</b>, up from 79 last scan.\"). " +
+            "Do not invent numbers that were not provided. If a metric isn't provided, don't write about it.";
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"Business: {profile.BusinessName}");
+        if (latestScan != null)
+        {
+            sb.AppendLine($"Visibility score: {latestScan.VisibilityScore} (previous: {previousScan?.VisibilityScore.ToString() ?? "none"})");
+            sb.AppendLine($"Citation score: {latestScan.CitationScore} (previous: {previousScan?.CitationScore.ToString() ?? "none"})");
+            sb.AppendLine($"GEO readiness: {latestScan.GeoReadiness}, SEO health: {latestScan.SeoHealth}, AEO readiness: {latestScan.AeoReadiness}");
+        }
+        if (you != null) sb.AppendLine($"Your share of voice vs competitors: {you.ShareOfVoice}% (rank {you.Rank})");
+        if (visSummary != null) sb.AppendLine($"AI platform visibility composite: {visSummary.CompositeScore}/100");
+        if (citSummary != null) sb.AppendLine($"Citation quality score: {citSummary.CompositeQualityScore}/100, models referencing you: {citSummary.ModelsReferencingCount}/{citSummary.ModelsTrackedCount}");
+        if (bpSummary != null) sb.AppendLine($"Brand health: {bpSummary.BrandHealth}/100, brand trust: {bpSummary.BrandTrust}/100, messaging consistency: {bpSummary.MessagingConsistency}%");
+
+        var insights = new List<string>();
         try
         {
-            var siblingData = await _commandCenterRepository.GetSiblingSnapshotsAsync(request.OrganizationId, request.RangeDays);
-
-            if (!siblingData.AnyDataAvailable)
+            var raw = await _openAiService.GenerateContentAsync(sb.ToString(), systemPrompt, requireJson: true);
+            using var doc = JsonDocument.Parse(raw);
+            if (doc.RootElement.TryGetProperty("insights", out var arr) && arr.ValueKind == JsonValueKind.Array)
             {
-                return new RunCommandCenterInsightsResult
+                foreach (var item in arr.EnumerateArray())
                 {
-                    Success = true,
-                    Insights = new List<string>(),
-                    SiblingData = siblingData
-                };
-            }
-
-            var insights = await GenerateInsightsAsync(siblingData);
-
-            var scanDate = DateOnly.FromDateTime(DateTime.UtcNow);
-            await _commandCenterRepository.SaveInsightsAsync(request.OrganizationId, scanDate, insights);
-
-            return new RunCommandCenterInsightsResult
-            {
-                Success = true,
-                Insights = insights,
-                SiblingData = siblingData
-            };
-        }
-        catch (Exception ex)
-        {
-            return new RunCommandCenterInsightsResult { Success = false, Error = ex.Message };
-        }
-    }
-
-    private async Task<List<string>> GenerateInsightsAsync(CommandCenterSiblingData siblingData)
-    {
-        try
-        {
-            var systemPrompt = "You are an expert AI visibility and Generative Engine Optimization (GEO) executive analyst. " +
-                "You write short, concrete, executive-level narrative insights grounded strictly in the numbers you are given.";
-
-            var userPrompt = $@"Here are the current AI visibility metrics for this organization, compared to their previous scan:
-
-- AI Visibility (composite score, 0-100): current = {siblingData.Visibility.Current:F1}, previous = {siblingData.Visibility.Previous:F1}, data available = {siblingData.Visibility.HasData}
-- Citation Quality (composite score, 0-100): current = {siblingData.CitationQuality.Current:F1}, previous = {siblingData.CitationQuality.Previous:F1}, data available = {siblingData.CitationQuality.HasData}
-- Brand Health (score, 0-100): current = {siblingData.BrandHealth.Current:F1}, previous = {siblingData.BrandHealth.Previous:F1}, data available = {siblingData.BrandHealth.HasData}
-- Share of Voice (%): current = {siblingData.ShareOfVoice.Current:F1}, previous = {siblingData.ShareOfVoice.Previous:F1}, data available = {siblingData.ShareOfVoice.HasData}
-
-Write 3 to 5 short (one sentence each), concrete, executive-level narrative insight bullets synthesizing what is improving or declining and why it matters to the business. Only reference metrics where data available = true. Ground every claim in the real numbers above — do not invent unrelated claims, competitor names, or facts not present here.
-
-Return ONLY a JSON object in exactly this schema, with no markdown fences and no extra commentary:
-{{
-  ""insights"": [""...."", ""....""]
-}}";
-
-            var responseContent = await _openAiService.GenerateContentAsync(
-                prompt: userPrompt,
-                systemPrompt: systemPrompt,
-                requireJson: true,
-                model: "gpt-4o-mini");
-
-            responseContent = StripJsonFences(responseContent);
-
-            var options = new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true
-            };
-
-            var parsed = JsonSerializer.Deserialize<InsightsAiResponse>(responseContent, options);
-
-            if (parsed?.Insights != null && parsed.Insights.Count > 0)
-            {
-                var cleaned = parsed.Insights
-                    .Where(i => !string.IsNullOrWhiteSpace(i))
-                    .Select(i => i.Trim())
-                    .Take(5)
-                    .ToList();
-
-                if (cleaned.Count > 0)
-                {
-                    return cleaned;
+                    if (item.ValueKind == JsonValueKind.String)
+                    {
+                        var text = item.GetString();
+                        if (!string.IsNullOrWhiteSpace(text)) insights.Add(text);
+                    }
                 }
             }
-
-            return new List<string>(FallbackInsights);
         }
-        catch
+        catch (Exception)
         {
-            return new List<string>(FallbackInsights);
-        }
-    }
-
-    private static string StripJsonFences(string content)
-    {
-        content = content.Trim();
-        if (content.StartsWith("```json"))
-        {
-            content = content.Substring(7);
-        }
-        else if (content.StartsWith("```"))
-        {
-            content = content.Substring(3);
+            // Defensive fallback: a couple of honest, deterministic sentences from whatever real
+            // data we do have, rather than surfacing an error or fabricating content.
+            if (latestScan != null)
+                insights.Add($"AI visibility is at <b>{latestScan.VisibilityScore}/100</b>.");
+            if (you != null)
+                insights.Add($"Your current share of voice is <b>{you.ShareOfVoice}%</b>.");
         }
 
-        if (content.EndsWith("```"))
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        await _snapshotRepo.DeleteByScanDateAsync(orgId, today);
+        await _snapshotRepo.InsertAsync(new()
         {
-            content = content.Substring(0, content.Length - 3);
-        }
+            OrganizationId = orgId,
+            ScanDate = today,
+            InsightsJson = JsonSerializer.Serialize(insights)
+        });
 
-        return content.Trim();
+        return new RunCommandCenterInsightsResult(true, "Command center insights generated.");
     }
 }

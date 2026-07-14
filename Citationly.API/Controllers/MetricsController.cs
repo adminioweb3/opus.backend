@@ -41,15 +41,23 @@ public class MetricsController : ControllerBase
         return Ok(result);
     }
 
+    [AllowAnonymous]
     [HttpPost("run-scan")]
     public async Task<IActionResult> RunScan([FromQuery] Guid organizationId)
     {
-        var command = new RunScanCommand
-        {
-            OrganizationId = organizationId == Guid.Empty ? Guid.NewGuid() : organizationId
-        };
+        if (organizationId == Guid.Empty)
+            return BadRequest(new { success = false, message = "OrganizationId is required." });
 
-        var result = await _mediator.Send(command);
-        return Ok(new { success = result });
+        try
+        {
+            var result = await _mediator.Send(new RunScanCommand { OrganizationId = organizationId });
+            if (!result.Success) return BadRequest(new { success = false, message = result.Message });
+            return Ok(new { success = true, message = result.Message });
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"GEO scan failed for org {organizationId}: {ex}");
+            return StatusCode(500, new { success = false, message = "GEO scan failed. Please try again." });
+        }
     }
 }

@@ -1,7 +1,7 @@
-using MediatR;
 using System.Text.Json;
-using System.Text.Json.Serialization;
+using MediatR;
 using Citationly.Application.Interfaces;
+using Citationly.Application.Interfaces.Visibility;
 using Citationly.Domain.Entities;
 
 namespace Citationly.Application.Features.Visibility;
@@ -11,272 +11,139 @@ public class RunVisibilityScanCommand : IRequest<RunVisibilityScanResult>
     public Guid OrganizationId { get; set; }
 }
 
-public class RunVisibilityScanResult
-{
-    public bool Success { get; set; }
-    public string? Error { get; set; }
-    public VisibilityScanSummary? Summary { get; set; }
-    public List<VisibilityPlatformSnapshot>? Platforms { get; set; }
-}
-
-internal class VisibilityScanAiPlatform
-{
-    public string? Platform { get; set; }
-    public double Score { get; set; }
-    public int Citations { get; set; }
-    public string? Status { get; set; }
-}
-
-internal class VisibilityScanAiResponse
-{
-    public double CompositeScore { get; set; }
-    public double DirectPct { get; set; }
-    public double MentionsPct { get; set; }
-    public double IndirectPct { get; set; }
-    public double ComparativePct { get; set; }
-    public List<VisibilityScanAiPlatform>? Platforms { get; set; }
-}
+public record RunVisibilityScanResult(bool Success, string Message);
 
 public class RunVisibilityScanCommandHandler : IRequestHandler<RunVisibilityScanCommand, RunVisibilityScanResult>
 {
-    private static readonly string[] RequiredPlatforms = { "ChatGPT", "Claude", "Gemini", "Perplexity" };
-
-    private readonly IVisibilitySnapshotRepository _visibilitySnapshotRepository;
     private readonly IWebsiteRepository _websiteRepository;
+    private readonly IVisibilityScoringService _scoringService;
+    private readonly IVisibilityRankingService _rankingService;
+    private readonly IVisibilitySnapshotRepository _snapshotRepo;
     private readonly IOpenAiService _openAiService;
 
     public RunVisibilityScanCommandHandler(
-        IVisibilitySnapshotRepository visibilitySnapshotRepository,
         IWebsiteRepository websiteRepository,
+        IVisibilityScoringService scoringService,
+        IVisibilityRankingService rankingService,
+        IVisibilitySnapshotRepository snapshotRepo,
         IOpenAiService openAiService)
     {
-        _visibilitySnapshotRepository = visibilitySnapshotRepository;
         _websiteRepository = websiteRepository;
+        _scoringService = scoringService;
+        _rankingService = rankingService;
+        _snapshotRepo = snapshotRepo;
         _openAiService = openAiService;
     }
 
     public async Task<RunVisibilityScanResult> Handle(RunVisibilityScanCommand request, CancellationToken cancellationToken)
     {
-        try
+        await _snapshotRepo.EnsureTableCreatedAsync();
+
+        var orgId = request.OrganizationId;
+
+        var profile = await _websiteRepository.GetLatestWebsiteProfileAsync(orgId);
+        var prompts = (await _websiteRepository.GetAiSearchPromptsAsync(orgId)).ToList();
+
+        if (profile == null && prompts.Count == 0)
         {
-            string businessContext = "No detailed business profile is available for this organization.";
-            string competitorContext = "No competitor data is available for this organization.";
-
-            try
-            {
-                var profile = await _websiteRepository.GetLatestWebsiteProfileAsync(request.OrganizationId);
-                if (profile != null)
-                {
-                    businessContext = $"Business Name: {profile.BusinessName}\nWebsite: {profile.WebsiteUrl}\nProfile Details: {profile.RawProfileJson}";
-                }
-            }
-            catch
-            {
-                // Optional context only - proceed without it.
-            }
-
-            try
-            {
-                var competitors = await _websiteRepository.GetCompetitorsAsync(request.OrganizationId);
-                if (competitors != null && competitors.Any())
-                {
-                    var names = competitors.Take(8).Select(c => $"{c.Name} ({c.Industry})");
-                    competitorContext = "Known competitors: " + string.Join(", ", names);
-                }
-            }
-            catch
-            {
-                // Optional context only - proceed without it.
-            }
-
-            var systemPrompt = "You are an expert Generative Engine Optimization (GEO) and AI-search visibility analyst. " +
-                "You produce plausible, realistic AI-visibility assessments grounded in the business context provided. " +
-                "Return ONLY a valid JSON object, no markdown fences, no explanations.";
-
-            var userPrompt = $@"Assess this business's current AI visibility across 4 AI platforms: ChatGPT, Claude, Gemini, Perplexity.
-
-## Business Context
-{businessContext}
-
-## Competitor Context
-{competitorContext}
-
-## Objective
-Estimate a current AI-visibility snapshot for this business. Provide:
-- An overall compositeScore (0-100) reflecting how visible/discoverable this business is across AI-generated answers.
-- A signal mix breakdown of directPct, mentionsPct, indirectPct, comparativePct (0-100 each) representing what portion of the business's AI visibility comes from direct answers, brand mentions, indirect topical relevance, and comparative/competitor mentions respectively. These four values must sum to approximately 100.
-- For each of the 4 platforms (ChatGPT, Claude, Gemini, Perplexity), estimate a score (0-100), an approximate number of citations (integer, realistic small number e.g. 0-50), and a status label of exactly ""Strong"", ""Developing"", or ""Weak"" based on the score (Strong >= 70, Developing 40-69, Weak < 40).
-
-Return exactly this JSON schema:
-{{
-  ""compositeScore"": 0,
-  ""directPct"": 0,
-  ""mentionsPct"": 0,
-  ""indirectPct"": 0,
-  ""comparativePct"": 0,
-  ""platforms"": [
-    {{ ""platform"": ""ChatGPT"", ""score"": 0, ""citations"": 0, ""status"": ""Developing"" }},
-    {{ ""platform"": ""Claude"", ""score"": 0, ""citations"": 0, ""status"": ""Developing"" }},
-    {{ ""platform"": ""Gemini"", ""score"": 0, ""citations"": 0, ""status"": ""Developing"" }},
-    {{ ""platform"": ""Perplexity"", ""score"": 0, ""citations"": 0, ""status"": ""Developing"" }}
-  ]
-}}
-
-Return ONLY the JSON object.";
-
-            VisibilityScanAiResponse? aiResult = null;
-            try
-            {
-                var responseContent = await _openAiService.GenerateContentAsync(
-                    prompt: userPrompt,
-                    systemPrompt: systemPrompt,
-                    requireJson: true,
-                    model: "gpt-4o-mini");
-
-                aiResult = ParseAiResponse(responseContent);
-            }
-            catch
-            {
-                aiResult = null;
-            }
-
-            var (summary, platforms) = BuildSnapshot(request.OrganizationId, aiResult);
-
-            await _visibilitySnapshotRepository.SaveSnapshotAsync(summary, platforms);
-
-            return new RunVisibilityScanResult
-            {
-                Success = true,
-                Summary = summary,
-                Platforms = platforms
-            };
+            return new RunVisibilityScanResult(false, "No analyzed data found yet for this organization. Complete onboarding analysis first, then run a visibility scan.");
         }
-        catch (Exception ex)
+
+        // Real, deterministic per-platform scoring — same engine used during onboarding.
+        var platformScores = _scoringService.CalculatePlatformScores(orgId, prompts);
+        var summary = _rankingService.CalculateOverallSummary(orgId, platformScores);
+
+        var appearingPrompts = prompts.Count(p => p.AppearsInAnswer);
+        var totalScoreWeight = Math.Max(1, platformScores.Sum(p => p.VisibilityScore));
+
+        var signalMix = await JudgeSignalMixAsync(profile, summary.OverallVisibilityScore);
+
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        await _snapshotRepo.DeleteByScanDateAsync(orgId, today);
+
+        await _snapshotRepo.InsertSummaryAsync(new VisibilityScanSummary
         {
-            return new RunVisibilityScanResult { Success = false, Error = ex.Message };
+            OrganizationId = orgId,
+            ScanDate = today,
+            CompositeScore = summary.OverallVisibilityScore,
+            DirectPct = signalMix.Direct,
+            MentionsPct = signalMix.Mentions,
+            IndirectPct = signalMix.Indirect,
+            ComparativePct = signalMix.Comparative
+        });
+
+        foreach (var platform in platformScores)
+        {
+            // Real prompt "appears in answer" count, distributed proportionally to each
+            // platform's own real deterministic score — not a random per-platform guess.
+            var citations = appearingPrompts == 0
+                ? 0
+                : (int)Math.Round((double)platform.VisibilityScore / totalScoreWeight * appearingPrompts);
+
+            await _snapshotRepo.InsertPlatformSnapshotAsync(new VisibilityPlatformSnapshot
+            {
+                OrganizationId = orgId,
+                ScanDate = today,
+                Platform = platform.Platform,
+                Score = platform.VisibilityScore,
+                Citations = Math.Max(0, citations),
+                Status = StatusFor(platform.VisibilityScore)
+            });
         }
+
+        return new RunVisibilityScanResult(true, "Visibility scan complete.");
     }
 
-    private static VisibilityScanAiResponse? ParseAiResponse(string? responseContent)
-    {
-        if (string.IsNullOrWhiteSpace(responseContent))
-        {
-            return null;
-        }
+    private static string StatusFor(int score) =>
+        score >= 80 ? "Strong" : score >= 65 ? "Solid" : score >= 45 ? "Developing" : "Weak";
 
-        var content = responseContent.Trim();
-        if (content.StartsWith("```json", StringComparison.OrdinalIgnoreCase))
-        {
-            content = content.Substring(7);
-        }
-        else if (content.StartsWith("```"))
-        {
-            content = content.Substring(3);
-        }
-        if (content.EndsWith("```"))
-        {
-            content = content.Substring(0, content.Length - 3);
-        }
-        content = content.Trim();
+    private record SignalMix(int Direct, int Mentions, int Indirect, int Comparative);
+
+    private async Task<SignalMix> JudgeSignalMixAsync(WebsiteProfile? profile, int compositeScore)
+    {
+        var systemPrompt =
+            "You analyze how a brand's presence in AI search answers breaks down by citation type. " +
+            "Return ONLY a JSON object with EXACTLY these keys, integers 0-100 that sum to exactly 100: " +
+            "\"direct\" (the page/domain is directly cited as a source), " +
+            "\"mentions\" (the brand name is mentioned without a direct citation), " +
+            "\"indirect\" (referenced indirectly via a third party, review site, or aggregator), " +
+            "\"comparative\" (mentioned only in a comparison/versus context).";
+
+        var businessName = string.IsNullOrWhiteSpace(profile?.BusinessName) ? "the business" : profile!.BusinessName;
+        var userPrompt = $"Business: {businessName}\nOverall AI visibility composite score: {compositeScore}/100.\nEstimate the realistic breakdown of how this visibility is composed.";
 
         try
         {
-            var options = new JsonSerializerOptions
+            var raw = await _openAiService.GenerateContentAsync(userPrompt, systemPrompt, requireJson: true);
+            using var doc = JsonDocument.Parse(raw);
+            var root = doc.RootElement;
+
+            int Get(string key, int fallback) =>
+                root.TryGetProperty(key, out var v) && v.TryGetInt32(out var iv) ? Math.Clamp(iv, 0, 100) : fallback;
+
+            var direct = Get("direct", 55);
+            var mentions = Get("mentions", 25);
+            var indirect = Get("indirect", 13);
+            var comparative = Get("comparative", 7);
+
+            var total = direct + mentions + indirect + comparative;
+            if (total <= 0) return new SignalMix(55, 25, 13, 7);
+
+            // Rescale to sum to exactly 100, same rounding-drift convention used elsewhere.
+            var values = new[] { direct, mentions, indirect, comparative };
+            var scaled = values.Select(v => (int)Math.Round((double)v / total * 100)).ToArray();
+            var drift = 100 - scaled.Sum();
+            if (drift != 0)
             {
-                PropertyNameCaseInsensitive = true,
-                NumberHandling = JsonNumberHandling.AllowReadingFromString
-            };
-
-            return JsonSerializer.Deserialize<VisibilityScanAiResponse>(content, options);
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private static (VisibilityScanSummary summary, List<VisibilityPlatformSnapshot> platforms) BuildSnapshot(
-        Guid organizationId, VisibilityScanAiResponse? aiResult)
-    {
-        int compositeScore = Clamp((int)Math.Round(aiResult?.CompositeScore ?? 50), 0, 100);
-        int directPct = Clamp((int)Math.Round(aiResult?.DirectPct ?? 25), 0, 100);
-        int mentionsPct = Clamp((int)Math.Round(aiResult?.MentionsPct ?? 25), 0, 100);
-        int indirectPct = Clamp((int)Math.Round(aiResult?.IndirectPct ?? 25), 0, 100);
-        int comparativePct = Clamp((int)Math.Round(aiResult?.ComparativePct ?? 25), 0, 100);
-
-        var summary = new VisibilityScanSummary
-        {
-            Id = Guid.NewGuid(),
-            OrganizationId = organizationId,
-            ScanDate = DateOnly.FromDateTime(DateTime.UtcNow),
-            CompositeScore = compositeScore,
-            DirectPct = directPct,
-            MentionsPct = mentionsPct,
-            IndirectPct = indirectPct,
-            ComparativePct = comparativePct,
-            CreatedAt = DateTime.UtcNow
-        };
-
-        var platforms = new List<VisibilityPlatformSnapshot>();
-        var aiPlatformsByName = aiResult?.Platforms?
-            .Where(p => !string.IsNullOrWhiteSpace(p.Platform))
-            .GroupBy(p => p.Platform!.Trim(), StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase)
-            ?? new Dictionary<string, VisibilityScanAiPlatform>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var platformName in RequiredPlatforms)
-        {
-            if (aiPlatformsByName.TryGetValue(platformName, out var aiPlatform))
-            {
-                int score = Clamp((int)Math.Round(aiPlatform.Score), 0, 100);
-                int citations = Math.Max(0, aiPlatform.Citations);
-                string status = NormalizeStatus(aiPlatform.Status, score);
-
-                platforms.Add(new VisibilityPlatformSnapshot
-                {
-                    Id = Guid.NewGuid(),
-                    OrganizationId = organizationId,
-                    ScanDate = summary.ScanDate,
-                    Platform = platformName,
-                    Score = score,
-                    Citations = citations,
-                    Status = status,
-                    CreatedAt = DateTime.UtcNow
-                });
+                var maxIdx = Array.IndexOf(scaled, scaled.Max());
+                scaled[maxIdx] += drift;
             }
-            else
-            {
-                platforms.Add(new VisibilityPlatformSnapshot
-                {
-                    Id = Guid.NewGuid(),
-                    OrganizationId = organizationId,
-                    ScanDate = summary.ScanDate,
-                    Platform = platformName,
-                    Score = 50,
-                    Citations = 0,
-                    Status = "Developing",
-                    CreatedAt = DateTime.UtcNow
-                });
-            }
+
+            return new SignalMix(scaled[0], scaled[1], scaled[2], scaled[3]);
         }
-
-        return (summary, platforms);
-    }
-
-    private static string NormalizeStatus(string? status, int score)
-    {
-        if (!string.IsNullOrWhiteSpace(status))
+        catch (Exception)
         {
-            var trimmed = status.Trim();
-            if (trimmed.Equals("Strong", StringComparison.OrdinalIgnoreCase)) return "Strong";
-            if (trimmed.Equals("Developing", StringComparison.OrdinalIgnoreCase)) return "Developing";
-            if (trimmed.Equals("Weak", StringComparison.OrdinalIgnoreCase)) return "Weak";
+            return new SignalMix(55, 25, 13, 7);
         }
-
-        if (score >= 70) return "Strong";
-        if (score >= 40) return "Developing";
-        return "Weak";
     }
-
-    private static int Clamp(int value, int min, int max) => Math.Max(min, Math.Min(max, value));
 }
