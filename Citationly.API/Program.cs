@@ -148,10 +148,25 @@ using (var migrationScope = app.Services.CreateScope())
             v_OrganizationId UUID;
             v_Role VARCHAR;
         BEGIN
-            PERFORM pg_advisory_xact_lock(hashtext(p_FirebaseUid));
+            -- Lock on Email, not FirebaseUid: Email carries the actual unique constraint being
+            -- protected here, including the email-fallback lookup below.
+            PERFORM pg_advisory_xact_lock(hashtext(p_Email));
 
             SELECT u.Id, u.OrganizationId, u.Role INTO v_UserId, v_OrganizationId, v_Role
             FROM Users u WHERE u.FirebaseUid = p_FirebaseUid;
+
+            IF v_UserId IS NULL THEN
+                -- Firebase can issue a different UID for an email that already has a Users row
+                -- (account recreated, a different sign-in provider linked, manual Firebase console
+                -- edits). Email is the durable identity — re-link FirebaseUid to the existing row
+                -- instead of INSERTing a second one and hitting users_email_key.
+                SELECT u.Id, u.OrganizationId, u.Role INTO v_UserId, v_OrganizationId, v_Role
+                FROM Users u WHERE u.Email = p_Email;
+
+                IF v_UserId IS NOT NULL THEN
+                    UPDATE Users SET FirebaseUid = p_FirebaseUid WHERE Id = v_UserId;
+                END IF;
+            END IF;
 
             IF v_UserId IS NULL THEN
                 INSERT INTO Organizations (Name, PlanType, TrialEndsAt)

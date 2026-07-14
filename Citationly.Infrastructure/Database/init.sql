@@ -145,14 +145,29 @@ DECLARE
     v_OrganizationId UUID;
     v_Role VARCHAR;
 BEGIN
-    -- Serializes concurrent first-sync calls for the same Firebase UID (e.g. React StrictMode
+    -- Serializes concurrent first-sync calls for the same account (e.g. React StrictMode
     -- double-invoke, double-click, multi-tab) so only one can create the Organization/User rows;
-    -- the rest block here, then see the row already exists once they proceed.
-    PERFORM pg_advisory_xact_lock(hashtext(p_FirebaseUid));
+    -- the rest block here, then see the row already exists once they proceed. Locks on Email,
+    -- not FirebaseUid, since Email carries the actual unique constraint this protects, including
+    -- the email-fallback lookup below.
+    PERFORM pg_advisory_xact_lock(hashtext(p_Email));
 
     -- Check if user exists
     SELECT u.Id, u.OrganizationId, u.Role INTO v_UserId, v_OrganizationId, v_Role
     FROM Users u WHERE u.FirebaseUid = p_FirebaseUid;
+
+    -- Firebase can issue a different UID for an email that already has a Users row (account
+    -- recreated, a different sign-in provider linked, manual Firebase console edits). Email is
+    -- the durable identity — re-link FirebaseUid to the existing row instead of INSERTing a
+    -- second one and hitting users_email_key.
+    IF v_UserId IS NULL THEN
+        SELECT u.Id, u.OrganizationId, u.Role INTO v_UserId, v_OrganizationId, v_Role
+        FROM Users u WHERE u.Email = p_Email;
+
+        IF v_UserId IS NOT NULL THEN
+            UPDATE Users SET FirebaseUid = p_FirebaseUid WHERE Id = v_UserId;
+        END IF;
+    END IF;
 
     -- If not exists, create a new Organization and User
     IF v_UserId IS NULL THEN
