@@ -238,49 +238,51 @@ if (app.Environment.IsDevelopment())
     app.UseHangfireDashboard("/hangfire");
 }
 
-// Hangfire persists recurring job schedules in its own DB tables, independent of the code —
-// these 5 ids point at DashboardScanRecurringJobs, which no longer exists (replaced by the 7
-// dedicated jobs below). Without this, Hangfire retries loading them forever every 15s.
-RecurringJob.RemoveIfExists("visibility-radar-daily-scan");
-RecurringJob.RemoveIfExists("citation-intelligence-daily-scan");
-RecurringJob.RemoveIfExists("brand-pulse-daily-scan");
-RecurringJob.RemoveIfExists("command-center-daily-insights");
-RecurringJob.RemoveIfExists("competitor-watch-daily-scan");
+using (var scope = app.Services.CreateScope())
+{
+    var recurringJobManager = scope.ServiceProvider.GetRequiredService<IRecurringJobManager>();
 
-// Daily check: re-runs a GEO scan for any organization whose last scan is 7+ days old
-// (or has none yet), so scans stay fresh automatically without a manual "Run GEO scan" click.
-RecurringJob.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.GeoScanRecurringJob>(
-    "geo-scan-7-day-check", job => job.RunAsync(), Cron.Daily);
+    recurringJobManager.RemoveIfExists("visibility-radar-daily-scan");
+    recurringJobManager.RemoveIfExists("citation-intelligence-daily-scan");
+    recurringJobManager.RemoveIfExists("brand-pulse-daily-scan");
+    recurringJobManager.RemoveIfExists("command-center-daily-insights");
+    recurringJobManager.RemoveIfExists("competitor-watch-daily-scan");
 
-// Daily check: re-scans an organization's competitors + own rank once its last CompetitorSnapshot
-// is 7+ days old (or missing), so Competitor Watch stays fresh automatically.
-RecurringJob.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.CompetitorScanRecurringJob>(
-    "competitor-scan-7-day-check", job => job.RunAsync(), Cron.Daily);
+    recurringJobManager.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.GeoScanRecurringJob>(
+        "geo-scan-7-day-check",
+        job => job.RunAsync(),
+        Cron.Daily);
 
-// Daily check: re-scans an organization's per-platform AI visibility once its last
-// VisibilityScanSummary is 7+ days old (or missing), so Visibility Radar stays fresh automatically.
-RecurringJob.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.VisibilityScanRecurringJob>(
-    "visibility-scan-7-day-check", job => job.RunAsync(), Cron.Daily);
+    recurringJobManager.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.CompetitorScanRecurringJob>(
+        "competitor-scan-7-day-check",
+        job => job.RunAsync(),
+        Cron.Daily);
 
-// Daily check: re-scans an organization's citation sources once its last CitationScanSummary
-// is 7+ days old (or missing), so Citation Intelligence stays fresh automatically.
-RecurringJob.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.CitationScanRecurringJob>(
-    "citation-scan-7-day-check", job => job.RunAsync(), Cron.Daily);
+    recurringJobManager.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.VisibilityScanRecurringJob>(
+        "visibility-scan-7-day-check",
+        job => job.RunAsync(),
+        Cron.Daily);
 
-// Daily check: re-scans an organization's brand pulse once its last BrandPulseScanSummary
-// is 7+ days old (or missing), so Brand Pulse stays fresh automatically.
-RecurringJob.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.BrandPulseScanRecurringJob>(
-    "brand-pulse-scan-7-day-check", job => job.RunAsync(), Cron.Daily);
+    recurringJobManager.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.CitationScanRecurringJob>(
+        "citation-scan-7-day-check",
+        job => job.RunAsync(),
+        Cron.Daily);
 
-// Daily check: regenerates Command Center's business-insights summary once its last
-// CommandCenterInsightSnapshot is 7+ days old (or missing).
-RecurringJob.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.CommandCenterInsightsRecurringJob>(
-    "command-center-insights-7-day-check", job => job.RunAsync(), Cron.Daily);
+    recurringJobManager.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.BrandPulseScanRecurringJob>(
+        "brand-pulse-scan-7-day-check",
+        job => job.RunAsync(),
+        Cron.Daily);
 
-// Daily check: re-scans an organization's opportunities once its last OpportunitySnapshot
-// is 7+ days old (or missing), so Opportunity Finder stays fresh automatically.
-RecurringJob.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.OpportunityScanRecurringJob>(
-    "opportunity-scan-7-day-check", job => job.RunAsync(), Cron.Daily);
+    recurringJobManager.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.CommandCenterInsightsRecurringJob>(
+        "command-center-insights-7-day-check",
+        job => job.RunAsync(),
+        Cron.Daily);
+
+    recurringJobManager.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.OpportunityScanRecurringJob>(
+        "opportunity-scan-7-day-check",
+        job => job.RunAsync(),
+        Cron.Daily);
+}
 
 app.UseHttpsRedirection();
 app.UseCors("AllowFrontend");
