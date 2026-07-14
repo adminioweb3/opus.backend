@@ -1,15 +1,15 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
-# Copy solution and project files first to restore dependencies
-COPY ["CitationlyBackend.slnx", "./"]
+# Copy only the project files Citationly.API actually references, so restore doesn't need
+# the whole solution (Tests/DbInit aren't published and would otherwise force this layer to
+# also carry their csproj files just to satisfy a solution-level restore).
 COPY ["Citationly.API/Citationly.API.csproj", "Citationly.API/"]
 COPY ["Citationly.Application/Citationly.Application.csproj", "Citationly.Application/"]
 COPY ["Citationly.Domain/Citationly.Domain.csproj", "Citationly.Domain/"]
 COPY ["Citationly.Infrastructure/Citationly.Infrastructure.csproj", "Citationly.Infrastructure/"]
-COPY ["DbInit/DbInit.csproj", "DbInit/"]
 
-RUN dotnet restore
+RUN dotnet restore "Citationly.API/Citationly.API.csproj"
 
 # Copy the rest of the code
 COPY . .
