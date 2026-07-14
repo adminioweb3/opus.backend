@@ -128,6 +128,11 @@ using (var migrationScope = app.Services.CreateScope())
 
         ALTER TABLE Websites ADD COLUMN IF NOT EXISTS DomainUrl VARCHAR(255) NOT NULL DEFAULT '';
 
+        -- Postgres can't CREATE OR REPLACE a function whose RETURNS TABLE shape changed (only body
+        -- changes are allowed in place) — drop first so this heals databases left over from an
+        -- earlier version of this function with a different return signature.
+        DROP FUNCTION IF EXISTS sp_CreateOrGetUser(VARCHAR, VARCHAR, VARCHAR);
+
         CREATE OR REPLACE FUNCTION sp_CreateOrGetUser(
             p_FirebaseUid VARCHAR,
             p_Email VARCHAR,
@@ -216,6 +221,15 @@ if (app.Environment.IsDevelopment())
 {
     app.UseHangfireDashboard("/hangfire");
 }
+
+// Hangfire persists recurring job schedules in its own DB tables, independent of the code —
+// these 5 ids point at DashboardScanRecurringJobs, which no longer exists (replaced by the 7
+// dedicated jobs below). Without this, Hangfire retries loading them forever every 15s.
+RecurringJob.RemoveIfExists("visibility-radar-daily-scan");
+RecurringJob.RemoveIfExists("citation-intelligence-daily-scan");
+RecurringJob.RemoveIfExists("brand-pulse-daily-scan");
+RecurringJob.RemoveIfExists("command-center-daily-insights");
+RecurringJob.RemoveIfExists("competitor-watch-daily-scan");
 
 // Daily check: re-runs a GEO scan for any organization whose last scan is 7+ days old
 // (or has none yet), so scans stay fresh automatically without a manual "Run GEO scan" click.
