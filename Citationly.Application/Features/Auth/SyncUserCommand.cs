@@ -17,16 +17,25 @@ public class SyncUserResult
     public string Role { get; set; } = string.Empty;
     public string OrganizationName { get; set; } = string.Empty;
     public string WebsiteDomain { get; set; } = string.Empty;
+
+    /// <summary>True when this organization has no analyzed website yet — the frontend should
+    /// route the user to onboarding instead of the dashboard.</summary>
+    public bool NeedsOnboarding { get; set; }
+    public string PlanType { get; set; } = "Trial";
+    public DateTime? TrialEndsAt { get; set; }
+    public bool IsTrialExpired { get; set; }
 }
 
 public class SyncUserCommandHandler : IRequestHandler<SyncUserCommand, SyncUserResult>
 {
     private readonly IUserRepository _repository;
+    private readonly IWebsiteRepository _websiteRepository;
     private readonly IDbConnectionFactory _dbConnectionFactory;
 
-    public SyncUserCommandHandler(IUserRepository repository, IDbConnectionFactory dbConnectionFactory)
+    public SyncUserCommandHandler(IUserRepository repository, IWebsiteRepository websiteRepository, IDbConnectionFactory dbConnectionFactory)
     {
         _repository = repository;
+        _websiteRepository = websiteRepository;
         _dbConnectionFactory = dbConnectionFactory;
     }
 
@@ -36,25 +45,31 @@ public class SyncUserCommandHandler : IRequestHandler<SyncUserCommand, SyncUserR
 
         using var connection = _dbConnectionFactory.CreateConnection();
 
-        // Fetch the Organization Name
-        var orgName = await Dapper.SqlMapper.QueryFirstOrDefaultAsync<string>(
+        // Fetch the Organization's Name + trial state
+        var org = await Dapper.SqlMapper.QueryFirstOrDefaultAsync<(string Name, string PlanType, DateTime? TrialEndsAt)>(
             connection,
-            "SELECT Name FROM Organizations WHERE Id = @Id",
+            "SELECT Name, PlanType, TrialEndsAt FROM Organizations WHERE Id = @Id",
             new { Id = result.OrganizationId });
 
-        // Fetch the first Website Domain
-        var websiteDomain = await Dapper.SqlMapper.QueryFirstOrDefaultAsync<string>(
-            connection,
-            "SELECT DomainUrl FROM Websites WHERE OrganizationId = @OrganizationId ORDER BY CreatedAt ASC LIMIT 1",
-            new { OrganizationId = result.OrganizationId });
+        // WebsiteProfiles (populated at the real "/onboarding/analyze" step, not the later
+        // checkout step) is the reliable signal used everywhere else in the app for "has this
+        // org completed onboarding" — Websites.DomainUrl is only conditionally set at checkout
+        // and isn't a safe gate.
+        var profile = await _websiteRepository.GetLatestWebsiteProfileAsync(result.OrganizationId);
+
+        var isTrialExpired = org.TrialEndsAt.HasValue && org.TrialEndsAt.Value < DateTime.UtcNow;
 
         return new SyncUserResult
         {
             UserId = result.UserId,
             OrganizationId = result.OrganizationId,
             Role = result.Role,
-            OrganizationName = orgName ?? string.Empty,
-            WebsiteDomain = websiteDomain ?? string.Empty
+            OrganizationName = org.Name ?? string.Empty,
+            WebsiteDomain = profile?.WebsiteUrl ?? string.Empty,
+            NeedsOnboarding = profile == null,
+            PlanType = org.PlanType ?? "Trial",
+            TrialEndsAt = org.TrialEndsAt,
+            IsTrialExpired = isTrialExpired
         };
     }
 }

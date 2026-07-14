@@ -4,6 +4,8 @@ public class Organization
 {
     public Guid Id { get; set; }
     public string Name { get; set; } = string.Empty;
+    public string PlanType { get; set; } = "Trial";
+    public DateTime? TrialEndsAt { get; set; }
     public DateTime CreatedAt { get; set; }
 }
 
@@ -65,6 +67,64 @@ public class Integration
     public DateTime UpdatedAt { get; set; }
 }
 
+public class KnowledgeBase
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string Icon { get; set; } = "Building2";
+    public string Tint { get; set; } = "#6366F1";
+    public string Bg { get; set; } = "#EEEEFE";
+    public string? Description { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class SourceFolder
+{
+    public Guid Id { get; set; }
+    public Guid KnowledgeBaseId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class ContentDraft
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public string Title { get; set; } = string.Empty;
+    public string ContentType { get; set; } = string.Empty;
+    public string Content { get; set; } = string.Empty;
+    public int WordCount { get; set; }
+    public string Status { get; set; } = "Draft"; // Draft, Optimized, Published
+    public string RequestJson { get; set; } = "{}";
+    public string? CompetitorUrl { get; set; }
+    public string? PublishedUrl { get; set; }
+    public DateTime? PublishedAt { get; set; }
+    public Guid? IntegrationId { get; set; }
+    public string? PublishError { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class ContentOptimization
+{
+    public Guid Id { get; set; }
+    public Guid ContentDraftId { get; set; }
+    public Guid OrganizationId { get; set; }
+    public int SeoScore { get; set; }
+    public int ReadabilityScore { get; set; }
+    public int HumanizedScore { get; set; }
+    public int AiScore { get; set; }
+    public double KeywordDensity { get; set; }
+    public string PrimaryKeyword { get; set; } = string.Empty;
+    public string RecommendationsJson { get; set; } = "[]";
+    public string InternalLinksJson { get; set; } = "[]";
+    public string CitationRecsJson { get; set; } = "[]";
+    public string OptimizedContent { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
 public class Embedding
 {
     public Guid Id { get; set; }
@@ -85,6 +145,10 @@ public class HistoricalScan
     public int CitationScore { get; set; }
     public int SentimentScore { get; set; }
     public int CompetitorScore { get; set; }
+    public int HallucinationRisk { get; set; }
+    public int SeoHealth { get; set; }
+    public int AeoReadiness { get; set; }
+    public int GeoReadiness { get; set; }
     public DateTime CreatedAt { get; set; }
 }
 
@@ -123,6 +187,130 @@ public class Competitor
     // Competitor classification
     public string CompetitorType { get; set; } = "Direct";
     public int Confidence { get; set; }
+}
+
+public class CompetitorSnapshot
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public Guid? CompetitorId { get; set; }
+    public bool IsYou { get; set; }
+    public DateOnly ScanDate { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public int Score { get; set; }
+    public int Rank { get; set; }
+    public int ShareOfVoice { get; set; }
+    public int ShareOfVoiceChange { get; set; }
+    public int Visibility { get; set; }
+    public int VisibilityChange { get; set; }
+    public string Threat { get; set; } = "low";
+    public string ModelsJson { get; set; } = "{}";
+    public string? Tagline { get; set; }
+    public string? WebsiteUrl { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
+public class VisibilityScanSummary
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public DateOnly ScanDate { get; set; }
+    public int CompositeScore { get; set; }
+    public int DirectPct { get; set; }
+    public int MentionsPct { get; set; }
+    public int IndirectPct { get; set; }
+    public int ComparativePct { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
+public class VisibilityPlatformSnapshot
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public DateOnly ScanDate { get; set; }
+    public string Platform { get; set; } = string.Empty;
+    public int Score { get; set; }
+    public int Citations { get; set; }
+    public string Status { get; set; } = "Developing";
+    public DateTime CreatedAt { get; set; }
+}
+
+public class CitationScanSummary
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public DateOnly ScanDate { get; set; }
+    public int CompositeQualityScore { get; set; }
+    public int AverageAuthorityScore { get; set; }
+    public int AverageInfluenceScore { get; set; }
+    public int CitationSignal { get; set; }
+    public int ModelsReferencingCount { get; set; }
+    public int ModelsTrackedCount { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
+public class CitationSourceSnapshot
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public DateOnly ScanDate { get; set; }
+    public string Source { get; set; } = string.Empty;
+    public string Category { get; set; } = string.Empty;
+    public int AuthorityScore { get; set; }
+    public int InfluenceScore { get; set; }
+    public int CitationFrequency { get; set; }
+    public int CompetitorCoverage { get; set; }
+    public int OpportunityScore { get; set; }
+    public int MentionProbability { get; set; }
+    public string Reason { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; }
+}
+
+public class OpportunitySnapshot
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public DateOnly ScanDate { get; set; }
+    public string OpportunityKey { get; set; } = string.Empty;
+    public string Category { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+    public string Summary { get; set; } = string.Empty;
+    public string WhyItMatters { get; set; } = string.Empty;
+    public int Score { get; set; }
+    public int Effort { get; set; }
+    public double EstimatedGainPct { get; set; }
+    public string Eta { get; set; } = string.Empty;
+    public string CompetitorContext { get; set; } = string.Empty;
+    public string ChecklistJson { get; set; } = "[]";
+    public DateTime CreatedAt { get; set; }
+}
+
+public class CommandCenterInsightSnapshot
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public DateOnly ScanDate { get; set; }
+    public string InsightsJson { get; set; } = "[]";
+    public DateTime CreatedAt { get; set; }
+}
+
+public class BrandPulseScanSummary
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public DateOnly ScanDate { get; set; }
+    public int BrandHealth { get; set; }
+    public int AiConfidence { get; set; }
+    public int MessagingConsistency { get; set; }
+    public int BrandTrust { get; set; }
+    public int SentimentPositive { get; set; }
+    public int SentimentNeutral { get; set; }
+    public int SentimentNegative { get; set; }
+    public string AlertsJson { get; set; } = "[]";
+    public string ModelInsightsJson { get; set; } = "[]";
+    public string AccuracyFlagsJson { get; set; } = "[]";
+    public string PromptEvidenceJson { get; set; } = "[]";
+    public DateTime CreatedAt { get; set; }
 }
 
 public class AiSearchPrompt
@@ -234,6 +422,8 @@ public class ScrapingJob
     public Guid Id { get; set; }
     public Guid OrganizationId { get; set; }
     public Guid? WebsiteId { get; set; }
+    public Guid? KnowledgeBaseId { get; set; }
+    public Guid? FolderId { get; set; }
     public string Url { get; set; } = string.Empty;
     public string Status { get; set; } = "Pending";
     public string ScrapeType { get; set; } = "Single";

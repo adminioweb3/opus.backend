@@ -12,15 +12,27 @@ public static class DependencyInjection
 {
     public static IServiceCollection AddInfrastructure(this IServiceCollection services)
     {
+        Dapper.SqlMapper.AddTypeHandler(new DateOnlyTypeHandler());
+
         services.AddSingleton<IDbConnectionFactory, NpgsqlConnectionFactory>();
         services.AddTransient<IUserRepository, UserRepository>();
         services.AddTransient<IWebsiteRepository, WebsiteRepository>();
         services.AddTransient<IIntegrationRepository, IntegrationRepository>();
+        services.AddTransient<IKnowledgeBaseRepository, KnowledgeBaseRepository>();
+        services.AddTransient<ISourceFolderRepository, SourceFolderRepository>();
+        services.AddTransient<IContentDraftRepository, ContentDraftRepository>();
+        services.AddTransient<IContentOptimizationRepository, ContentOptimizationRepository>();
         services.AddTransient<IEmbeddingRepository, EmbeddingRepository>();
         services.AddTransient<IPromptIntelligenceRepository, PromptIntelligenceRepository>();
         services.AddScoped<IMetricsRepository, MetricsRepository>();
         services.AddScoped<IScrapingJobRepository, ScrapingJobRepository>();
         services.AddScoped<IAiVisibilityRepository, AiVisibilityRepository>();
+        services.AddScoped<ICompetitorSnapshotRepository, CompetitorSnapshotRepository>();
+        services.AddScoped<IVisibilitySnapshotRepository, VisibilitySnapshotRepository>();
+        services.AddScoped<ICitationScanSnapshotRepository, CitationScanSnapshotRepository>();
+        services.AddScoped<IBrandPulseSnapshotRepository, BrandPulseSnapshotRepository>();
+        services.AddScoped<ICommandCenterInsightRepository, CommandCenterInsightRepository>();
+        services.AddScoped<IOpportunitySnapshotRepository, OpportunitySnapshotRepository>();
         services.AddScoped<IAnalysisRepository, AnalysisRepository>();
         services.AddScoped<IAnalysisOrchestrator, Citationly.Application.Features.AnalysisEngine.AnalysisOrchestrator>();
         services.AddScoped<IWebScraperService, WebScraperService>();
@@ -81,6 +93,9 @@ public static class DependencyInjection
         services.AddScoped<Citationly.Application.Interfaces.Citations.ICitationAnalyticsService, Citationly.Infrastructure.Services.Citations.CitationAnalyticsService>();
         services.AddScoped<Citationly.Application.Interfaces.Citations.ICitationBatchProcessor, Citationly.Infrastructure.Services.Citations.CitationBatchProcessor>();
 
+        services.AddScoped<Citationly.Application.Interfaces.GeoOptimizer.IGeoOptimizerService, Citationly.Infrastructure.Services.GeoOptimizer.GeoOptimizerService>();
+        services.AddScoped<Citationly.Application.Interfaces.AnswerSimulator.IAnswerSimulatorService, Citationly.Infrastructure.Services.AnswerSimulator.AnswerSimulatorService>();
+
         services.AddHttpClient<ICmsIntegrationService, WordPressIntegrationService>();
         services.AddHttpClient<IOpenAiService, OpenAiService>(client =>
         {
@@ -90,6 +105,14 @@ public static class DependencyInjection
         services.AddScoped<IMetricsCalculationService, MetricsCalculationService>();
         
         services.AddHostedService<Citationly.Infrastructure.BackgroundJobs.RecurringScrapeService>();
+        services.AddScoped<Citationly.Infrastructure.BackgroundJobs.GeoScanRecurringJob>();
+        services.AddScoped<Citationly.Infrastructure.BackgroundJobs.CompetitorScanRecurringJob>();
+        services.AddScoped<Citationly.Infrastructure.BackgroundJobs.VisibilityScanRecurringJob>();
+        services.AddScoped<Citationly.Infrastructure.BackgroundJobs.CitationScanRecurringJob>();
+        services.AddScoped<Citationly.Infrastructure.BackgroundJobs.BrandPulseScanRecurringJob>();
+        services.AddScoped<Citationly.Infrastructure.BackgroundJobs.CommandCenterInsightsRecurringJob>();
+        services.AddScoped<Citationly.Infrastructure.BackgroundJobs.OpportunityScanRecurringJob>();
+
         return services;
     }
 }
