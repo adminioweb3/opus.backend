@@ -17,15 +17,18 @@ public class ScraperController : ControllerBase
     private readonly IScrapingJobRepository _repository;
     private readonly IBackgroundJobClient _backgroundJobClient;
     private readonly IMarkdownGeneratorService _markdownGenerator;
+    private readonly ILogger<ScraperController> _logger;
 
     public ScraperController(
         IScrapingJobRepository repository,
         IBackgroundJobClient backgroundJobClient,
-        IMarkdownGeneratorService markdownGenerator)
+        IMarkdownGeneratorService markdownGenerator,
+        ILogger<ScraperController> logger)
     {
         _repository = repository;
         _backgroundJobClient = backgroundJobClient;
         _markdownGenerator = markdownGenerator;
+        _logger = logger;
     }
 
     // POST /api/scraper/start
@@ -72,9 +75,12 @@ public class ScraperController : ControllerBase
         }
         catch (Exception ex)
         {
-            // Catch Foreign Key violations if the OrganizationId doesn't exist in the Organizations table yet
-            Console.WriteLine($"Failed to create scraping job: {ex.Message}");
-            return Ok(new { JobId = Guid.NewGuid(), Status = "Pending" });
+            // Previously returned a fake, never-persisted JobId here so the frontend could still
+            // "simulate" a Pending job — that just guaranteed a later 404 on /result/{jobId} once
+            // the frontend polled it, and hid whatever the real failure was (FK violation, schema
+            // issue, etc.) from ever being logged. Surface it for real instead.
+            _logger.LogError(ex, "Failed to create scraping job for organization {OrganizationId}, url {Url}", request.OrganizationId, request.Url);
+            return StatusCode(500, new { message = "Failed to start scraping job. Please try again." });
         }
     }
 
