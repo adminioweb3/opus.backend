@@ -115,9 +115,18 @@ var app = builder.Build();
 // Self-healing migration: adds trial-subscription columns to Organizations (for orgs created
 // before this feature existed), backfills Websites.DomainUrl on databases created before that
 // column existed (production was 500ing with "column domainurl does not exist" — WebsiteRepository
-// has always required it, so the live table just predates the current schema), and re-applies
-// sp_CreateOrGetUser with its advisory-lock fix, since init.sql only runs against a fresh
-// database, not this live one.
+// has always required it, so the live table just predates the current schema), creates the GEO
+// dashboard tables (GeoPillars/PromptCoverages/WinLossEvents) unconditionally — their only other
+// creation path is RunScanCommand, which is gated behind "org has zero historical scans yet", so
+// any already-onboarded org was hitting "relation does not exist" on GET /dashboard/geo-dashboard
+// — creates the Content Studio / Knowledge Vault tables (KnowledgeBases, SourceFolders,
+// ContentDrafts, ContentOptimizations), which init.sql defines but which never ran against this
+// live database either (GET /api/Content and /api/KnowledgeBase were both 500ing with "relation
+// does not exist") — and re-applies sp_CreateOrGetUser with its advisory-lock fix, since init.sql
+// only runs against a fresh database, not this live one.
+//
+// NOTE: init.sql itself opens with `DROP TABLE ... CASCADE` for a from-scratch dev reset — never
+// run that file's full contents here, only ever hand-pick idempotent CREATE/ALTER statements.
 using (var migrationScope = app.Services.CreateScope())
 {
     var dbConnectionFactory = migrationScope.ServiceProvider.GetRequiredService<Citationly.Application.Interfaces.IDbConnectionFactory>();
@@ -128,6 +137,103 @@ using (var migrationScope = app.Services.CreateScope())
         UPDATE Organizations SET TrialEndsAt = CreatedAt + INTERVAL '7 days' WHERE TrialEndsAt IS NULL;
 
         ALTER TABLE Websites ADD COLUMN IF NOT EXISTS DomainUrl VARCHAR(255) NOT NULL DEFAULT '';
+
+        CREATE TABLE IF NOT EXISTS KnowledgeBases (
+            Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+            Name VARCHAR(255) NOT NULL,
+            Icon VARCHAR(100) DEFAULT 'Building2',
+            Tint VARCHAR(50) DEFAULT '#6366F1',
+            Bg VARCHAR(50) DEFAULT '#EEEEFE',
+            Description TEXT,
+            CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UpdatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS SourceFolders (
+            Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            KnowledgeBaseId UUID REFERENCES KnowledgeBases(Id) ON DELETE CASCADE,
+            Name VARCHAR(255) NOT NULL,
+            CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS Integrations (
+            Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+            PlatformName VARCHAR(100) NOT NULL,
+            ApiUrl VARCHAR(2048),
+            ApiKey VARCHAR(1024),
+            CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UpdatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(OrganizationId, PlatformName)
+        );
+
+        CREATE TABLE IF NOT EXISTS ContentDrafts (
+            Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+            Title VARCHAR(512) NOT NULL DEFAULT '',
+            ContentType VARCHAR(100) NOT NULL DEFAULT '',
+            Content TEXT NOT NULL DEFAULT '',
+            WordCount INT NOT NULL DEFAULT 0,
+            Status VARCHAR(50) NOT NULL DEFAULT 'Draft',
+            RequestJson JSONB NOT NULL DEFAULT '{}'::jsonb,
+            CompetitorUrl VARCHAR(2048),
+            CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UpdatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+        ALTER TABLE ContentDrafts ADD COLUMN IF NOT EXISTS PublishedUrl VARCHAR(2048);
+        ALTER TABLE ContentDrafts ADD COLUMN IF NOT EXISTS PublishedAt TIMESTAMP WITH TIME ZONE;
+        ALTER TABLE ContentDrafts ADD COLUMN IF NOT EXISTS IntegrationId UUID REFERENCES Integrations(Id) ON DELETE SET NULL;
+        ALTER TABLE ContentDrafts ADD COLUMN IF NOT EXISTS PublishError TEXT;
+
+        CREATE TABLE IF NOT EXISTS ContentOptimizations (
+            Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            ContentDraftId UUID REFERENCES ContentDrafts(Id) ON DELETE CASCADE,
+            OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+            SeoScore INT NOT NULL DEFAULT 0,
+            ReadabilityScore INT NOT NULL DEFAULT 0,
+            HumanizedScore INT NOT NULL DEFAULT 0,
+            AiScore INT NOT NULL DEFAULT 0,
+            KeywordDensity NUMERIC(5,2) NOT NULL DEFAULT 0,
+            PrimaryKeyword VARCHAR(255) NOT NULL DEFAULT '',
+            RecommendationsJson JSONB NOT NULL DEFAULT '[]'::jsonb,
+            InternalLinksJson JSONB NOT NULL DEFAULT '[]'::jsonb,
+            CitationRecsJson JSONB NOT NULL DEFAULT '[]'::jsonb,
+            OptimizedContent TEXT NOT NULL DEFAULT '',
+            CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS GeoPillars (
+            Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            OrganizationId UUID NOT NULL,
+            ScanDate DATE NOT NULL,
+            PillarKey TEXT NOT NULL,
+            Label TEXT NOT NULL,
+            Description TEXT NOT NULL,
+            Score INT NOT NULL,
+            UNIQUE (OrganizationId, ScanDate, PillarKey)
+        );
+
+        CREATE TABLE IF NOT EXISTS PromptCoverages (
+            Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            OrganizationId UUID NOT NULL,
+            ScanDate DATE NOT NULL,
+            PromptType TEXT NOT NULL,
+            Example TEXT NOT NULL,
+            Note TEXT NOT NULL,
+            Percentage INT NOT NULL,
+            Direction TEXT NOT NULL,
+            UNIQUE (OrganizationId, ScanDate, PromptType)
+        );
+
+        CREATE TABLE IF NOT EXISTS WinLossEvents (
+            Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            OrganizationId UUID NOT NULL,
+            Timestamp TIMESTAMPTZ NOT NULL,
+            Type TEXT NOT NULL,
+            Title TEXT NOT NULL,
+            Engine TEXT NOT NULL
+        );
 
         -- Postgres can't CREATE OR REPLACE a function whose RETURNS TABLE shape changed (only body
         -- changes are allowed in place) — drop first so this heals databases left over from an
