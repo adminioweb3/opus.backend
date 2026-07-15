@@ -20,7 +20,14 @@ public class PlaywrightScraperEngine : IScraperEngine
     public async Task<ScrapedPage> ScrapeSinglePageAsync(string url, Guid jobId)
     {
         using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true });
+        // --no-sandbox is required to run headless Chromium as root in Docker (the default here) —
+        // Chromium's sandbox needs Linux namespace privileges containers don't grant without extra
+        // capabilities, and without this flag it fails to launch at all rather than just running unsandboxed.
+        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+        {
+            Headless = true,
+            Args = new[] { "--no-sandbox", "--disable-setuid-sandbox" }
+        });
         var page = await browser.NewPageAsync();
 
         try
@@ -48,7 +55,14 @@ public class PlaywrightScraperEngine : IScraperEngine
         queue.Enqueue(NormalizeUrl(startUrl));
 
         using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true });
+        // --no-sandbox is required to run headless Chromium as root in Docker (the default here) —
+        // Chromium's sandbox needs Linux namespace privileges containers don't grant without extra
+        // capabilities, and without this flag it fails to launch at all rather than just running unsandboxed.
+        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+        {
+            Headless = true,
+            Args = new[] { "--no-sandbox", "--disable-setuid-sandbox" }
+        });
 
         while (queue.Count > 0 && results.Count < maxPages)
         {
