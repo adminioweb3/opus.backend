@@ -17,6 +17,7 @@ public static class DependencyInjection
 
         services.AddSingleton<IDbConnectionFactory, NpgsqlConnectionFactory>();
         services.AddTransient<IUserRepository, UserRepository>();
+        services.AddTransient<ITeamRepository, TeamRepository>();
         services.AddTransient<IWebsiteRepository, WebsiteRepository>();
         services.AddTransient<IIntegrationRepository, IntegrationRepository>();
         services.AddTransient<IKnowledgeBaseRepository, KnowledgeBaseRepository>();

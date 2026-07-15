@@ -122,8 +122,9 @@ var app = builder.Build();
 // — creates the Content Studio / Knowledge Vault tables (KnowledgeBases, SourceFolders,
 // ContentDrafts, ContentOptimizations), which init.sql defines but which never ran against this
 // live database either (GET /api/Content and /api/KnowledgeBase were both 500ing with "relation
-// does not exist") — and re-applies sp_CreateOrGetUser with its advisory-lock fix, since init.sql
-// only runs against a fresh database, not this live one.
+// does not exist") — creates Invites (Team Management) — and re-applies sp_CreateOrGetUser with
+// its advisory-lock fix and invite-matching, since init.sql only runs against a fresh database,
+// not this live one.
 //
 // NOTE: init.sql itself opens with `DROP TABLE ... CASCADE` for a from-scratch dev reset — never
 // run that file's full contents here, only ever hand-pick idempotent CREATE/ALTER statements.
@@ -235,6 +236,18 @@ using (var migrationScope = app.Services.CreateScope())
             Engine TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS Invites (
+            Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+            Email VARCHAR(255) NOT NULL,
+            Role VARCHAR(50) NOT NULL DEFAULT 'Viewer',
+            Token VARCHAR(64) NOT NULL UNIQUE,
+            InvitedByUserId UUID REFERENCES Users(Id) ON DELETE SET NULL,
+            CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            ExpiresAt TIMESTAMP WITH TIME ZONE NOT NULL,
+            AcceptedAt TIMESTAMP WITH TIME ZONE
+        );
+
         -- Postgres can't CREATE OR REPLACE a function whose RETURNS TABLE shape changed (only body
         -- changes are allowed in place) — drop first so this heals databases left over from an
         -- earlier version of this function with a different return signature.
@@ -273,6 +286,34 @@ using (var migrationScope = app.Services.CreateScope())
                 IF v_UserId IS NOT NULL THEN
                     UPDATE Users SET FirebaseUid = p_FirebaseUid WHERE Id = v_UserId;
                 END IF;
+            END IF;
+
+            -- Genuinely new user: check for a pending team invite before creating a brand new
+            -- organization. Invites are matched purely by email — anyone who registers/logs in
+            -- with the invited address is automatically joined to that org at the invited role.
+            IF v_UserId IS NULL THEN
+                DECLARE
+                    v_InviteId UUID;
+                    v_InviteOrgId UUID;
+                    v_InviteRole VARCHAR;
+                BEGIN
+                    SELECT i.Id, i.OrganizationId, i.Role INTO v_InviteId, v_InviteOrgId, v_InviteRole
+                    FROM Invites i
+                    WHERE LOWER(i.Email) = LOWER(p_Email) AND i.AcceptedAt IS NULL AND i.ExpiresAt > CURRENT_TIMESTAMP
+                    ORDER BY i.CreatedAt DESC
+                    LIMIT 1;
+
+                    IF v_InviteId IS NOT NULL THEN
+                        INSERT INTO Users (OrganizationId, FirebaseUid, Email, DisplayName, Role)
+                        VALUES (v_InviteOrgId, p_FirebaseUid, p_Email, p_DisplayName, v_InviteRole)
+                        RETURNING Id INTO v_UserId;
+
+                        UPDATE Invites SET AcceptedAt = CURRENT_TIMESTAMP WHERE Id = v_InviteId;
+
+                        v_OrganizationId := v_InviteOrgId;
+                        v_Role := v_InviteRole;
+                    END IF;
+                END;
             END IF;
 
             IF v_UserId IS NULL THEN

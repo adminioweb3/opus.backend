@@ -42,6 +42,21 @@ CREATE TABLE IF NOT EXISTS Users (
     CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Team invites: matched purely by email (no invite-token URL flow yet) — sp_CreateOrGetUser
+-- joins a genuinely new signup to Invites.OrganizationId/Role instead of creating a new org
+-- whenever their email matches a pending, unexpired invite.
+CREATE TABLE IF NOT EXISTS Invites (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+    Email VARCHAR(255) NOT NULL,
+    Role VARCHAR(50) NOT NULL DEFAULT 'Viewer',
+    Token VARCHAR(64) NOT NULL UNIQUE,
+    InvitedByUserId UUID REFERENCES Users(Id) ON DELETE SET NULL,
+    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    ExpiresAt TIMESTAMP WITH TIME ZONE NOT NULL,
+    AcceptedAt TIMESTAMP WITH TIME ZONE
+);
+
 -- Websites
 CREATE TABLE IF NOT EXISTS Websites (
     Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -169,7 +184,36 @@ BEGIN
         END IF;
     END IF;
 
-    -- If not exists, create a new Organization and User
+    -- Genuinely new user: check for a pending team invite before creating a brand new
+    -- organization. Invites are matched purely by email — there's no invite-token URL flow yet,
+    -- so anyone who registers/logs in with the invited address is automatically joined to that
+    -- org at the invited role instead of getting their own.
+    IF v_UserId IS NULL THEN
+        DECLARE
+            v_InviteId UUID;
+            v_InviteOrgId UUID;
+            v_InviteRole VARCHAR;
+        BEGIN
+            SELECT i.Id, i.OrganizationId, i.Role INTO v_InviteId, v_InviteOrgId, v_InviteRole
+            FROM Invites i
+            WHERE LOWER(i.Email) = LOWER(p_Email) AND i.AcceptedAt IS NULL AND i.ExpiresAt > CURRENT_TIMESTAMP
+            ORDER BY i.CreatedAt DESC
+            LIMIT 1;
+
+            IF v_InviteId IS NOT NULL THEN
+                INSERT INTO Users (OrganizationId, FirebaseUid, Email, DisplayName, Role)
+                VALUES (v_InviteOrgId, p_FirebaseUid, p_Email, p_DisplayName, v_InviteRole)
+                RETURNING Id INTO v_UserId;
+
+                UPDATE Invites SET AcceptedAt = CURRENT_TIMESTAMP WHERE Id = v_InviteId;
+
+                v_OrganizationId := v_InviteOrgId;
+                v_Role := v_InviteRole;
+            END IF;
+        END;
+    END IF;
+
+    -- Still not found and no invite matched: create a new Organization and User
     IF v_UserId IS NULL THEN
         -- Create default organization for new user, starting on a 7-day trial
         INSERT INTO Organizations (Name, PlanType, TrialEndsAt)
