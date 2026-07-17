@@ -62,6 +62,11 @@ CREATE TABLE IF NOT EXISTS Websites (
     Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     OrganizationId UUID REFERENCES Organizations(Id) NOT NULL,
     DomainUrl VARCHAR(255) NOT NULL,
+    PlatformName VARCHAR(100) NOT NULL DEFAULT 'Custom',
+    HealthScore INT NOT NULL DEFAULT 0,
+    VisibilityScore INT NOT NULL DEFAULT 0,
+    Status VARCHAR(50) NOT NULL DEFAULT 'Connected',
+    LastSyncAt TIMESTAMP WITH TIME ZONE,
     CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 

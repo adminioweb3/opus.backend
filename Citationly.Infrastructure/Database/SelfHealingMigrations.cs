@@ -19,6 +19,11 @@ public static class SelfHealingMigrations
         UPDATE Organizations SET TrialEndsAt = CreatedAt + INTERVAL '7 days' WHERE TrialEndsAt IS NULL;
 
         ALTER TABLE Websites ADD COLUMN IF NOT EXISTS DomainUrl VARCHAR(255) NOT NULL DEFAULT '';
+        ALTER TABLE Websites ADD COLUMN IF NOT EXISTS PlatformName VARCHAR(100) NOT NULL DEFAULT 'Custom';
+        ALTER TABLE Websites ADD COLUMN IF NOT EXISTS HealthScore INT NOT NULL DEFAULT 0;
+        ALTER TABLE Websites ADD COLUMN IF NOT EXISTS VisibilityScore INT NOT NULL DEFAULT 0;
+        ALTER TABLE Websites ADD COLUMN IF NOT EXISTS Status VARCHAR(50) NOT NULL DEFAULT 'Connected';
+        ALTER TABLE Websites ADD COLUMN IF NOT EXISTS LastSyncAt TIMESTAMP WITH TIME ZONE;
 
         CREATE TABLE IF NOT EXISTS KnowledgeBases (
             Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
