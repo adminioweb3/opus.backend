@@ -154,6 +154,13 @@ public static class SelfHealingMigrations
             v_OrganizationId UUID;
             v_Role VARCHAR;
         BEGIN
+            -- Email is case-insensitive from here on (lock key, lookups, storage). A Google/GitHub-
+            -- linked identity can report a differently-cased email than a password account
+            -- registered for the exact same address, and Users.Email's UNIQUE constraint is
+            -- case-sensitive — without this, signing in via a second provider for the same real
+            -- address silently created a second Organization instead of matching the existing one.
+            p_Email := LOWER(TRIM(p_Email));
+
             -- Lock on Email, not FirebaseUid: Email carries the actual unique constraint being
             -- protected here, including the email-fallback lookup below.
             PERFORM pg_advisory_xact_lock(hashtext(p_Email));
@@ -165,9 +172,10 @@ public static class SelfHealingMigrations
                 -- Firebase can issue a different UID for an email that already has a Users row
                 -- (account recreated, a different sign-in provider linked, manual Firebase console
                 -- edits). Email is the durable identity — re-link FirebaseUid to the existing row
-                -- instead of INSERTing a second one and hitting users_email_key.
+                -- instead of INSERTing a second one and hitting users_email_key. LOWER() on the
+                -- stored side too, so this still matches legacy mixed-case rows.
                 SELECT u.Id, u.OrganizationId, u.Role INTO v_UserId, v_OrganizationId, v_Role
-                FROM Users u WHERE u.Email = p_Email;
+                FROM Users u WHERE LOWER(u.Email) = p_Email;
 
                 IF v_UserId IS NOT NULL THEN
                     UPDATE Users SET FirebaseUid = p_FirebaseUid WHERE Id = v_UserId;
@@ -185,7 +193,7 @@ public static class SelfHealingMigrations
                 BEGIN
                     SELECT i.Id, i.OrganizationId, i.Role INTO v_InviteId, v_InviteOrgId, v_InviteRole
                     FROM Invites i
-                    WHERE LOWER(i.Email) = LOWER(p_Email) AND i.AcceptedAt IS NULL AND i.ExpiresAt > CURRENT_TIMESTAMP
+                    WHERE LOWER(i.Email) = p_Email AND i.AcceptedAt IS NULL AND i.ExpiresAt > CURRENT_TIMESTAMP
                     ORDER BY i.CreatedAt DESC
                     LIMIT 1;
 
