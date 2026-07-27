@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash('C:\\\\Program Files\\\\PostgreSQL\\\\17\\\\bin\\\\psql.exe' -h localhost -U postgres -d opus_db -c ' *)",
+      "PowerShell(\"Killed all dotnet processes\")",
+      "Bash(\"C:\\\\Program Files\\\\PostgreSQL\\\\17\\\\bin\\\\psql.exe\" -h localhost -U postgres -d opus_db)"
+    ]
+  }
+}

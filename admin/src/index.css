@@ -1,0 +1,12 @@
+@import "tailwindcss";
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  background-color: rgb(248 250 252);
+  color: rgb(15 23 42);
+}
