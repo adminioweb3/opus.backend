@@ -19,6 +19,43 @@ public static class SelfHealingMigrations
         ALTER TABLE Organizations ADD COLUMN IF NOT EXISTS Industry VARCHAR(255);
         UPDATE Organizations SET TrialEndsAt = CreatedAt + INTERVAL '7 days' WHERE TrialEndsAt IS NULL;
 
+        -- Company Knowledge Graph: shared, deduplicated company directory for competitor discovery
+        CREATE TABLE IF NOT EXISTS Company (
+            Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            NormalizedDomain VARCHAR(255) NOT NULL UNIQUE,
+            Website VARCHAR(2048) NOT NULL,
+            CompanyName VARCHAR(255) NOT NULL,
+            Industry VARCHAR(255),
+            BusinessProfileJson JSONB NOT NULL DEFAULT '{}'::jsonb,
+            Embedding FLOAT8[],
+            EmbeddingModel VARCHAR(100),
+            EmbeddingUpdatedAt TIMESTAMP WITH TIME ZONE,
+            SourceOrganizationId UUID REFERENCES Organizations(Id) ON DELETE SET NULL,
+            LastAnalyzedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UpdatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_company_normalizeddomain ON Company (NormalizedDomain);
+        CREATE INDEX IF NOT EXISTS idx_company_industry ON Company (Industry);
+
+        -- Company competitor relationships: edges in the knowledge graph
+        CREATE TABLE IF NOT EXISTS CompanyCompetitor (
+            Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            CompanyId UUID NOT NULL REFERENCES Company(Id) ON DELETE CASCADE,
+            CompetitorCompanyId UUID NOT NULL REFERENCES Company(Id) ON DELETE CASCADE,
+            Similarity NUMERIC(5,2) NOT NULL DEFAULT 0,
+            Confidence INT NOT NULL DEFAULT 0,
+            Rank INT NOT NULL DEFAULT 0,
+            Reason TEXT,
+            Strength TEXT,
+            Weakness TEXT,
+            CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UpdatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT chk_companycompetitor_not_self CHECK (CompanyId <> CompetitorCompanyId)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_companycompetitor_pair ON CompanyCompetitor (CompanyId, CompetitorCompanyId);
+        CREATE INDEX IF NOT EXISTS idx_companycompetitor_company_rank ON CompanyCompetitor (CompanyId, Rank);
+
         ALTER TABLE Websites ADD COLUMN IF NOT EXISTS DomainUrl VARCHAR(255) NOT NULL DEFAULT '';
         ALTER TABLE Websites ADD COLUMN IF NOT EXISTS PlatformName VARCHAR(100) NOT NULL DEFAULT 'Custom';
         ALTER TABLE Websites ADD COLUMN IF NOT EXISTS HealthScore INT NOT NULL DEFAULT 0;
