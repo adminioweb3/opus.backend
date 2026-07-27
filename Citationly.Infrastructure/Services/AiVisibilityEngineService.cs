@@ -1,5 +1,7 @@
 using System.Text.Json;
 using Citationly.Application.Interfaces;
+using Citationly.Application.Interfaces.Companies;
+using Citationly.Application.Interfaces.Competitors;
 using Citationly.Domain.Entities;
 
 namespace Citationly.Infrastructure.Services;
@@ -10,17 +12,29 @@ public class AiVisibilityEngineService : IAiVisibilityEngineService
     private readonly IOpenAiService _openRouterService;
     private readonly IWebsiteRepository _websiteRepository;
     private readonly IUserRepository _userRepository;
+    private readonly ICompanyGraphService _companyGraphService;
+    private readonly ICompetitorDiscoveryService _discoveryService;
+    private readonly ICompanyCompetitorRepository _companyCompetitorRepository;
+    private readonly ICompetitorGraphSyncService _syncService;
 
     public AiVisibilityEngineService(
         IAiVisibilityRepository repository,
         IOpenAiService openRouterService,
         IWebsiteRepository websiteRepository,
-        IUserRepository userRepository)
+        IUserRepository userRepository,
+        ICompanyGraphService companyGraphService,
+        ICompetitorDiscoveryService discoveryService,
+        ICompanyCompetitorRepository companyCompetitorRepository,
+        ICompetitorGraphSyncService syncService)
     {
         _repository = repository;
         _openRouterService = openRouterService;
         _websiteRepository = websiteRepository;
         _userRepository = userRepository;
+        _companyGraphService = companyGraphService;
+        _discoveryService = discoveryService;
+        _companyCompetitorRepository = companyCompetitorRepository;
+        _syncService = syncService;
     }
 
     public async Task RunAnalysisAsync(Guid organizationId)
@@ -35,18 +49,29 @@ public class AiVisibilityEngineService : IAiVisibilityEngineService
             return;
         }
 
-        // For discovery, we need the business name. It's stored in Organizations (which we don't have a direct repo for, but we can query it or pass it). 
+        // For discovery, we need the business name. It's stored in Organizations (which we don't have a direct repo for, but we can query it or pass it).
         // For now, let's use the DomainUrl as the business name if not known.
         var domainName = new Uri(mainWebsite.DomainUrl).Host.Replace("www.", "");
 
-        // Step 1: Discover Competitors and Industry
-        var competitors = await DiscoverCompetitorsAsync(organizationId, domainName);
-        
-        // Save competitors
-        await _repository.DeleteCompetitorsByOrgAsync(organizationId);
-        foreach (var c in competitors)
+        // Step 1: Discover Competitors and Industry — real Company Knowledge Graph, no
+        // invention. This is the same pipeline AnalyzeCompetitorsCommandHandler uses; funneling
+        // both entry points through one sync service is what closes the old bug where this
+        // service and the onboarding endpoint each independently overwrote the other's rows.
+        var profile = await _websiteRepository.GetLatestWebsiteProfileAsync(organizationId);
+        List<Competitor> competitors;
+        if (profile == null)
         {
-            await _repository.InsertCompetitorAsync(c);
+            Console.WriteLine("No website profile found yet — skipping competitor discovery for this run.");
+            competitors = new List<Competitor>();
+        }
+        else
+        {
+            var company = await _companyGraphService.EnsureCompanyAsync(
+                organizationId, profile.WebsiteUrl, profile.BusinessName, profile.RawProfileJson);
+            var edges = await _discoveryService.DiscoverCompetitorsAsync(
+                company.Id, profile.BusinessName, profile.RawProfileJson, CancellationToken.None);
+            await _companyCompetitorRepository.ReplaceCompetitorsForCompanyAsync(company.Id, edges);
+            competitors = await _syncService.SyncOrgCompetitorsAsync(organizationId, company.Id);
         }
 
         // Step 2: Run AI Prompts
@@ -93,54 +118,6 @@ public class AiVisibilityEngineService : IAiVisibilityEngineService
         });
 
         Console.WriteLine("AI Visibility Analysis Completed.");
-    }
-
-    private async Task<List<Competitor>> DiscoverCompetitorsAsync(Guid organizationId, string domainName)
-    {
-        var prompt = $@"
-You are a market research expert. The company operates at {domainName}.
-Determine their likely industry, and identify their top 4 competitors.
-
-Respond ONLY with a valid JSON array of objects matching this schema:
-[
-  {{
-    ""Name"": ""Competitor Name"",
-    ""WebsiteUrl"": ""https://competitor.com"",
-    ""Industry"": ""Their Industry"",
-    ""Description"": ""Short description"",
-    ""Category"": ""Category"",
-    ""Authority"": 80,
-    ""Popularity"": 60
-  }}
-]
-";
-        try
-        {
-            var responseContent = await _openRouterService.GenerateContentAsync(prompt);
-            responseContent = CleanJsonResponse(responseContent);
-
-            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-            var list = JsonSerializer.Deserialize<List<Competitor>>(responseContent, options);
-            if (list != null)
-            {
-                foreach (var c in list)
-                {
-                    c.OrganizationId = organizationId;
-                }
-                return list;
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Competitor discovery failed: {ex.Message}");
-        }
-
-        // Fallback
-        return new List<Competitor>
-        {
-            new Competitor { OrganizationId = organizationId, Name = "Competitor A", Industry = "Software", Authority = 50, Popularity = 40 },
-            new Competitor { OrganizationId = organizationId, Name = "Competitor B", Industry = "Software", Authority = 40, Popularity = 30 }
-        };
     }
 
     private async Task<ScoreResult> EvaluateVisibilityScoresAsync(string domainName, string industry, List<Competitor> competitors)
@@ -193,14 +170,6 @@ Format the JSON exactly like this:
             SentimentScore = r.Next(40, 90),
             CompetitorScore = r.Next(50, 85)
         };
-    }
-
-    private string CleanJsonResponse(string text)
-    {
-        text = text.Trim();
-        if (text.StartsWith("```json")) text = text.Substring(7);
-        if (text.EndsWith("```")) text = text.Substring(0, text.Length - 3);
-        return text.Trim();
     }
 
     private class ScoreResult

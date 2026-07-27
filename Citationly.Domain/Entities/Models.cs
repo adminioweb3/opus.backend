@@ -6,6 +6,8 @@ public class Organization
     public string Name { get; set; } = string.Empty;
     public string PlanType { get; set; } = "Trial";
     public DateTime? TrialEndsAt { get; set; }
+    public string? Industry { get; set; }
+    public Guid? RelatedOrganizationId { get; set; } // Link to related org for unified competitor view
     public DateTime CreatedAt { get; set; }
 }
 
@@ -31,6 +33,8 @@ public class Website
     public string Status { get; set; } = "Connected";
     public DateTime? LastSyncAt { get; set; }
     public DateTime CreatedAt { get; set; }
+    // Link into the shared Company Knowledge Graph node for this org's own website.
+    public Guid? CompanyId { get; set; }
 }
 
 public class CrawledPage
@@ -187,6 +191,46 @@ public class Competitor
     // Competitor classification
     public string CompetitorType { get; set; } = "Direct";
     public int Confidence { get; set; }
+}
+
+/// <summary>
+/// A shared, deduplicated-by-domain company record in the cross-org Company Knowledge Graph —
+/// distinct from the org-scoped WebsiteProfile. Any org's competitor discovery reads/writes here.
+/// </summary>
+public class Company
+{
+    public Guid Id { get; set; }
+    public string NormalizedDomain { get; set; } = string.Empty;
+    public string Website { get; set; } = string.Empty;
+    public string CompanyName { get; set; } = string.Empty;
+    public string? Industry { get; set; }
+    public string BusinessProfileJson { get; set; } = "{}";
+    public double[]? Embedding { get; set; }
+    public string? EmbeddingModel { get; set; }
+    public DateTime? EmbeddingUpdatedAt { get; set; }
+    public Guid? SourceOrganizationId { get; set; }
+    public DateTime LastAnalyzedAt { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
+}
+
+/// <summary>
+/// A directed edge: for CompanyId, CompetitorCompanyId is a ranked competitor. Rows are keyed
+/// per home-company, not per-org, so two orgs analyzing the same domain reuse the same edges.
+/// </summary>
+public class CompanyCompetitor
+{
+    public Guid Id { get; set; }
+    public Guid CompanyId { get; set; }
+    public Guid CompetitorCompanyId { get; set; }
+    public decimal Similarity { get; set; }
+    public int Confidence { get; set; }
+    public int Rank { get; set; }
+    public string? Reason { get; set; }
+    public string? Strength { get; set; }
+    public string? Weakness { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
 }
 
 public class CompetitorSnapshot

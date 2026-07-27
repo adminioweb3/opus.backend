@@ -179,6 +179,12 @@ public class CompetitorRankingService : ICompetitorRankingService
         return total;
     }
 
+    // Both competitors (via their own Company.BusinessProfileJson, seeded when that company was
+    // itself onboarded by some org) and the user's own business share the exact same onboarding
+    // extraction schema (AnalyzeOnboardingCommand's {value, confidence}-wrapped JSON). SEO,
+    // Authority, and TopicalAuthority have a real, grounded field in that schema — read them
+    // directly. Content/Trust/AIVisibility/Citation/GEO/Technology have no equivalent anywhere
+    // in that schema, so they keep an honest neutral default rather than an invented estimate.
     private Dictionary<string, double> ExtractCategoryScores(string? json)
     {
         var scores = new Dictionary<string, double>
@@ -187,81 +193,83 @@ public class CompetitorRankingService : ICompetitorRankingService
             ["AIVisibility"] = 50, ["Citation"] = 50, ["GEO"] = 50,
             ["Technology"] = 50, ["TopicalAuthority"] = 50, ["BusinessCompleteness"] = 50
         };
-
-        if (string.IsNullOrEmpty(json)) return scores;
-
-        try
-        {
-            var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-
-            scores["SEO"] = GetNestedScore(root, "estimatedSEOStrength");
-            scores["Content"] = GetNestedScore(root, "estimatedContentStrength");
-            scores["Trust"] = GetNestedScore(root, "estimatedTrustScore");
-            scores["Authority"] = GetNestedScore(root, "estimatedBrandAuthority");
-            scores["AIVisibility"] = GetNestedScore(root, "estimatedAIVisibility");
-            scores["Citation"] = GetNestedScore(root, "estimatedCitationScore");
-            scores["GEO"] = GetNestedScore(root, "estimatedGEOReadiness");
-
-            // Derived scores
-            if (root.TryGetProperty("services", out var svc) && svc.ValueKind == JsonValueKind.Array)
-                scores["BusinessCompleteness"] = Math.Min(100, svc.GetArrayLength() * 10);
-
-            if (root.TryGetProperty("strengths", out var str) && str.ValueKind == JsonValueKind.Array)
-                scores["TopicalAuthority"] = Math.Min(100, str.GetArrayLength() * 20);
-        }
-        catch { }
-
+        ApplyRealProfileScores(json, scores);
         return scores;
     }
 
     private Dictionary<string, double> ExtractUserScores(string? profileJson)
     {
-        // For user's own business, derive scores from profile completeness
         var scores = new Dictionary<string, double>
         {
             ["SEO"] = 40, ["Content"] = 40, ["Trust"] = 40, ["Authority"] = 40,
             ["AIVisibility"] = 30, ["Citation"] = 30, ["GEO"] = 30,
             ["Technology"] = 50, ["TopicalAuthority"] = 35, ["BusinessCompleteness"] = 60
         };
-
-        if (string.IsNullOrEmpty(profileJson)) return scores;
-
-        try
-        {
-            var doc = JsonDocument.Parse(profileJson);
-            var root = doc.RootElement;
-            int completeness = 0;
-
-            if (root.TryGetProperty("coreServices", out _)) completeness += 15;
-            if (root.TryGetProperty("products", out _)) completeness += 10;
-            if (root.TryGetProperty("targetCustomers", out _)) completeness += 10;
-            if (root.TryGetProperty("uniqueSellingProposition", out _)) completeness += 15;
-            if (root.TryGetProperty("brandPositioning", out _)) completeness += 10;
-            if (root.TryGetProperty("industriesServed", out _)) completeness += 10;
-            if (root.TryGetProperty("businessModel", out _)) completeness += 10;
-
-            scores["BusinessCompleteness"] = Math.Min(100, completeness + 20);
-            // Slightly boost other scores based on profile completeness
-            double boost = completeness * 0.3;
-            scores["SEO"] = Math.Min(100, 40 + boost);
-            scores["Content"] = Math.Min(100, 40 + boost);
-        }
-        catch { }
-
+        ApplyRealProfileScores(profileJson, scores);
         return scores;
     }
 
-    private static double GetNestedScore(JsonElement root, string propertyName)
+    private static void ApplyRealProfileScores(string? json, Dictionary<string, double> scores)
     {
-        if (root.TryGetProperty(propertyName, out var prop))
+        if (string.IsNullOrEmpty(json)) return;
+
+        try
         {
-            if (prop.ValueKind == JsonValueKind.Object && prop.TryGetProperty("score", out var score))
-                return score.GetDouble();
-            if (prop.ValueKind == JsonValueKind.Number)
-                return prop.GetDouble();
+            var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            if (TryGetWrappedNumber(root, "seoStrength", "score", out var seo)) scores["SEO"] = seo;
+            if (TryGetWrappedNumber(root, "domainAuthorityEstimate", "estimatedScore", out var authority)) scores["Authority"] = authority;
+            scores["TopicalAuthority"] = MapAuthorityLevel(root);
+            scores["BusinessCompleteness"] = ComputeBusinessCompleteness(root);
         }
-        return 50; // default
+        catch { /* malformed/partial profile JSON — leave the neutral defaults already set */ }
+    }
+
+    private static bool TryGetWrappedNumber(JsonElement root, string propertyName, string nestedPropertyName, out double value)
+    {
+        value = 0;
+        if (root.TryGetProperty(propertyName, out var wrapper) &&
+            wrapper.TryGetProperty("value", out var val) &&
+            val.TryGetProperty(nestedPropertyName, out var num) &&
+            num.ValueKind == JsonValueKind.Number)
+        {
+            value = num.GetDouble();
+            return true;
+        }
+        return false;
+    }
+
+    private static double MapAuthorityLevel(JsonElement root)
+    {
+        if (!root.TryGetProperty("topicalAuthority", out var wrapper) ||
+            !wrapper.TryGetProperty("value", out var val) ||
+            !val.TryGetProperty("authorityLevel", out var levelEl) ||
+            levelEl.ValueKind != JsonValueKind.String)
+        {
+            return 50;
+        }
+
+        var level = levelEl.GetString()?.ToLowerInvariant() ?? "";
+        if (level.Contains("very high")) return 90;
+        if (level.Contains("high")) return 75;
+        if (level.Contains("medium")) return 50;
+        if (level.Contains("very low")) return 10;
+        if (level.Contains("low")) return 25;
+        return 50;
+    }
+
+    private static double ComputeBusinessCompleteness(JsonElement root)
+    {
+        int completeness = 0;
+        if (root.TryGetProperty("coreServices", out _)) completeness += 15;
+        if (root.TryGetProperty("products", out _)) completeness += 10;
+        if (root.TryGetProperty("targetCustomers", out _)) completeness += 10;
+        if (root.TryGetProperty("uniqueSellingProposition", out _)) completeness += 15;
+        if (root.TryGetProperty("brandPositioning", out _)) completeness += 10;
+        if (root.TryGetProperty("industriesServed", out _)) completeness += 10;
+        if (root.TryGetProperty("businessModel", out _)) completeness += 10;
+        return Math.Min(100, completeness + 20);
     }
 
     private CompetitiveGapAnalysis ComputeGapAnalysis(

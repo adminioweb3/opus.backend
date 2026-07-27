@@ -1,179 +1,300 @@
 using System.Text.Json;
-using Citationly.Application.Features.Onboarding;
 using Citationly.Application.Interfaces;
+using Citationly.Application.Interfaces.Companies;
 using Citationly.Application.Interfaces.Competitors;
+using Citationly.Domain.Entities;
+using Citationly.Domain.Utils;
+using Citationly.Infrastructure.Services.Companies;
 
 namespace Citationly.Infrastructure.Services.Competitors;
 
 /// <summary>
-/// Lightweight competitor discovery service.
-/// Returns only names, URLs, types, and scores — no heavy enrichment data.
-/// Target: ~2,000 output tokens, response in 10–20 seconds.
+/// Ranking-only competitor discovery: candidates come exclusively from real companies already in
+/// the Company Knowledge Graph (via ICompanySimilarityService's cosine-similarity search over
+/// real embeddings) — this service never invents a company name. The one AI call here selects
+/// and explains a top-20 subset of the top-100 real candidates; it never touches the similarity
+/// number itself, which always comes straight from cosine similarity so it can't be re-inflated
+/// the way the old additive scoring engine used to saturate at 100.
 /// </summary>
 public class CompetitorDiscoveryService : ICompetitorDiscoveryService
 {
-    private readonly ISearchService _searchService;
+    private const int CandidatePoolSize = 100;
+    private const int TopSelectionCount = 20;
+
+    private readonly ICompanySimilarityService _similarityService;
     private readonly IOpenAiService _openAiService;
-    private readonly ITokenBudgetManager _tokenBudgetManager;
-    private readonly ICompetitorScoringEngine _scoringEngine;
+    private readonly ICompanyRepository _companyRepository;
 
     public CompetitorDiscoveryService(
-        ISearchService searchService,
+        ICompanySimilarityService similarityService,
         IOpenAiService openAiService,
-        ITokenBudgetManager tokenBudgetManager,
-        ICompetitorScoringEngine scoringEngine)
+        ICompanyRepository companyRepository)
     {
-        _searchService = searchService;
+        _similarityService = similarityService;
         _openAiService = openAiService;
-        _tokenBudgetManager = tokenBudgetManager;
-        _scoringEngine = scoringEngine;
+        _companyRepository = companyRepository;
     }
 
-    public async Task<List<CompCompetitor>> DiscoverCompetitorsAsync(
-        string rawProfileJson,
-        string websiteUrl,
+    public async Task<List<CompanyCompetitor>> DiscoverCompetitorsAsync(
+        Guid companyId,
         string businessName,
-        Guid organizationId,
+        string rawProfileJson,
         CancellationToken cancellationToken)
     {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var candidates = await _similarityService.GetTopSimilarAsync(companyId, CandidatePoolSize);
+        if (candidates.Count == 0)
+        {
+            Console.WriteLine("[Discovery] No candidates in graph, initiating cold-start generation...");
+            // Cold-start: no companies in graph yet. Generate AI competitors as fallback.
+            var coldStartResults = await GenerateColdStartCompetitorsAsync(companyId, businessName, rawProfileJson, cancellationToken);
+            Console.WriteLine($"[Discovery] Cold-start generated {coldStartResults.Count} competitors");
+            return coldStartResults;
+        }
 
-        // 1. Extract BI context
-        var biContext = ExtractBiContext(rawProfileJson);
+        var candidatesById = candidates.ToDictionary(c => c.Company.Id, c => c);
 
-        // 2. Hybrid Discovery: seed from search engine
-        var searchHints = new List<string>();
+        var selections = await SelectAndExplainAsync(businessName, rawProfileJson, candidates);
+
+        // Enforce "never invent" in code, not just in the prompt — drop anything the model
+        // returned that isn't literally one of the ids we handed it.
+        var validSelections = selections
+            .Where(s => candidatesById.ContainsKey(s.CompanyId))
+            .DistinctBy(s => s.CompanyId)
+            .Take(TopSelectionCount)
+            .ToList();
+
+        // AI call failed or returned nothing usable — fall back to the top-20 real candidates
+        // by cosine similarity directly, with no AI-written reason, rather than an empty result.
+        if (validSelections.Count == 0)
+        {
+            return candidates
+                .Take(TopSelectionCount)
+                .Select((c, i) => new CompanyCompetitor
+                {
+                    CompanyId = companyId,
+                    CompetitorCompanyId = c.Company.Id,
+                    Similarity = ToSimilarityScore(c.CosineSimilarity),
+                    Confidence = 0,
+                    Rank = i + 1,
+                    Reason = null,
+                    Strength = null,
+                    Weakness = null
+                })
+                .ToList();
+        }
+
+        return validSelections.Select((s, i) =>
+        {
+            var (_, cosine) = candidatesById[s.CompanyId];
+            return new CompanyCompetitor
+            {
+                CompanyId = companyId,
+                CompetitorCompanyId = s.CompanyId,
+                Similarity = ToSimilarityScore(cosine),
+                Confidence = Math.Clamp(s.Confidence, 0, 100),
+                Rank = i + 1,
+                Reason = s.Reason,
+                Strength = s.Strength,
+                Weakness = s.Weakness
+            };
+        }).ToList();
+    }
+
+    private static decimal ToSimilarityScore(double cosine) => Math.Round((decimal)Math.Clamp(cosine, 0, 1) * 100, 2);
+
+    private async Task<List<Selection>> SelectAndExplainAsync(
+        string businessName,
+        string rawProfileJson,
+        List<(Company Company, double CosineSimilarity)> candidates)
+    {
+        var ctx = CompanyProfileSummarizer.ExtractContext(rawProfileJson);
+        var candidateLines = string.Join("\n", candidates.Select(c =>
+            CompanyProfileSummarizer.BuildCandidateSummary(c.Company.Id, c.Company.CompanyName, c.Company.Industry, c.Company.BusinessProfileJson)));
+
+        const string systemPrompt =
+            "You are a competitive-intelligence ranking assistant. You may ONLY select and rank companies " +
+            "from the CANDIDATES list below by their exact id. Do not invent, add, or suggest any company " +
+            "not in this list. Output ONLY a JSON array. No markdown, no explanations outside the array.";
+
+        var userPrompt = $@"Business: {businessName}
+Industry: {ctx.Industry}
+Services: {ctx.Services}
+Products: {ctx.Products}
+Target customers: {ctx.TargetAudience}
+Business model: {ctx.BusinessModel}
+Unique selling proposition: {ctx.Usp}
+
+CANDIDATES (id | name | industry | services | products | audience):
+{candidateLines}
+
+Select the {TopSelectionCount} candidates most relevant as real competitors to the Business above, ordered
+most-to-least relevant. For each, explain why in a business-relevant way. Reason/strength/weakness: max 20 words each.
+
+Return ONLY a JSON array using this schema, with companyId copied EXACTLY from a candidate's id above:
+[{{""companyId"":""<uuid>"",""confidence"":0,""reason"":"""",""strength"":"""",""weakness"":""""}}]";
+
+        string responseContent;
         try
         {
-            var discovered = await _searchService.DiscoverCompetitorsAsync(
-                organizationId, biContext.Industry, biContext.Services);
-            if (discovered != null)
-                searchHints.AddRange(discovered.Select(c => c.Name));
-        }
-        catch { /* gracefully fallback */ }
-
-        // 3. Ultra-lightweight AI prompt (8 fields only)
-        var systemPrompt = "You are a competitive intelligence AI. Output ONLY a JSON array. No markdown. No explanations.";
-
-        var userPrompt = $@"Identify 40-50 competitors for this business. Return ONLY a JSON array.
-
-Business: {businessName}
-URL: {websiteUrl}
-Industry: {biContext.Industry}
-Services: {biContext.Services}
-Audience: {biContext.TargetAudience}
-Model: {biContext.BusinessModel}
-USP: {biContext.USP}
-{(searchHints.Any() ? $"Known competitors: {string.Join(", ", searchHints)}" : "")}
-
-Rules:
-- 40-50 unique competitors. NO duplicates.
-- Mix: Direct, Indirect, Emerging, Enterprise Alternative, Niche Alternative.
-- Description max 20 words.
-- similarityScore and confidence: 0-100.
-
-Schema: [{{""rank"":1,""companyName"":"""",""website"":"""",""industry"":"""",""competitorType"":""Direct"",""description"":"""",""similarityScore"":0,""confidence"":0}}]";
-
-        int promptTokens = _tokenBudgetManager.EstimateTokens(userPrompt);
-        Console.WriteLine($"[Discovery] Prompt tokens: {promptTokens} (target: <500)");
-
-        // 4. Query AI
-        var responseContent = await _openAiService.GenerateContentAsync(
-            userPrompt, systemPrompt, true, "gpt-4o-mini");
-
-        Console.WriteLine($"[Discovery] AI responded in {sw.ElapsedMilliseconds}ms");
-
-        // 5. Extract JSON array robustly
-        int startIndex = responseContent.IndexOf('[');
-        int endIndex = responseContent.LastIndexOf(']');
-        if (startIndex >= 0 && endIndex > startIndex)
-        {
-            responseContent = responseContent.Substring(startIndex, endIndex - startIndex + 1);
-        }
-        else
-        {
-            Console.WriteLine("[Discovery] Warning: AI output did not contain a valid JSON array.");
-            return new List<CompCompetitor>();
-        }
-
-        // 6. Parse
-        List<CompCompetitor> aiCompetitors = new();
-        try
-        {
-            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-            aiCompetitors = JsonSerializer.Deserialize<List<CompCompetitor>>(responseContent, options) ?? new();
+            responseContent = await _openAiService.GenerateContentAsync(userPrompt, systemPrompt, true, "gpt-4o-mini");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Discovery] JSON parse failed: {ex.Message}");
-            return new List<CompCompetitor>();
+            Console.WriteLine($"[Discovery] Ranking call failed: {ex.Message}");
+            return new List<Selection>();
         }
 
-        // 7. Deduplicate by website domain
-        var uniqueCompetitors = aiCompetitors
-            .GroupBy(c =>
-            {
-                var webKey = c.website?.Replace("https://", "").Replace("http://", "")
-                    .Replace("www.", "").Trim().TrimEnd('/').ToLowerInvariant() ?? "";
-                var nameKey = c.companyName?.Trim().ToLowerInvariant() ?? "";
-                return !string.IsNullOrEmpty(webKey) ? webKey :
-                    (string.IsNullOrEmpty(nameKey) ? Guid.NewGuid().ToString() : nameKey);
-            })
-            .Select(g => g.First())
-            .ToList();
-
-        // 8. Score and rank
-        var rankedCompetitors = _scoringEngine.RankCompetitors(
-            uniqueCompetitors,
-            biContext.Industry,
-            biContext.TargetAudience,
-            biContext.Products,
-            biContext.Services);
-
-        for (int i = 0; i < rankedCompetitors.Count; i++)
-            rankedCompetitors[i].rank = i + 1;
-
-        sw.Stop();
-        Console.WriteLine($"[Discovery] Total pipeline: {sw.ElapsedMilliseconds}ms, {rankedCompetitors.Count} competitors");
-
-        return rankedCompetitors;
-    }
-
-    private (string Industry, string Services, string TargetAudience, string BusinessModel,
-        string Products, string USP, string BrandPositioning) ExtractBiContext(string rawJson)
-    {
-        string ind = "Unknown", svc = "Unknown", aud = "Unknown", mod = "Unknown",
-            prod = "Unknown", usp = "Unknown", brand = "Unknown";
-        if (string.IsNullOrEmpty(rawJson)) return (ind, svc, aud, mod, prod, usp, brand);
+        int startIndex = responseContent.IndexOf('[');
+        int endIndex = responseContent.LastIndexOf(']');
+        if (startIndex < 0 || endIndex <= startIndex)
+        {
+            Console.WriteLine("[Discovery] Ranking response did not contain a JSON array.");
+            return new List<Selection>();
+        }
+        responseContent = responseContent.Substring(startIndex, endIndex - startIndex + 1);
 
         try
         {
-            var doc = JsonDocument.Parse(rawJson);
-            var root = doc.RootElement;
-
-            if (root.TryGetProperty("industriesServed", out var iVal) && iVal.TryGetProperty("value", out var iArr))
-                ind = string.Join(", ", iArr.EnumerateArray().Select(x => x.GetString()));
-
-            if (root.TryGetProperty("coreServices", out var sVal) && sVal.TryGetProperty("value", out var sArr))
-                svc = string.Join(", ", sArr.EnumerateArray().Select(x => x.GetString()));
-
-            if (root.TryGetProperty("targetCustomers", out var tVal) && tVal.TryGetProperty("value", out var tArr))
-                aud = string.Join(", ", tArr.EnumerateArray().Select(x => x.GetString()));
-
-            if (root.TryGetProperty("businessModel", out var mVal) && mVal.TryGetProperty("value", out var mStr))
-                mod = mStr.GetString() ?? "Unknown";
-
-            if (root.TryGetProperty("products", out var pVal) && pVal.TryGetProperty("value", out var pArr))
-                prod = string.Join(", ", pArr.EnumerateArray().Select(x => x.GetString()));
-
-            if (root.TryGetProperty("uniqueSellingProposition", out var uVal) && uVal.TryGetProperty("value", out var uStr))
-                usp = uStr.GetString() ?? "Unknown";
-
-            if (root.TryGetProperty("brandPositioning", out var bVal) && bVal.TryGetProperty("value", out var bStr))
-                brand = bStr.GetString() ?? "Unknown";
+            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            return JsonSerializer.Deserialize<List<Selection>>(responseContent, options) ?? new();
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Discovery] Ranking response JSON parse failed: {ex.Message}");
+            return new List<Selection>();
+        }
+    }
 
-        return (ind, svc, aud, mod, prod, usp, brand);
+    private class Selection
+    {
+        public Guid CompanyId { get; set; }
+        public int Confidence { get; set; }
+        public string? Reason { get; set; }
+        public string? Strength { get; set; }
+        public string? Weakness { get; set; }
+    }
+
+    private async Task<List<CompanyCompetitor>> GenerateColdStartCompetitorsAsync(
+        Guid companyId,
+        string businessName,
+        string rawProfileJson,
+        CancellationToken cancellationToken)
+    {
+        var ctx = CompanyProfileSummarizer.ExtractContext(rawProfileJson);
+
+        const string systemPrompt =
+            "You are a competitive intelligence analyst. Generate realistic competitor company names " +
+            "and brief analysis based on the provided business context. Output ONLY a JSON array.";
+
+        var userPrompt = $@"Based on this business profile, generate {TopSelectionCount} realistic competitor companies that actually exist in the market:
+
+Business: {businessName}
+Industry: {ctx.Industry}
+Services: {ctx.Services}
+Products: {ctx.Products}
+Target customers: {ctx.TargetAudience}
+Business model: {ctx.BusinessModel}
+
+For EACH competitor, provide:
+- name: real company name in this space
+- website: company website (must be real)
+- reason: why they're a competitor (max 15 words)
+- strength: their competitive advantage (max 15 words)
+- weakness: potential weakness vs your business (max 15 words)
+- confidence: 60-90 (how confident this is a real competitor)
+
+Return ONLY this JSON array format, NO markdown:
+[{{""name"":"""",""website"":"""",""reason"":"""",""strength"":"""",""weakness"":"""",""confidence"":0}}]";
+
+        try
+        {
+            Console.WriteLine("[Discovery] Calling AI for cold-start competitor generation...");
+            var responseContent = await _openAiService.GenerateContentAsync(
+                userPrompt, systemPrompt, requireJson: true, model: "gpt-4o-mini");
+
+            int startIndex = responseContent.IndexOf('[');
+            int endIndex = responseContent.LastIndexOf(']');
+            if (startIndex < 0 || endIndex <= startIndex)
+            {
+                Console.WriteLine("[Discovery] AI response did not contain JSON array");
+                return new List<CompanyCompetitor>();
+            }
+
+            responseContent = responseContent.Substring(startIndex, endIndex - startIndex + 1);
+
+            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            var coldStartCompetitors = JsonSerializer.Deserialize<List<ColdStartCompetitor>>(responseContent, options) ?? new();
+            Console.WriteLine($"[Discovery] AI returned {coldStartCompetitors.Count} competitors");
+
+            // Create/upsert Company records for each competitor
+            var edges = new List<CompanyCompetitor>();
+            var similarityDecrement = 10m / TopSelectionCount;
+            Console.WriteLine($"[Discovery] Processing {coldStartCompetitors.Count} competitors for company {companyId}");
+
+            for (int i = 0; i < coldStartCompetitors.Count && i < TopSelectionCount; i++)
+            {
+                var competitor = coldStartCompetitors[i];
+                if (string.IsNullOrWhiteSpace(competitor.Name) || string.IsNullOrWhiteSpace(competitor.Website))
+                {
+                    Console.WriteLine($"[Discovery] Skipping competitor {i}: empty name or website");
+                    continue;
+                }
+
+                Console.WriteLine($"[Discovery] Creating company record for {competitor.Name}");
+                // Normalize domain for dedup
+                var normalizedDomain = DomainNormalizer.Normalize(competitor.Website);
+
+                // Create minimal Company record for cold-start competitor
+                var company = new Company
+                {
+                    Id = Guid.NewGuid(),
+                    NormalizedDomain = normalizedDomain,
+                    Website = competitor.Website,
+                    CompanyName = competitor.Name,
+                    Industry = ctx.Industry,
+                    BusinessProfileJson = "{}", // Minimal: empty profile until they're analyzed
+                    Embedding = null,
+                    EmbeddingModel = null,
+                    EmbeddingUpdatedAt = null,
+                    SourceOrganizationId = null, // Not from any org, generated for cold-start
+                    LastAnalyzedAt = DateTime.UtcNow
+                };
+
+                // Upsert company (on conflict update LastAnalyzedAt)
+                var upsertedCompany = await _companyRepository.UpsertAsync(company);
+                Console.WriteLine($"[Discovery] Upserted company {upsertedCompany.CompanyName} with ID {upsertedCompany.Id}");
+
+                // Create edge with descending similarity
+                edges.Add(new CompanyCompetitor
+                {
+                    CompanyId = companyId, // The org's own company
+                    CompetitorCompanyId = upsertedCompany.Id, // The generated competitor
+                    Similarity = 80m - (i * similarityDecrement), // 80, 72, 64... descending
+                    Confidence = Math.Clamp(competitor.Confidence, 60, 100),
+                    Rank = i + 1,
+                    Reason = competitor.Reason,
+                    Strength = competitor.Strength,
+                    Weakness = competitor.Weakness
+                });
+            }
+
+            Console.WriteLine($"[Discovery] Cold-start complete: {edges.Count} edges created");
+            return edges;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Discovery] Cold-start generation failed: {ex.Message}");
+            return new List<CompanyCompetitor>();
+        }
+    }
+
+    private class ColdStartCompetitor
+    {
+        public string? Name { get; set; }
+        public string? Website { get; set; }
+        public string? Reason { get; set; }
+        public string? Strength { get; set; }
+        public string? Weakness { get; set; }
+        public int Confidence { get; set; }
     }
 }

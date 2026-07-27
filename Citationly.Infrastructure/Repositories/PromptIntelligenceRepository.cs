@@ -59,10 +59,29 @@ public class PromptIntelligenceRepository : IPromptIntelligenceRepository
     {
         using var connection = _dbConnectionFactory.CreateConnection();
         var sql = @"
-            INSERT INTO PromptQuestions (PromptTopicId, PromptText, CreatedAt)
-            VALUES (@PromptTopicId, @PromptText, @CreatedAt)
+            INSERT INTO PromptQuestions (PromptTopicId, PromptText, Region, Persona, CreatedAt)
+            VALUES (@PromptTopicId, @PromptText, @Region, @Persona, @CreatedAt)
             RETURNING Id;";
         return await connection.ExecuteScalarAsync<Guid>(sql, question);
+    }
+
+    public async Task UpdateQuestionAsync(Guid questionId, string? promptText, bool? isActive)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        var sql = @"
+            UPDATE PromptQuestions
+            SET PromptText = COALESCE(@PromptText, PromptText),
+                IsActive = COALESCE(@IsActive, IsActive)
+            WHERE Id = @Id";
+        await connection.ExecuteAsync(sql, new { Id = questionId, PromptText = promptText, IsActive = isActive });
+    }
+
+    public async Task<PromptAnalysis?> GetAnalysisAsync(Guid analysisId)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        return await connection.QuerySingleOrDefaultAsync<PromptAnalysis>(
+            "SELECT * FROM PromptAnalysis WHERE Id = @Id",
+            new { Id = analysisId });
     }
 
     public async Task<IEnumerable<PromptAnalysis>> GetAnalysesByQuestionAsync(Guid questionId)
@@ -146,7 +165,7 @@ public class PromptIntelligenceRepository : IPromptIntelligenceRepository
         using var connection = _dbConnectionFactory.CreateConnection();
         var sql = @"
             INSERT INTO CompetitorComparisons (PromptAnalysisId, CompetitorName, VisibilityScore, ShareOfVoice, MissingTopicsJson)
-            VALUES (@PromptAnalysisId, @CompetitorName, @VisibilityScore, @ShareOfVoice, @MissingTopicsJson);";
+            VALUES (@PromptAnalysisId, @CompetitorName, @VisibilityScore, @ShareOfVoice, @MissingTopicsJson::jsonb);";
         await connection.ExecuteAsync(sql, comparisons);
     }
 
@@ -188,5 +207,172 @@ public class PromptIntelligenceRepository : IPromptIntelligenceRepository
         return await connection.QueryAsync<CompetitorComparison>(
             "SELECT * FROM CompetitorComparisons WHERE PromptAnalysisId = @PromptAnalysisId",
             new { PromptAnalysisId = analysisId });
+    }
+
+    public async Task<IEnumerable<PromptVisibilitySummaryRow>> GetVisibilitySummaryDataAsync(Guid organizationId, DateTime since)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        var sql = @"
+            SELECT t.Id AS TopicId, t.Name AS TopicName, q.Id AS QuestionId, q.Region AS Region, q.Persona AS Persona, a.RunAt AS RunAt,
+                   v.OverallVisibilityScore, v.ShareOfVoice, v.AveragePosition, v.CitationCount
+            FROM PromptVisibility v
+            JOIN PromptAnalysis a ON v.PromptAnalysisId = a.Id
+            JOIN PromptQuestions q ON a.PromptQuestionId = q.Id
+            JOIN PromptTopics t ON q.PromptTopicId = t.Id
+            WHERE t.OrganizationId = @OrganizationId AND a.Status = 'Completed' AND a.RunAt >= @Since
+            ORDER BY a.RunAt ASC";
+        return await connection.QueryAsync<PromptVisibilitySummaryRow>(sql, new { OrganizationId = organizationId, Since = since });
+    }
+
+    public async Task<IEnumerable<CompetitorComparisonSummaryRow>> GetCompetitorComparisonSummaryDataAsync(Guid organizationId, DateTime since)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        var sql = @"
+            SELECT cc.CompetitorName, cc.VisibilityScore, cc.ShareOfVoice, a.RunAt AS RunAt
+            FROM CompetitorComparisons cc
+            JOIN PromptAnalysis a ON cc.PromptAnalysisId = a.Id
+            JOIN PromptQuestions q ON a.PromptQuestionId = q.Id
+            JOIN PromptTopics t ON q.PromptTopicId = t.Id
+            WHERE t.OrganizationId = @OrganizationId AND a.Status = 'Completed' AND a.RunAt >= @Since
+            ORDER BY a.RunAt ASC";
+        return await connection.QueryAsync<CompetitorComparisonSummaryRow>(sql, new { OrganizationId = organizationId, Since = since });
+    }
+
+    public async Task<IEnumerable<PromptPlatformSummaryRow>> GetPlatformSummaryDataAsync(Guid organizationId, DateTime since)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        // Based on PromptResponses (one row per platform per analysis, regardless of whether the
+        // brand was mentioned there) rather than PromptMentions alone, so platforms with zero
+        // mentions still count toward the denominator instead of silently vanishing.
+        var sql = @"
+            SELECT r.PromptAnalysisId AS AnalysisId, r.Platform, a.RunAt AS RunAt,
+                   EXISTS(SELECT 1 FROM PromptMentions m WHERE m.PromptAnalysisId = r.PromptAnalysisId AND m.Platform = r.Platform AND m.IsBrand = TRUE) AS IsBrandMentioned,
+                   (SELECT MIN(m2.Position) FROM PromptMentions m2 WHERE m2.PromptAnalysisId = r.PromptAnalysisId AND m2.Platform = r.Platform AND m2.IsBrand = TRUE) AS BrandPosition,
+                   (SELECT COUNT(*) FROM PromptMentions m3 WHERE m3.PromptAnalysisId = r.PromptAnalysisId AND m3.Platform = r.Platform) AS TotalMentionsOnPlatform,
+                   (SELECT COUNT(*) FROM PromptMentions m4 WHERE m4.PromptAnalysisId = r.PromptAnalysisId AND m4.Platform = r.Platform AND m4.IsBrand = TRUE) AS BrandMentionsOnPlatform
+            FROM PromptResponses r
+            JOIN PromptAnalysis a ON r.PromptAnalysisId = a.Id
+            JOIN PromptQuestions q ON a.PromptQuestionId = q.Id
+            JOIN PromptTopics t ON q.PromptTopicId = t.Id
+            WHERE t.OrganizationId = @OrganizationId AND a.Status = 'Completed' AND a.RunAt >= @Since";
+        return await connection.QueryAsync<PromptPlatformSummaryRow>(sql, new { OrganizationId = organizationId, Since = since });
+    }
+
+    public async Task<IEnumerable<PromptCitationSummaryRow>> GetCitationSummaryDataAsync(Guid organizationId, DateTime since)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        var sql = @"
+            SELECT c.PromptAnalysisId AS AnalysisId, c.Platform, c.Domain, c.Url, c.Category, a.RunAt AS RunAt
+            FROM PromptCitations c
+            JOIN PromptAnalysis a ON c.PromptAnalysisId = a.Id
+            JOIN PromptQuestions q ON a.PromptQuestionId = q.Id
+            JOIN PromptTopics t ON q.PromptTopicId = t.Id
+            WHERE t.OrganizationId = @OrganizationId AND a.Status = 'Completed' AND a.RunAt >= @Since";
+        return await connection.QueryAsync<PromptCitationSummaryRow>(sql, new { OrganizationId = organizationId, Since = since });
+    }
+
+    public async Task<IEnumerable<PromptSentimentSummaryRow>> GetSentimentSummaryDataAsync(Guid organizationId, DateTime since)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        var sql = @"
+            SELECT r.Sentiment, r.SentimentQuote, r.Platform, a.RunAt AS RunAt
+            FROM PromptResponses r
+            JOIN PromptAnalysis a ON r.PromptAnalysisId = a.Id
+            JOIN PromptQuestions q ON a.PromptQuestionId = q.Id
+            JOIN PromptTopics t ON q.PromptTopicId = t.Id
+            WHERE t.OrganizationId = @OrganizationId AND a.Status = 'Completed' AND a.RunAt >= @Since AND r.Sentiment IS NOT NULL";
+        return await connection.QueryAsync<PromptSentimentSummaryRow>(sql, new { OrganizationId = organizationId, Since = since });
+    }
+
+    public async Task<IEnumerable<PromptExecutionHistoryRow>> GetExecutionHistoryAsync(Guid questionId)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        var sql = @"
+            SELECT a.Id AS AnalysisId, a.RunAt, a.Status,
+                   v.OverallVisibilityScore, v.ShareOfVoice, v.AveragePosition
+            FROM PromptAnalysis a
+            LEFT JOIN PromptVisibility v ON v.PromptAnalysisId = a.Id
+            WHERE a.PromptQuestionId = @QuestionId
+            ORDER BY a.RunAt DESC";
+        return await connection.QueryAsync<PromptExecutionHistoryRow>(sql, new { QuestionId = questionId });
+    }
+
+    public async Task<string?> GetOrganizationPlanTypeAsync(Guid organizationId)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        return await connection.QuerySingleOrDefaultAsync<string?>(
+            "SELECT PlanType FROM Organizations WHERE Id = @Id",
+            new { Id = organizationId });
+    }
+
+    public async Task InsertCitationsAsync(IEnumerable<PromptCitation> citations)
+    {
+        if (!citations.Any()) return;
+        using var connection = _dbConnectionFactory.CreateConnection();
+        var sql = @"
+            INSERT INTO PromptCitations (PromptAnalysisId, Platform, Domain, Url, Category, CreatedAt)
+            VALUES (@PromptAnalysisId, @Platform, @Domain, @Url, @Category, @CreatedAt);";
+        await connection.ExecuteAsync(sql, citations);
+    }
+
+    public async Task UpdateResponseSentimentAsync(Guid analysisId, string platform, string? sentiment, string? quote)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        var sql = @"
+            UPDATE PromptResponses
+            SET Sentiment = @Sentiment, SentimentQuote = @Quote
+            WHERE PromptAnalysisId = @AnalysisId AND Platform = @Platform";
+        await connection.ExecuteAsync(sql, new { AnalysisId = analysisId, Platform = platform, Sentiment = sentiment, Quote = quote });
+    }
+
+    public async Task<IEnumerable<PromptFanout>> GetFanoutsByQuestionAsync(Guid questionId)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        return await connection.QueryAsync<PromptFanout>(
+            "SELECT * FROM PromptFanouts WHERE PromptQuestionId = @PromptQuestionId ORDER BY CreatedAt ASC",
+            new { PromptQuestionId = questionId });
+    }
+
+    public async Task InsertFanoutsAsync(IEnumerable<PromptFanout> fanouts)
+    {
+        if (!fanouts.Any()) return;
+        using var connection = _dbConnectionFactory.CreateConnection();
+        var sql = @"
+            INSERT INTO PromptFanouts (PromptQuestionId, FanoutText, Engine, CreatedAt)
+            VALUES (@PromptQuestionId, @FanoutText, @Engine, @CreatedAt);";
+        await connection.ExecuteAsync(sql, fanouts);
+    }
+
+    public async Task DeleteFanoutsByQuestionAsync(Guid questionId)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        await connection.ExecuteAsync("DELETE FROM PromptFanouts WHERE PromptQuestionId = @PromptQuestionId", new { PromptQuestionId = questionId });
+    }
+
+    public async Task<IEnumerable<CompetitorMentionSummaryRow>> GetCompetitorMentionSummaryDataAsync(Guid organizationId, DateTime since)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        var sql = @"
+            SELECT m.EntityName AS CompetitorName, m.Platform, m.Position, a.RunAt AS RunAt
+            FROM PromptMentions m
+            JOIN PromptAnalysis a ON m.PromptAnalysisId = a.Id
+            JOIN PromptQuestions q ON a.PromptQuestionId = q.Id
+            JOIN PromptTopics t ON q.PromptTopicId = t.Id
+            WHERE t.OrganizationId = @OrganizationId AND a.Status = 'Completed' AND a.RunAt >= @Since AND m.IsBrand = FALSE";
+        return await connection.QueryAsync<CompetitorMentionSummaryRow>(sql, new { OrganizationId = organizationId, Since = since });
+    }
+
+    public async Task<IEnumerable<FanoutOverviewRow>> GetFanoutOverviewDataAsync(Guid organizationId)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        var sql = @"
+            SELECT q.Id AS QuestionId, q.PromptText,
+                   (SELECT COUNT(*) FROM PromptFanouts f WHERE f.PromptQuestionId = q.Id) AS FanoutCount,
+                   (SELECT COUNT(*) FROM PromptAnalysis a WHERE a.PromptQuestionId = q.Id AND a.Status = 'Completed') AS AnalysisCount
+            FROM PromptQuestions q
+            JOIN PromptTopics t ON q.PromptTopicId = t.Id
+            WHERE t.OrganizationId = @OrganizationId
+              AND EXISTS (SELECT 1 FROM PromptFanouts f WHERE f.PromptQuestionId = q.Id)";
+        return await connection.QueryAsync<FanoutOverviewRow>(sql, new { OrganizationId = organizationId });
     }
 }

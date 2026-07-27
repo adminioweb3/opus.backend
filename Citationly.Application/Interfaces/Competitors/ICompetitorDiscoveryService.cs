@@ -1,16 +1,18 @@
-using Citationly.Application.Features.Onboarding;
+using Citationly.Domain.Entities;
 
 namespace Citationly.Application.Interfaces.Competitors;
 
 public interface ICompetitorDiscoveryService
 {
     /// <summary>
-    /// Executes the hybrid competitor discovery pipeline to return the top 40-50 ranked competitors.
+    /// Ranks the org's own Company against real candidates already in the Company Knowledge
+    /// Graph (via internal cosine-similarity search) — never invents a company. Returns up to
+    /// the top 20 CompanyCompetitor edges, each with a real Similarity score plus an AI-written
+    /// Confidence/Rank/Reason/Strength/Weakness.
     /// </summary>
-    Task<List<CompCompetitor>> DiscoverCompetitorsAsync(
-        string rawProfileJson,
-        string websiteUrl,
+    Task<List<CompanyCompetitor>> DiscoverCompetitorsAsync(
+        Guid companyId,
         string businessName,
-        Guid organizationId,
+        string rawProfileJson,
         CancellationToken cancellationToken);
 }

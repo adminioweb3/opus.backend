@@ -15,19 +15,25 @@ public class PromptExecutionService : IPromptExecutionService
     private readonly ILLMRunnerService _llmRunner;
     private readonly IVisibilityCalculatorService _calculator;
     private readonly IRecommendationEngineService _recommendationEngine;
+    private readonly ISentimentClassifierService _sentimentClassifier;
+    private readonly ICitationExtractorService _citationExtractor;
 
     public PromptExecutionService(
         IPromptIntelligenceRepository repo,
         IWebsiteRepository websiteRepo,
         ILLMRunnerService llmRunner,
         IVisibilityCalculatorService calculator,
-        IRecommendationEngineService recommendationEngine)
+        IRecommendationEngineService recommendationEngine,
+        ISentimentClassifierService sentimentClassifier,
+        ICitationExtractorService citationExtractor)
     {
         _repo = repo;
         _websiteRepo = websiteRepo;
         _llmRunner = llmRunner;
         _calculator = calculator;
         _recommendationEngine = recommendationEngine;
+        _sentimentClassifier = sentimentClassifier;
+        _citationExtractor = citationExtractor;
     }
 
     public async IAsyncEnumerable<string> ExecutePromptAnalysisAsync(Guid organizationId, Guid questionId, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
@@ -43,6 +49,7 @@ public class PromptExecutionService : IPromptExecutionService
 
         var profile = await _websiteRepo.GetLatestWebsiteProfileAsync(organizationId);
         string brandName = profile?.BusinessName ?? "Your Brand";
+        string? ownDomain = TryGetHost(profile?.WebsiteUrl);
 
         // Create Analysis Record
         var analysis = new PromptAnalysis
@@ -54,20 +61,63 @@ public class PromptExecutionService : IPromptExecutionService
 
         yield return "{\"step\": \"Running against AI Models...\", \"progress\": 20}";
 
+        var personaText = string.IsNullOrWhiteSpace(question.Persona) ? "a prospective customer" : question.Persona;
+        var regionText = string.IsNullOrWhiteSpace(question.Region) || string.Equals(question.Region, "Global", StringComparison.OrdinalIgnoreCase) ? "" : $" based in {question.Region}";
+        
+        string personaSystemPrompt =
+            $"You are an AI search assistant answering for {personaText}{regionText}. " +
+            $"The business running this evaluation is '{brandName}' (URL: {profile?.WebsiteUrl}). " +
+            "Give a concise, well-structured answer naming specific real products, brands, or sources where " +
+            "relevant, as a real AI search engine would for this person.";
+
         // Run LLMs
-        var responses = await _llmRunner.RunPromptAcrossModelsAsync(analysisId, question.PromptText, ct);
+        var responses = (await _llmRunner.RunPromptAcrossModelsAsync(analysisId, question.PromptText, ct, personaSystemPrompt)).ToList();
+        
+        if (responses.All(r => r.ResponseText.StartsWith("[Error]")))
+        {
+            var errMsg = responses.First().ResponseText;
+            await _repo.UpdateAnalysisStatusAsync(analysisId, "Failed", errMsg);
+            yield return $"{{\"error\": \"Analysis failed: {errMsg.Replace("\"", "'").Replace("\n", " ")}\"}}";
+            yield break;
+        }
+
         await _repo.InsertResponsesAsync(responses);
 
         yield return "{\"step\": \"Extracting Mentions & Citations...\", \"progress\": 50}";
 
         // Calculate Visibility
-        // Simulated competitors
-        var competitors = new List<string> { "Competitor A", "Competitor B", "Alternative C" }; 
+        var trackedCompetitors = await _websiteRepo.GetCompetitorsAsync(organizationId);
+        var competitors = trackedCompetitors.Select(c => c.Name).Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
         var (visibility, mentions, compComparisons) = _calculator.CalculateVisibilityMetrics(analysisId, responses, brandName, competitors);
+
+        // Real citation extraction from the actual captured response text
+        var citations = responses.SelectMany(r => _citationExtractor.ExtractCitations(analysisId, r.Platform, r.ResponseText, ownDomain)).ToList();
+        
+        // Use real citation count
+        if (ownDomain != null)
+        {
+            visibility.CitationCount = citations.Count(c => c.Domain.Contains(ownDomain, StringComparison.OrdinalIgnoreCase));
+        }
+        else
+        {
+            visibility.CitationCount = 0;
+        }
 
         await _repo.InsertMentionsAsync(mentions);
         await _repo.InsertVisibilityAsync(visibility);
         await _repo.InsertCompetitorComparisonsAsync(compComparisons);
+        await _repo.InsertCitationsAsync(citations);
+
+        // Real LLM sentiment classification, scoped to responses that actually mentioned the brand.
+        var brandMentionedPlatforms = mentions.Where(m => m.IsBrand).Select(m => m.Platform).ToHashSet();
+        foreach (var response in responses.Where(r => brandMentionedPlatforms.Contains(r.Platform)))
+        {
+            var (sentiment, quote) = await _sentimentClassifier.ClassifyAsync(response.ResponseText, brandName, ct);
+            if (sentiment != null)
+            {
+                await _repo.UpdateResponseSentimentAsync(analysisId, response.Platform, sentiment, quote);
+            }
+        }
 
         yield return "{\"step\": \"Generating Recommendations...\", \"progress\": 80}";
 
@@ -79,5 +129,14 @@ public class PromptExecutionService : IPromptExecutionService
         await _repo.UpdateAnalysisStatusAsync(analysisId, "Completed");
 
         yield return "{\"step\": \"Preparing Report...\", \"progress\": 100, \"analysisId\": \"" + analysisId.ToString() + "\"}";
+    }
+
+    private static string? TryGetHost(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return null;
+        var candidate = url.Contains("://") ? url : $"https://{url}";
+        return Uri.TryCreate(candidate, UriKind.Absolute, out var uri)
+            ? (uri.Host.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? uri.Host[4..] : uri.Host)
+            : null;
     }
 }

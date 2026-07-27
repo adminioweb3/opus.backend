@@ -1,11 +1,14 @@
 using MediatR;
 using Citationly.Application.Interfaces;
+using Dapper;
 
 namespace Citationly.Application.Features.Auth;
 
 public class SyncUserCommand : IRequest<SyncUserResult>
 {
     public string FirebaseUid { get; set; } = string.Empty;
+    public string Provider { get; set; } = "email"; // "email", "google", "github"
+    public string ProviderUid { get; set; } = string.Empty;
     public string Email { get; set; } = string.Empty;
     public string DisplayName { get; set; } = string.Empty;
 }
@@ -24,37 +27,36 @@ public class SyncUserResult
     public string PlanType { get; set; } = "Trial";
     public DateTime? TrialEndsAt { get; set; }
     public bool IsTrialExpired { get; set; }
+    public string? Industry { get; set; }
+    public bool IsNewUser { get; set; }
 }
 
 public class SyncUserCommandHandler : IRequestHandler<SyncUserCommand, SyncUserResult>
 {
-    private readonly IUserRepository _repository;
     private readonly IWebsiteRepository _websiteRepository;
     private readonly IDbConnectionFactory _dbConnectionFactory;
 
-    public SyncUserCommandHandler(IUserRepository repository, IWebsiteRepository websiteRepository, IDbConnectionFactory dbConnectionFactory)
+    public SyncUserCommandHandler(IWebsiteRepository websiteRepository, IDbConnectionFactory dbConnectionFactory)
     {
-        _repository = repository;
         _websiteRepository = websiteRepository;
         _dbConnectionFactory = dbConnectionFactory;
     }
 
     public async Task<SyncUserResult> Handle(SyncUserCommand request, CancellationToken cancellationToken)
     {
-        var result = await _repository.CreateOrGetUserAsync(request.FirebaseUid, request.Email, request.DisplayName);
-
         using var connection = _dbConnectionFactory.CreateConnection();
 
-        // Fetch the Organization's Name + trial state
-        var org = await Dapper.SqlMapper.QueryFirstOrDefaultAsync<(string Name, string PlanType, DateTime? TrialEndsAt)>(
-            connection,
-            "SELECT Name, PlanType, TrialEndsAt FROM Organizations WHERE Id = @Id",
+        // Use the new v2 stored procedure that handles multi-auth
+        var result = await connection.QuerySingleAsync<(Guid UserId, Guid OrganizationId, string Role, bool IsNewUser)>(
+            "SELECT userid, organizationid, role, isnewuser FROM sp_CreateOrGetUserV2(@FirebaseUid, @Provider, @ProviderUid, @Email, @DisplayName)",
+            new { FirebaseUid = request.FirebaseUid, Provider = request.Provider, ProviderUid = request.ProviderUid, Email = request.Email, DisplayName = request.DisplayName });
+
+        // Fetch the Organization's Name, trial state, and Industry
+        var org = await connection.QueryFirstOrDefaultAsync<(string Name, string PlanType, DateTime? TrialEndsAt, string? Industry)>(
+            "SELECT Name, PlanType, TrialEndsAt, Industry FROM Organizations WHERE Id = @Id",
             new { Id = result.OrganizationId });
 
-        // WebsiteProfiles (populated at the real "/onboarding/analyze" step, not the later
-        // checkout step) is the reliable signal used everywhere else in the app for "has this
-        // org completed onboarding" — Websites.DomainUrl is only conditionally set at checkout
-        // and isn't a safe gate.
+        // WebsiteProfiles is the reliable signal for "has this org completed onboarding"
         var profile = await _websiteRepository.GetLatestWebsiteProfileAsync(result.OrganizationId);
 
         var isTrialExpired = org.TrialEndsAt.HasValue && org.TrialEndsAt.Value < DateTime.UtcNow;
@@ -69,7 +71,9 @@ public class SyncUserCommandHandler : IRequestHandler<SyncUserCommand, SyncUserR
             NeedsOnboarding = profile == null,
             PlanType = org.PlanType ?? "Trial",
             TrialEndsAt = org.TrialEndsAt,
-            IsTrialExpired = isTrialExpired
+            IsTrialExpired = isTrialExpired,
+            Industry = org.Industry,
+            IsNewUser = result.IsNewUser
         };
     }
 }

@@ -58,17 +58,28 @@ public class OpenAiService : IOpenAiService
             };
         }
 
-        var content = new StringContent(JsonSerializer.Serialize(requestBody), Encoding.UTF8, "application/json");
-
         _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
+        var requestJson = JsonSerializer.Serialize(requestBody);
 
-        var response = await _httpClient.PostAsync("https://api.openai.com/v1/chat/completions", content);
+        // A single slow/degraded call used to be able to ride the client's full 10-minute
+        // timeout with no recovery. Bound each attempt to 75s and retry once on timeout, 429, or
+        // a 5xx — most transient OpenAI slowness clears on retry well inside that window, and a
+        // second attempt costs far less than silently waiting out the global ceiling.
+        HttpResponseMessage response;
+        try
+        {
+            response = await PostWithTimeoutAsync(requestJson, TimeSpan.FromSeconds(75));
+        }
+        catch (TaskCanceledException)
+        {
+            response = await PostWithTimeoutAsync(requestJson, TimeSpan.FromSeconds(75));
+        }
 
-        // Simple retry for standard network hiccups (OpenAI handles concurrency fine)
-        if (!response.IsSuccessStatusCode && response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+        if (!response.IsSuccessStatusCode &&
+            (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests || (int)response.StatusCode >= 500))
         {
             await Task.Delay(2000);
-            response = await _httpClient.PostAsync("https://api.openai.com/v1/chat/completions", content);
+            response = await PostWithTimeoutAsync(requestJson, TimeSpan.FromSeconds(75));
         }
 
         response.EnsureSuccessStatusCode();
@@ -82,5 +93,12 @@ public class OpenAiService : IOpenAiService
             .GetString();
 
         return messageContent ?? string.Empty;
+    }
+
+    private async Task<HttpResponseMessage> PostWithTimeoutAsync(string requestJson, TimeSpan timeout)
+    {
+        using var cts = new CancellationTokenSource(timeout);
+        var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
+        return await _httpClient.PostAsync("https://api.openai.com/v1/chat/completions", content, cts.Token);
     }
 }

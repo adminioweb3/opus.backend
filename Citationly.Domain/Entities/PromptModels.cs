@@ -14,6 +14,9 @@ public class PromptQuestion
     public Guid Id { get; set; }
     public Guid PromptTopicId { get; set; }
     public string PromptText { get; set; } = string.Empty;
+    public bool IsActive { get; set; } = true;
+    public string Region { get; set; } = "Global";
+    public string? Persona { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
 
@@ -33,6 +36,8 @@ public class PromptResponse
     public string Platform { get; set; } = string.Empty; // ChatGPT, Claude, Gemini, etc.
     public string ResponseText { get; set; } = string.Empty;
     public int ResponseLength { get; set; }
+    public string? Sentiment { get; set; } // "pos" | "neu" | "neg" — null if never classified
+    public string? SentimentQuote { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
 
@@ -79,4 +84,24 @@ public class CompetitorComparison
     public int VisibilityScore { get; set; }
     public int ShareOfVoice { get; set; }
     public string MissingTopicsJson { get; set; } = "[]";
+}
+
+public class PromptCitation
+{
+    public Guid Id { get; set; }
+    public Guid PromptAnalysisId { get; set; }
+    public string Platform { get; set; } = string.Empty;
+    public string Domain { get; set; } = string.Empty;
+    public string Url { get; set; } = string.Empty;
+    public string Category { get; set; } = "Other"; // Owned, Social, Institution, Other
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class PromptFanout
+{
+    public Guid Id { get; set; }
+    public Guid PromptQuestionId { get; set; }
+    public string FanoutText { get; set; } = string.Empty;
+    public string Engine { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }

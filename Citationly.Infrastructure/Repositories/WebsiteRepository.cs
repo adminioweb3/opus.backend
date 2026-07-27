@@ -44,6 +44,14 @@ public class WebsiteRepository : IWebsiteRepository
             new { OrganizationId = organizationId });
     }
 
+    public async Task LinkWebsiteToCompanyAsync(Guid websiteId, Guid companyId)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        await connection.ExecuteAsync(
+            "UPDATE Websites SET CompanyId = @CompanyId WHERE Id = @WebsiteId",
+            new { WebsiteId = websiteId, CompanyId = companyId });
+    }
+
     public async Task<Website> ConnectWebsiteAsync(Guid organizationId, string domainUrl, string platformName)
     {
         using var connection = _dbConnectionFactory.CreateConnection();

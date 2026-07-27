@@ -325,6 +325,65 @@ public class OnboardingController : ControllerBase
 
         return Ok(result);
     }
+
+    [AllowAnonymous]
+    [HttpPost("suggest-keywords")]
+    public async Task<IActionResult> SuggestKeywords([FromBody] SuggestKeywordsRequest request)
+    {
+        if (string.IsNullOrEmpty(request.WebsiteUrl) || string.IsNullOrEmpty(request.BusinessName))
+            return BadRequest("WebsiteUrl and BusinessName are required.");
+
+        var command = new SuggestKeywordsCommand
+        {
+            WebsiteUrl = request.WebsiteUrl,
+            BusinessName = request.BusinessName,
+            Industry = request.Industry
+        };
+
+        var result = await _mediator.Send(command);
+        return Ok(new { keywords = result });
+    }
+
+    [AllowAnonymous]
+    [HttpPost("detect-industry")]
+    public async Task<IActionResult> DetectIndustry([FromBody] DetectIndustryRequest request)
+    {
+        if (string.IsNullOrEmpty(request.WebsiteUrl) || string.IsNullOrEmpty(request.BusinessName))
+            return BadRequest("WebsiteUrl and BusinessName are required.");
+
+        var command = new DetectIndustryCommand
+        {
+            WebsiteUrl = request.WebsiteUrl,
+            BusinessName = request.BusinessName
+        };
+
+        var result = await _mediator.Send(command);
+        return Ok(result);
+    }
+
+    [HttpGet("competitors/unified")]
+    public async Task<IActionResult> GetUnifiedCompetitors([FromQuery] Guid organizationId)
+    {
+        if (organizationId == Guid.Empty)
+            return BadRequest("OrganizationId is required.");
+
+        var query = new GetUnifiedCompetitorsQuery { OrganizationId = organizationId };
+        var result = await _mediator.Send(query);
+        return Ok(result);
+    }
+}
+
+public class SuggestKeywordsRequest
+{
+    public string? WebsiteUrl { get; set; }
+    public string? BusinessName { get; set; }
+    public string? Industry { get; set; }
+}
+
+public class DetectIndustryRequest
+{
+    public string? WebsiteUrl { get; set; }
+    public string? BusinessName { get; set; }
 }
 
 public class AnalyzeOnboardingRequest

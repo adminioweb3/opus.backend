@@ -236,12 +236,12 @@ SCHEMA (Return ONLY this JSON):
                         };
                         await _websiteRepository.InsertWebsiteProfileAsync(profile);
 
-                        // Also update the Organization name
+                        // Also update the Organization name and Industry
                         using var connection = _dbConnectionFactory.CreateConnection();
                         await Dapper.SqlMapper.ExecuteAsync(
                             connection,
-                            "UPDATE Organizations SET Name = @Name WHERE Id = @Id",
-                            new { Name = request.BusinessName, Id = request.OrganizationId }
+                            "UPDATE Organizations SET Name = @Name, Industry = @Industry WHERE Id = @Id",
+                            new { Name = request.BusinessName, Industry = request.Industry, Id = request.OrganizationId }
                         );
                     }
                     catch (Exception dbEx)

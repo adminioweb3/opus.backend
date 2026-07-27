@@ -1,20 +1,26 @@
 using Citationly.Application.Interfaces;
+using Citationly.Application.Interfaces.Companies;
 using Citationly.Application.Interfaces.Competitors;
 using Citationly.Domain.Entities;
 
 namespace Citationly.Infrastructure.Services.Competitors;
 
 /// <summary>
-/// Smart cache validation service.
-/// Returns cached competitors only if the business profile hasn't changed since last discovery.
+/// Smart cache validation service. Cache is valid only when the org already has Competitors
+/// rows AND its Company Knowledge Graph node was analyzed within the last 30 days — the same
+/// staleness clock CompanyGraphService uses to decide whether to refresh a Company.
 /// </summary>
 public class CompetitorCacheService : ICompetitorCacheService
 {
-    private readonly IWebsiteRepository _websiteRepository;
+    private static readonly TimeSpan StaleAfter = TimeSpan.FromDays(30);
 
-    public CompetitorCacheService(IWebsiteRepository websiteRepository)
+    private readonly IWebsiteRepository _websiteRepository;
+    private readonly ICompanyRepository _companyRepository;
+
+    public CompetitorCacheService(IWebsiteRepository websiteRepository, ICompanyRepository companyRepository)
     {
         _websiteRepository = websiteRepository;
+        _companyRepository = companyRepository;
     }
 
     public async Task<(bool IsValid, IEnumerable<Competitor>? Competitors)> TryGetCachedAsync(
@@ -24,24 +30,21 @@ public class CompetitorCacheService : ICompetitorCacheService
         if (count == 0)
             return (false, null);
 
-        // Check if the business profile has been updated since the last discovery
-        var profile = await _websiteRepository.GetLatestWebsiteProfileAsync(organizationId);
-        if (profile == null)
+        var website = (await _websiteRepository.GetWebsitesByOrgAsync(organizationId))
+            .FirstOrDefault(w => w.CompanyId.HasValue);
+        if (website?.CompanyId == null)
             return (false, null);
 
-        var competitors = await _websiteRepository.GetCompetitorsAsync(organizationId);
-        var competitorList = competitors.ToList();
-
-        if (!competitorList.Any())
-            return (false, null);
-
-        // If the profile was created AFTER the oldest competitor, cache is stale
-        var oldestCompetitor = competitorList.Min(c => c.CreatedAt);
-        if (profile.CreatedAt > oldestCompetitor)
+        var company = await _companyRepository.GetByIdAsync(website.CompanyId.Value);
+        if (company == null || DateTime.UtcNow - company.LastAnalyzedAt > StaleAfter)
         {
-            Console.WriteLine($"[Cache] Stale: Profile ({profile.CreatedAt:u}) is newer than competitors ({oldestCompetitor:u})");
+            Console.WriteLine($"[Cache] Stale or missing Company node for org {organizationId}");
             return (false, null);
         }
+
+        var competitorList = (await _websiteRepository.GetCompetitorsAsync(organizationId)).ToList();
+        if (!competitorList.Any())
+            return (false, null);
 
         Console.WriteLine($"[Cache] Valid: Returning {competitorList.Count} cached competitors");
         return (true, competitorList);

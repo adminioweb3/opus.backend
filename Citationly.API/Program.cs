@@ -48,7 +48,11 @@ builder.Services.AddCors(options =>
             "https://citationly.ai",
             "https://www.citationly.ai",
             "http://localhost:3000",
-            "http://localhost:3010"
+            "http://localhost:3010",
+            "http://localhost:5173",
+            "http://localhost:5174",
+            "http://localhost:5175",
+            "http://localhost:5176"
         )
         .AllowAnyHeader()
         .AllowAnyMethod();

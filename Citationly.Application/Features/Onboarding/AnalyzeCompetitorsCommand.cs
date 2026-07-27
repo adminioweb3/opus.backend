@@ -1,9 +1,7 @@
 using MediatR;
-using System.Text.Json;
 using Citationly.Application.Interfaces;
+using Citationly.Application.Interfaces.Companies;
 using Citationly.Application.Interfaces.Competitors;
-using Citationly.Domain.Entities;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace Citationly.Application.Features.Onboarding;
 
@@ -21,68 +19,39 @@ public class CompetitorAnalysisResult
     public bool EnrichmentQueued { get; set; }
 }
 
-public class CompAnalysisResponse
-{
-    public CompBusiness? business { get; set; }
-    public List<CompCompetitor>? competitors { get; set; }
-    public CompSummary? summary { get; set; }
-}
-
-public class CompBusiness
-{
-    public string? name { get; set; }
-    public string? website { get; set; }
-    public string? industry { get; set; }
-}
-
-public class CompSummary
-{
-    public int totalCompetitors { get; set; }
-    public int directCompetitors { get; set; }
-    public int indirectCompetitors { get; set; }
-    public string? industry { get; set; }
-    public string? marketOverview { get; set; }
-}
-
 /// <summary>
-/// Lightweight discovery DTO – only 8 fields for ultra-fast AI response (~2K tokens).
-/// Heavy enrichment data (SEO, Traffic, etc.) is handled asynchronously in Stage 4.
+/// Real competitor discovery over the shared Company Knowledge Graph: ensures the org's own
+/// Company node is up to date, ranks it against real candidates already in the graph (never
+/// invents a company), and materializes the result into the existing per-org Competitors table
+/// so every existing reader keeps working unchanged.
 /// </summary>
-public class CompCompetitor
-{
-    public int rank { get; set; }
-    public string? companyName { get; set; }
-    public string? website { get; set; }
-    public string? industry { get; set; }
-    public string? competitorType { get; set; }
-    public string? description { get; set; }
-    public int similarityScore { get; set; }
-    public int confidence { get; set; }
-}
-
-
 public class AnalyzeCompetitorsCommandHandler : IRequestHandler<AnalyzeCompetitorsCommand, CompetitorAnalysisResult>
 {
     private readonly IWebsiteRepository _websiteRepository;
     private readonly ICompetitorDiscoveryService _discoveryService;
     private readonly ICompetitorCacheService _cacheService;
-    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ICompanyGraphService _companyGraphService;
+    private readonly ICompanyCompetitorRepository _companyCompetitorRepository;
+    private readonly ICompetitorGraphSyncService _syncService;
 
     public AnalyzeCompetitorsCommandHandler(
         IWebsiteRepository websiteRepository,
         ICompetitorDiscoveryService discoveryService,
         ICompetitorCacheService cacheService,
-        IServiceScopeFactory scopeFactory)
+        ICompanyGraphService companyGraphService,
+        ICompanyCompetitorRepository companyCompetitorRepository,
+        ICompetitorGraphSyncService syncService)
     {
         _websiteRepository = websiteRepository;
         _discoveryService = discoveryService;
         _cacheService = cacheService;
-        _scopeFactory = scopeFactory;
+        _companyGraphService = companyGraphService;
+        _companyCompetitorRepository = companyCompetitorRepository;
+        _syncService = syncService;
     }
 
     public async Task<CompetitorAnalysisResult> Handle(AnalyzeCompetitorsCommand request, CancellationToken cancellationToken)
     {
-        // Stage 1: Smart Cache Check
         var (isValid, cachedCompetitors) = await _cacheService.TryGetCachedAsync(request.OrganizationId, cancellationToken);
         if (isValid && cachedCompetitors != null)
         {
@@ -92,113 +61,32 @@ public class AnalyzeCompetitorsCommandHandler : IRequestHandler<AnalyzeCompetito
                 Success = true,
                 TotalCompetitors = cachedList.Count,
                 Competitors = cachedList,
-                EnrichmentQueued = cachedList.Any(c => c.EnrichmentStatus == "Pending" || c.EnrichmentStatus == "InProgress")
+                EnrichmentQueued = false
             };
         }
 
-        // Stage 2: Get Business Intelligence Profile
         var profile = await _websiteRepository.GetLatestWebsiteProfileAsync(request.OrganizationId);
         if (profile == null)
         {
             return new CompetitorAnalysisResult { Success = false, Error = "No website profile found. Run analysis step first." };
         }
 
-        // Clear stale competitors if cache was invalid
-        await _websiteRepository.DeleteCompetitorsByOrgAsync(request.OrganizationId);
+        var company = await _companyGraphService.EnsureCompanyAsync(
+            request.OrganizationId, profile.WebsiteUrl, profile.BusinessName, profile.RawProfileJson, cancellationToken);
 
-        // Stage 3: Lightweight AI Discovery (~2K tokens, <20s)
-        var competitors = await _discoveryService.DiscoverCompetitorsAsync(
-            profile.RawProfileJson ?? "",
-            profile.WebsiteUrl ?? "",
-            profile.BusinessName ?? "",
-            request.OrganizationId,
-            cancellationToken);
+        var edges = await _discoveryService.DiscoverCompetitorsAsync(
+            company.Id, profile.BusinessName, profile.RawProfileJson, cancellationToken);
 
-        if (competitors == null || !competitors.Any())
-        {
-            return new CompetitorAnalysisResult { Success = false, Error = "Failed to discover competitors." };
-        }
+        await _companyCompetitorRepository.ReplaceCompetitorsForCompanyAsync(company.Id, edges);
 
-        // Stage 4: Save discovered competitors immediately
-        var dbCompetitors = competitors.Select(c => new Competitor
-        {
-            Id = Guid.NewGuid(),
-            OrganizationId = request.OrganizationId,
-            Name = c.companyName ?? "Unknown",
-            WebsiteUrl = c.website ?? "",
-            Industry = c.industry ?? "",
-            Description = c.description ?? "",
-            Category = c.competitorType ?? "Direct",
-            CompetitorType = c.competitorType ?? "Direct",
-            Confidence = c.confidence,
-            Rank = c.rank,
-            SimilarityScore = c.similarityScore,
-            EnrichmentStatus = "Pending",
-            CreatedAt = DateTime.UtcNow,
-            RawJson = JsonSerializer.Serialize(c)
-        }).ToList();
-
-        await _websiteRepository.InsertCompetitorsAsync(dbCompetitors);
-
-        // Stage 5: Queue background enrichment (fire-and-forget, does NOT block API)
-        var orgId = request.OrganizationId;
-        var profileJson = profile.RawProfileJson ?? "";
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                using var scope = _scopeFactory.CreateScope();
-                var enrichmentService = scope.ServiceProvider.GetRequiredService<ICompetitorEnrichmentService>();
-                var repo = scope.ServiceProvider.GetRequiredService<IWebsiteRepository>();
-
-                // Enrich top 10 by similarity score
-                var topCompetitors = dbCompetitors
-                    .OrderByDescending(c => c.SimilarityScore)
-                    .Take(10)
-                    .ToList();
-
-                Console.WriteLine($"[Enrichment] Starting background enrichment for {topCompetitors.Count} competitors...");
-                var sw = System.Diagnostics.Stopwatch.StartNew();
-
-                // Concurrent enrichment with SemaphoreSlim(3)
-                using var semaphore = new SemaphoreSlim(3);
-                var enrichmentTasks = topCompetitors.Select(async comp =>
-                {
-                    await semaphore.WaitAsync();
-                    try
-                    {
-                        await enrichmentService.EnrichCompetitorAsync(comp, profileJson, CancellationToken.None);
-                        await repo.UpdateCompetitorAsync(comp);
-                        Console.WriteLine($"[Enrichment] Completed: {comp.Name} ({sw.ElapsedMilliseconds}ms)");
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"[Enrichment] Failed: {comp.Name} - {ex.Message}");
-                        comp.EnrichmentStatus = "Failed";
-                        await repo.UpdateCompetitorAsync(comp);
-                    }
-                    finally
-                    {
-                        semaphore.Release();
-                    }
-                });
-
-                await Task.WhenAll(enrichmentTasks);
-                sw.Stop();
-                Console.WriteLine($"[Enrichment] All enrichments completed in {sw.ElapsedMilliseconds}ms");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Enrichment] Background enrichment failed: {ex.Message}");
-            }
-        });
+        var rows = await _syncService.SyncOrgCompetitorsAsync(request.OrganizationId, company.Id);
 
         return new CompetitorAnalysisResult
         {
             Success = true,
-            TotalCompetitors = dbCompetitors.Count,
-            Competitors = dbCompetitors,
-            EnrichmentQueued = true
+            TotalCompetitors = rows.Count,
+            Competitors = rows,
+            EnrichmentQueued = false
         };
     }
 }

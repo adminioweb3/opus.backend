@@ -79,6 +79,10 @@ public class CompleteOnboardingCommandHandler : IRequestHandler<CompleteOnboardi
         // 4. Enqueue AI Visibility Engine Analysis
         _backgroundJobClient.Enqueue<IAiVisibilityEngineService>(x => x.RunAnalysisAsync(request.OrganizationId));
 
+        // 5. Enqueue Answer Atlas's first real analysis batch, so it isn't empty on first visit.
+        _backgroundJobClient.Enqueue<Citationly.Application.Features.PromptIntelligence.Services.IPromptIntelligenceFirstRunService>(
+            x => x.RunFirstBatchAsync(request.OrganizationId));
+
         return true;
     }
 }

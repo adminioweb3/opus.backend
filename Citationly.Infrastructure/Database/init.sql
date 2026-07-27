@@ -12,6 +12,8 @@ DROP TABLE IF EXISTS HistoricalScans CASCADE;
 DROP TABLE IF EXISTS BrandMentions CASCADE;
 DROP TABLE IF EXISTS AiSearchPrompts CASCADE;
 DROP TABLE IF EXISTS Competitors CASCADE;
+DROP TABLE IF EXISTS CompanyCompetitor CASCADE;
+DROP TABLE IF EXISTS Company CASCADE;
 DROP TABLE IF EXISTS Embeddings CASCADE;
 DROP TABLE IF EXISTS Integrations CASCADE;
 DROP TABLE IF EXISTS SourceFolders CASCADE;
@@ -28,6 +30,7 @@ CREATE TABLE IF NOT EXISTS Organizations (
     Name VARCHAR(255) NOT NULL,
     PlanType VARCHAR(50) NOT NULL DEFAULT 'Trial',
     TrialEndsAt TIMESTAMP WITH TIME ZONE DEFAULT (CURRENT_TIMESTAMP + INTERVAL '7 days'),
+    Industry VARCHAR(255),
     CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -446,6 +449,103 @@ CREATE TABLE IF NOT EXISTS BrandMentions (
     MentionedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Answer Atlas / Prompt Intelligence — topic -> question -> analysis -> per-engine results.
+CREATE TABLE IF NOT EXISTS PromptTopics (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+    Name VARCHAR(255) NOT NULL,
+    Description TEXT NOT NULL DEFAULT '',
+    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS PromptQuestions (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    PromptTopicId UUID REFERENCES PromptTopics(Id) ON DELETE CASCADE,
+    PromptText TEXT NOT NULL,
+    IsActive BOOLEAN NOT NULL DEFAULT TRUE,
+    Region VARCHAR(100) NOT NULL DEFAULT 'Global',
+    Persona VARCHAR(255),
+    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS PromptAnalysis (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    PromptQuestionId UUID REFERENCES PromptQuestions(Id) ON DELETE CASCADE,
+    RunAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    Status VARCHAR(50) NOT NULL DEFAULT 'Running',
+    ErrorMessage TEXT
+);
+
+CREATE TABLE IF NOT EXISTS PromptResponses (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    PromptAnalysisId UUID REFERENCES PromptAnalysis(Id) ON DELETE CASCADE,
+    Platform VARCHAR(100) NOT NULL DEFAULT '',
+    ResponseText TEXT NOT NULL DEFAULT '',
+    ResponseLength INT NOT NULL DEFAULT 0,
+    Sentiment VARCHAR(10),
+    SentimentQuote TEXT,
+    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS PromptMentions (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    PromptAnalysisId UUID REFERENCES PromptAnalysis(Id) ON DELETE CASCADE,
+    Platform VARCHAR(100) NOT NULL DEFAULT '',
+    EntityName VARCHAR(255) NOT NULL DEFAULT '',
+    IsBrand BOOLEAN NOT NULL DEFAULT FALSE,
+    ContextSnippet TEXT NOT NULL DEFAULT '',
+    Position INT NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS PromptVisibility (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    PromptAnalysisId UUID REFERENCES PromptAnalysis(Id) ON DELETE CASCADE,
+    OverallVisibilityScore INT NOT NULL DEFAULT 0,
+    MentionFrequency INT NOT NULL DEFAULT 0,
+    AveragePosition INT NOT NULL DEFAULT 0,
+    ShareOfVoice INT NOT NULL DEFAULT 0,
+    CitationCount INT NOT NULL DEFAULT 0,
+    CompetitorCount INT NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS PromptRecommendations (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    PromptAnalysisId UUID REFERENCES PromptAnalysis(Id) ON DELETE CASCADE,
+    Category VARCHAR(100) NOT NULL DEFAULT '',
+    Title VARCHAR(255) NOT NULL DEFAULT '',
+    Description TEXT NOT NULL DEFAULT '',
+    Priority VARCHAR(50) NOT NULL DEFAULT 'Medium',
+    Difficulty VARCHAR(50) NOT NULL DEFAULT 'Medium',
+    EstimatedVisibilityGain INT NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS CompetitorComparisons (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    PromptAnalysisId UUID REFERENCES PromptAnalysis(Id) ON DELETE CASCADE,
+    CompetitorName VARCHAR(255) NOT NULL DEFAULT '',
+    VisibilityScore INT NOT NULL DEFAULT 0,
+    ShareOfVoice INT NOT NULL DEFAULT 0,
+    MissingTopicsJson JSONB NOT NULL DEFAULT '[]'::jsonb
+);
+
+CREATE TABLE IF NOT EXISTS PromptCitations (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    PromptAnalysisId UUID REFERENCES PromptAnalysis(Id) ON DELETE CASCADE,
+    Platform VARCHAR(100) NOT NULL DEFAULT '',
+    Domain VARCHAR(255) NOT NULL DEFAULT '',
+    Url TEXT NOT NULL DEFAULT '',
+    Category VARCHAR(50) NOT NULL DEFAULT 'Other',
+    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS PromptFanouts (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    PromptQuestionId UUID REFERENCES PromptQuestions(Id) ON DELETE CASCADE,
+    FanoutText TEXT NOT NULL DEFAULT '',
+    Engine VARCHAR(100) NOT NULL DEFAULT '',
+    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS HistoricalScans (
     Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
@@ -549,4 +649,48 @@ CREATE TABLE IF NOT EXISTS WebsiteMetadata (
     Language VARCHAR(50),
     CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 9. Company Knowledge Graph — shared, deduplicated, cross-org company registry.
+-- Distinct from WebsiteProfiles (org-scoped raw extraction, left untouched) — Company is the
+-- canonical, deduplicated-by-domain record that any org's competitor discovery reads/writes.
+CREATE TABLE IF NOT EXISTS Company (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    NormalizedDomain VARCHAR(255) NOT NULL,
+    Website VARCHAR(2048) NOT NULL,
+    CompanyName VARCHAR(255) NOT NULL,
+    Industry VARCHAR(255),
+    BusinessProfileJson JSONB NOT NULL DEFAULT '{}'::jsonb,
+    Embedding FLOAT8[],
+    EmbeddingModel VARCHAR(100),
+    EmbeddingUpdatedAt TIMESTAMP WITH TIME ZONE,
+    SourceOrganizationId UUID REFERENCES Organizations(Id) ON DELETE SET NULL,
+    LastAnalyzedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_company_normalizeddomain ON Company (NormalizedDomain);
+CREATE INDEX IF NOT EXISTS idx_company_industry ON Company (Industry);
+
+-- Directed edge: "for CompanyId, CompetitorCompanyId is a ranked competitor". Rows are per
+-- home-company, not per-org — two orgs analyzing the same domain reuse the same edges.
+CREATE TABLE IF NOT EXISTS CompanyCompetitor (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    CompanyId UUID NOT NULL REFERENCES Company(Id) ON DELETE CASCADE,
+    CompetitorCompanyId UUID NOT NULL REFERENCES Company(Id) ON DELETE CASCADE,
+    Similarity NUMERIC(5,2) NOT NULL DEFAULT 0,
+    Confidence INT NOT NULL DEFAULT 0,
+    Rank INT NOT NULL DEFAULT 0,
+    Reason TEXT,
+    Strength TEXT,
+    Weakness TEXT,
+    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT chk_companycompetitor_not_self CHECK (CompanyId <> CompetitorCompanyId)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_companycompetitor_pair ON CompanyCompetitor (CompanyId, CompetitorCompanyId);
+CREATE INDEX IF NOT EXISTS idx_companycompetitor_company_rank ON CompanyCompetitor (CompanyId, Rank);
+
+-- Links each org's own website to its Company graph node.
+ALTER TABLE Websites ADD COLUMN IF NOT EXISTS CompanyId UUID REFERENCES Company(Id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_websites_companyid ON Websites (CompanyId);
 

@@ -57,6 +57,8 @@ public class AnalyzeVisibilityCommandHandler : IRequestHandler<AnalyzeVisibility
 {
     private readonly IWebsiteRepository _websiteRepository;
     private readonly IOpenAiService _openRouterService;
+    private const int BATCH_SIZE = 5;
+    private const int MAX_CONCURRENT_BATCHES = 5;
 
     public AnalyzeVisibilityCommandHandler(
         IWebsiteRepository websiteRepository,
@@ -68,25 +70,27 @@ public class AnalyzeVisibilityCommandHandler : IRequestHandler<AnalyzeVisibility
 
     public async Task<VisibilityAnalysisResult> Handle(AnalyzeVisibilityCommand request, CancellationToken cancellationToken)
     {
-        // 1. Get Prompts
+        const int MAX_PROMPTS_TO_ANALYZE = 50;
+
         var existingPrompts = await _websiteRepository.GetAiSearchPromptsAsync(request.OrganizationId);
         if (existingPrompts == null || !existingPrompts.Any())
         {
             return new VisibilityAnalysisResult { Success = false, Error = "No AI Search Prompts found for this organization. Generate them first." };
         }
 
-        // 0. Check if visibility data is already populated
+        // Limit to max 50 prompts for performance
+        var promptsToAnalyze = existingPrompts.Take(MAX_PROMPTS_TO_ANALYZE).ToList();
+
         if (existingPrompts.Any(p => !string.IsNullOrEmpty(p.VisibilityReason)))
         {
             return new VisibilityAnalysisResult
             {
                 Success = true,
-                TotalPromptsAnalyzed = existingPrompts.Count(),
-                Prompts = existingPrompts.Take(50).ToList()
+                TotalPromptsAnalyzed = promptsToAnalyze.Count,
+                Prompts = promptsToAnalyze
             };
         }
 
-        // 2. Get the latest Website Profile
         var profile = await _websiteRepository.GetLatestWebsiteProfileAsync(request.OrganizationId);
         if (profile == null)
         {
@@ -96,121 +100,103 @@ public class AnalyzeVisibilityCommandHandler : IRequestHandler<AnalyzeVisibility
         string websiteUrl = profile.WebsiteUrl;
         string websiteProfile = profile.RawProfileJson;
 
-        var promptsListForAi = existingPrompts.Select(p => new
+        try
+        {
+            var promptBatches = new List<List<AiSearchPrompt>>();
+            for (int i = 0; i < promptsToAnalyze.Count; i += BATCH_SIZE)
+            {
+                promptBatches.Add(promptsToAnalyze.Skip(i).Take(BATCH_SIZE).ToList());
+            }
+
+            var semaphore = new SemaphoreSlim(MAX_CONCURRENT_BATCHES);
+            var tasks = new List<Task<List<AiSearchPrompt>>>();
+
+            foreach (var batch in promptBatches)
+            {
+                tasks.Add(ProcessBatchWithSemaphoreAsync(batch, websiteUrl, websiteProfile, semaphore, cancellationToken));
+            }
+
+            var batchResults = await Task.WhenAll(tasks);
+            var allUpdatedPrompts = batchResults.SelectMany(x => x).ToList();
+
+            if (allUpdatedPrompts.Any())
+            {
+                await _websiteRepository.UpdateAiSearchPromptsVisibilityAsync(allUpdatedPrompts);
+            }
+
+            return new VisibilityAnalysisResult
+            {
+                Success = true,
+                TotalPromptsAnalyzed = allUpdatedPrompts.Count,
+                Prompts = allUpdatedPrompts
+            };
+        }
+        catch (Exception ex)
+        {
+            return new VisibilityAnalysisResult { Success = false, Error = ex.Message };
+        }
+    }
+
+    private async Task<List<AiSearchPrompt>> ProcessBatchWithSemaphoreAsync(
+        List<AiSearchPrompt> batch,
+        string websiteUrl,
+        string websiteProfile,
+        SemaphoreSlim semaphore,
+        CancellationToken cancellationToken)
+    {
+        await semaphore.WaitAsync(cancellationToken);
+        try
+        {
+            return await ProcessPromptBatchAsync(batch, websiteUrl, websiteProfile, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Batch processing error: {ex.Message}");
+            return new List<AiSearchPrompt>();
+        }
+        finally
+        {
+            semaphore.Release();
+        }
+    }
+
+    private async Task<List<AiSearchPrompt>> ProcessPromptBatchAsync(
+        List<AiSearchPrompt> promptBatch,
+        string websiteUrl,
+        string websiteProfile,
+        CancellationToken cancellationToken)
+    {
+        var promptsForAi = promptBatch.Select(p => new
         {
             Id = p.Id,
             Prompt = p.QueryString,
             Topic = p.Topic
         }).ToList();
 
-        string generatedPromptsJson = JsonSerializer.Serialize(promptsListForAi);
+        string promptsJson = JsonSerializer.Serialize(promptsForAi);
 
-        var systemPrompt = "You are an expert Generative Engine Optimization (GEO), AI Search Visibility, SEO, Content Strategy, and Competitive Intelligence Analyst.";
+        var systemPrompt = "You are an expert Generative Engine Optimization (GEO) and AI Search Visibility Analyst. Analyze prompts for AI visibility and return ONLY valid JSON.";
 
-        var userPrompt = $@"Your task is to estimate how likely the provided business is to appear in AI-generated answers for each generated prompt.
+        var userPrompt = $@"Analyze these {promptBatch.Count} search prompts for AI visibility.
 
-## Input
+Website: {websiteUrl}
+Profile: {websiteProfile}
 
-Website
-{websiteUrl}
+Prompts: {promptsJson}
 
-Website Profile
-{websiteProfile}
+For each prompt, estimate:
+- visibilityScore (0-100): How likely the business appears
+- estimatedRank: 1-3, 4-10, 11-20, 21+, or 'Not Likely'
+- confidence (0-100): Confidence in prediction
+- appearsInAnswer: true/false
+- shareOfVoiceContribution (0-100): % of answer
+- mentionProbability (0-100): Likelihood company is mentioned
+- brandStrength (0-100)
+- contentStrength (0-100)
+- citationStrength (0-100)
+- reason: 1-2 sentence explanation
 
-Competitor Profile
-(Extracted from industry context)
-
-Generated Prompts
-{generatedPromptsJson}
-
-## Objective
-
-For every generated prompt, estimate the business's AI visibility across modern AI search platforms including:
-- ChatGPT
-- Claude
-- Gemini
-- Perplexity
-- Google AI Overview
-- Microsoft Copilot
-- Meta AI
-- DeepSeek
-- Grok
-
-Assume the AI models answer using a combination of:
-- Public knowledge
-- Website content
-- Brand authority
-- Topical authority
-- Citations
-- Industry reputation
-- Content quality
-- Competitor strength
-- Semantic relevance
-
-Estimate how visible the business would be compared with competitors.
-
-## Instructions
-
-1. Analyze each prompt independently.
-2. Compare the business against identified competitors.
-3. Never invent factual rankings.
-4. Scores are predictive estimates.
-5. Return ONLY valid JSON.
-6. Do NOT include markdown.
-7. Do NOT include explanations.
-8. Do NOT wrap inside ```json.
-9. Every prompt must contain exactly one analysis object.
-10. Return all prompts.
-
-----------------------------------------------------
-Scoring Rules
-----------------------------------------------------
-Visibility Score
-0-100
-Meaning
-0-20 = Almost impossible to appear
-21-40 = Low visibility
-41-60 = Moderate visibility
-61-80 = Strong visibility
-81-100 = Very likely to appear
-
-Estimated Rank
-Choose one
-1-3
-4-10
-11-20
-21+
-Not Likely
-
-Confidence
-0-100
-Confidence reflects confidence in your prediction.
-
-Appears In Answer
-true
-false
-
-Share Of Voice Contribution
-0-100
-Represents how much of the final AI answer this business would likely occupy compared to competitors.
-
-Mention Probability
-0-100
-Probability the company name would be mentioned.
-
-Brand Strength
-0-100
-
-Content Strength
-0-100
-
-Citation Strength
-0-100
-
-Reason
-Provide a concise explanation in 1–2 sentences describing why the estimated visibility was assigned.
-
-Return exactly this JSON schema
+Return exactly this JSON:
 {{
   ""summary"": {{
     ""totalPrompts"": 0,
@@ -223,7 +209,7 @@ Return exactly this JSON schema
   }},
   ""analysis"": [
     {{
-      ""promptId"": """", // IMPORTANT: Must exactly match the 'Id' field provided in Generated Prompts
+      ""promptId"": """",
       ""prompt"": """",
       ""topic"": """",
       ""visibilityScore"": 0,
@@ -240,42 +226,30 @@ Return exactly this JSON schema
   ]
 }}
 
-Return ONLY the JSON object.";
+Return ONLY JSON, no markdown.";
+
+        var responseContent = await _openRouterService.GenerateContentAsync(
+            prompt: userPrompt,
+            systemPrompt: systemPrompt,
+            requireJson: true,
+            model: "gpt-4o-mini");
+
+        responseContent = CleanJsonResponse(responseContent);
+
+        var options = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+            NumberHandling = JsonNumberHandling.AllowReadingFromString
+        };
 
         try
         {
-            var responseContent = await _openRouterService.GenerateContentAsync(
-                prompt: userPrompt,
-                systemPrompt: systemPrompt,
-                requireJson: true,
-                model: "gpt-4o-mini");
-
-            responseContent = responseContent.Trim();
-            if (responseContent.StartsWith("```json"))
-            {
-                responseContent = responseContent.Substring(7);
-                if (responseContent.EndsWith("```"))
-                    responseContent = responseContent.Substring(0, responseContent.Length - 3);
-            }
-            if (responseContent.StartsWith("```"))
-            {
-                responseContent = responseContent.Substring(3);
-                if (responseContent.EndsWith("```"))
-                    responseContent = responseContent.Substring(0, responseContent.Length - 3);
-            }
-
-            var options = new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true,
-                NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
-            };
-
             var result = JsonSerializer.Deserialize<VisibilityResponse>(responseContent, options);
 
-            if (result != null && result.analysis != null && result.analysis.Any())
+            if (result?.analysis != null && result.analysis.Any())
             {
-                var promptMap = existingPrompts.ToDictionary(p => p.Id.ToString(), p => p, StringComparer.OrdinalIgnoreCase);
-                var promptsToUpdate = new List<AiSearchPrompt>();
+                var promptMap = promptBatch.ToDictionary(p => p.Id.ToString(), p => p, StringComparer.OrdinalIgnoreCase);
+                var updatedPrompts = new List<AiSearchPrompt>();
 
                 foreach (var item in result.analysis)
                 {
@@ -292,30 +266,30 @@ Return ONLY the JSON object.";
                         dbPrompt.CitationStrength = (int)Math.Round(item.citationStrength);
                         dbPrompt.VisibilityReason = item.reason;
 
-                        promptsToUpdate.Add(dbPrompt);
+                        updatedPrompts.Add(dbPrompt);
                     }
                 }
 
-                if (promptsToUpdate.Any())
-                {
-                    await _websiteRepository.UpdateAiSearchPromptsVisibilityAsync(promptsToUpdate);
-                }
-
-                return new VisibilityAnalysisResult
-                {
-                    Success = true,
-                    TotalPromptsAnalyzed = promptsToUpdate.Count,
-                    Prompts = promptsToUpdate.Take(50).ToList()
-                };
-            }
-            else
-            {
-                return new VisibilityAnalysisResult { Success = false, Error = "Failed to parse AI response or no analysis generated." };
+                return updatedPrompts;
             }
         }
         catch (Exception ex)
         {
-            return new VisibilityAnalysisResult { Success = false, Error = ex.Message };
+            Console.WriteLine($"JSON parsing error: {ex.Message}");
         }
+
+        return new List<AiSearchPrompt>();
+    }
+
+    private static string CleanJsonResponse(string response)
+    {
+        response = response.Trim();
+        if (response.StartsWith("```json"))
+            response = response.Substring(7);
+        if (response.StartsWith("```"))
+            response = response.Substring(3);
+        if (response.EndsWith("```"))
+            response = response.Substring(0, response.Length - 3);
+        return response.Trim();
     }
 }

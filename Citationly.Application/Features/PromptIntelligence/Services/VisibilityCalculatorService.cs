@@ -37,7 +37,6 @@ public class VisibilityCalculatorService : IVisibilityCalculatorService
         {
             // Simple text analysis
             var text = response.ResponseText;
-            
             // Extract Brand Mentions
             var brandIdx = text.IndexOf(brandName, StringComparison.OrdinalIgnoreCase);
             if (brandIdx >= 0)
@@ -60,12 +59,6 @@ public class VisibilityCalculatorService : IVisibilityCalculatorService
                     ContextSnippet = text.Substring(snippetStart, snippetLength).Replace("\n", " "),
                     Position = position
                 });
-
-                // Simulate citations if markdown links exist
-                if (Regex.IsMatch(text, @"\[.*\]\(http.*\)", RegexOptions.IgnoreCase))
-                {
-                    brandCitationCount++;
-                }
             }
 
             // Extract Competitor Mentions
@@ -131,7 +124,7 @@ public class VisibilityCalculatorService : IVisibilityCalculatorService
                 CompetitorName = comp.Key,
                 VisibilityScore = compVis,
                 ShareOfVoice = compSov,
-                MissingTopicsJson = "[\"Pricing Comparison\", \"API Documentation\"]" // Simulated AI insight
+                MissingTopicsJson = "[]" // Real AI insight to be implemented
             });
         }
 

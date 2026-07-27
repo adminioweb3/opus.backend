@@ -1,9 +1,11 @@
 using Microsoft.Extensions.DependencyInjection;
 using Citationly.Application.Interfaces;
+using Citationly.Application.Interfaces.Companies;
 using Citationly.Application.Interfaces.Competitors;
 using Citationly.Infrastructure.Data;
 using Citationly.Infrastructure.Repositories;
 using Citationly.Infrastructure.Services;
+using Citationly.Infrastructure.Services.Companies;
 using Citationly.Infrastructure.Services.Scraping;
 
 namespace Citationly.Infrastructure;
@@ -44,16 +46,21 @@ public static class DependencyInjection
         services.AddScoped<IScrapingJobService, ScrapingJobService>();
         services.AddScoped<IAiVisibilityEngineService, AiVisibilityEngineService>();
         
+        // Company Knowledge Graph
+        services.AddTransient<ICompanyRepository, CompanyRepository>();
+        services.AddTransient<ICompanyCompetitorRepository, CompanyCompetitorRepository>();
+        services.AddScoped<ICompanySimilarityService, CompanySimilarityService>();
+        services.AddScoped<ICompanyGraphService, CompanyGraphService>();
+
         // Competitors
         services.AddScoped<ICompetitorDiscoveryService, Citationly.Infrastructure.Services.Competitors.CompetitorDiscoveryService>();
-        services.AddScoped<ITokenBudgetManager, Citationly.Infrastructure.Services.Competitors.TokenBudgetManager>();
-        services.AddScoped<ICompetitorScoringEngine, Citationly.Infrastructure.Services.Competitors.CompetitorScoringEngine>();
-        services.AddScoped<ICompetitorEnrichmentService, Citationly.Infrastructure.Services.Competitors.CompetitorEnrichmentService>();
+        services.AddScoped<ICompetitorGraphSyncService, Citationly.Infrastructure.Services.Competitors.CompetitorGraphSyncService>();
         services.AddScoped<ICompetitorRankingService, Citationly.Infrastructure.Services.Competitors.CompetitorRankingService>();
         services.AddScoped<ICompetitorCacheService, Citationly.Infrastructure.Services.Competitors.CompetitorCacheService>();
 
         // Application Services
         services.AddScoped<IOpenAiService, OpenAiService>();
+        services.AddScoped<IEmbeddingService, OpenAiEmbeddingService>();
         services.AddScoped<ISearchService, MockSearchService>();
         services.AddScoped<IMetricsCalculationService, MetricsCalculationService>();
 
