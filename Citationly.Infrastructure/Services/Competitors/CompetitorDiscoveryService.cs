@@ -102,6 +102,61 @@ public class CompetitorDiscoveryService : ICompetitorDiscoveryService
 
     private static decimal ToSimilarityScore(double cosine) => Math.Round((decimal)Math.Clamp(cosine, 0, 1) * 100, 2);
 
+    /// <summary>
+    /// OpenAiService sends response_format=json_object, and OpenAI's JSON mode can never return a
+    /// bare array — the root is always an object. So a prompt asking for `[...]` comes back wrapped
+    /// under whatever key the model picked ({"competitors":[...]}), or worse, as an object of
+    /// objects with no array at all. Pull out the first array-valued property rather than pinning a
+    /// key name, and still accept a bare array in case JSON mode is ever off.
+    /// </summary>
+    private static List<T> ExtractJsonArray<T>(string content, string logLabel)
+    {
+        if (string.IsNullOrWhiteSpace(content)) return new();
+
+        // Strip markdown fences if the model added them (only possible with JSON mode off).
+        var trimmed = content.Trim();
+        var fence = System.Text.RegularExpressions.Regex.Match(trimmed, @"```(?:json)?\s*([\s\S]*?)```");
+        if (fence.Success) trimmed = fence.Groups[1].Value.Trim();
+
+        var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+        try
+        {
+            using var doc = JsonDocument.Parse(trimmed);
+
+            if (doc.RootElement.ValueKind == JsonValueKind.Array)
+                return doc.RootElement.Deserialize<List<T>>(options) ?? new();
+
+            if (doc.RootElement.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var prop in doc.RootElement.EnumerateObject())
+                {
+                    if (prop.Value.ValueKind == JsonValueKind.Array)
+                        return prop.Value.Deserialize<List<T>>(options) ?? new();
+                }
+
+                // No array anywhere: the model emitted {"c1":{...},"c2":{...}}. Take the
+                // object-valued properties as the items.
+                var fromValues = new List<T>();
+                foreach (var prop in doc.RootElement.EnumerateObject())
+                {
+                    if (prop.Value.ValueKind != JsonValueKind.Object) continue;
+                    var item = prop.Value.Deserialize<T>(options);
+                    if (item != null) fromValues.Add(item);
+                }
+                if (fromValues.Count > 0) return fromValues;
+            }
+
+            Console.WriteLine($"[Discovery] {logLabel}: no array found in response root ({doc.RootElement.ValueKind}).");
+            return new();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Discovery] {logLabel}: JSON parse failed: {ex.Message}");
+            Console.WriteLine($"[Discovery] {logLabel}: raw = {trimmed[..Math.Min(500, trimmed.Length)]}");
+            return new();
+        }
+    }
+
     private async Task<List<Selection>> SelectAndExplainAsync(
         string businessName,
         string rawProfileJson,
@@ -114,7 +169,7 @@ public class CompetitorDiscoveryService : ICompetitorDiscoveryService
         const string systemPrompt =
             "You are a competitive-intelligence ranking assistant. You may ONLY select and rank companies " +
             "from the CANDIDATES list below by their exact id. Do not invent, add, or suggest any company " +
-            "not in this list. Output ONLY a JSON array. No markdown, no explanations outside the array.";
+            "not in this list. Output a single JSON object, nothing else.";
 
         var userPrompt = $@"Business: {businessName}
 Industry: {ctx.Industry}
@@ -130,8 +185,8 @@ CANDIDATES (id | name | industry | services | products | audience):
 Select the {TopSelectionCount} candidates most relevant as real competitors to the Business above, ordered
 most-to-least relevant. For each, explain why in a business-relevant way. Reason/strength/weakness: max 20 words each.
 
-Return ONLY a JSON array using this schema, with companyId copied EXACTLY from a candidate's id above:
-[{{""companyId"":""<uuid>"",""confidence"":0,""reason"":"""",""strength"":"""",""weakness"":""""}}]";
+Return a JSON object whose ""selections"" key holds the array, with companyId copied EXACTLY from a candidate's id above:
+{{""selections"":[{{""companyId"":""<uuid>"",""confidence"":0,""reason"":"""",""strength"":"""",""weakness"":""""}}]}}";
 
         string responseContent;
         try
@@ -144,25 +199,9 @@ Return ONLY a JSON array using this schema, with companyId copied EXACTLY from a
             return new List<Selection>();
         }
 
-        int startIndex = responseContent.IndexOf('[');
-        int endIndex = responseContent.LastIndexOf(']');
-        if (startIndex < 0 || endIndex <= startIndex)
-        {
-            Console.WriteLine("[Discovery] Ranking response did not contain a JSON array.");
-            return new List<Selection>();
-        }
-        responseContent = responseContent.Substring(startIndex, endIndex - startIndex + 1);
-
-        try
-        {
-            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-            return JsonSerializer.Deserialize<List<Selection>>(responseContent, options) ?? new();
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[Discovery] Ranking response JSON parse failed: {ex.Message}");
-            return new List<Selection>();
-        }
+        var selections = ExtractJsonArray<Selection>(responseContent, "Ranking");
+        Console.WriteLine($"[Discovery] Ranking returned {selections.Count} selections");
+        return selections;
     }
 
     private class Selection
@@ -183,28 +222,22 @@ Return ONLY a JSON array using this schema, with companyId copied EXACTLY from a
         var ctx = CompanyProfileSummarizer.ExtractContext(rawProfileJson);
 
         const string systemPrompt =
-            "You are a competitive intelligence analyst. Generate realistic competitor company names " +
-            "and brief analysis based on the provided business context. Output ONLY a JSON array.";
+            "You are a competitive intelligence analyst. Name only real, existing companies with real " +
+            "websites — never invent a company. Output a single JSON object, nothing else.";
 
-        var userPrompt = $@"Based on this business profile, generate {TopSelectionCount} realistic competitor companies that actually exist in the market:
-
-Business: {businessName}
+        var userPrompt = $@"Business: {businessName}
 Industry: {ctx.Industry}
 Services: {ctx.Services}
 Products: {ctx.Products}
 Target customers: {ctx.TargetAudience}
 Business model: {ctx.BusinessModel}
 
-For EACH competitor, provide:
-- name: real company name in this space
-- website: company website (must be real)
-- reason: why they're a competitor (max 15 words)
-- strength: their competitive advantage (max 15 words)
-- weakness: potential weakness vs your business (max 15 words)
-- confidence: 60-90 (how confident this is a real competitor)
+List exactly {TopSelectionCount} real, well-known companies that compete with this business.
+Every entry must be a company that actually exists, with its real website domain.
+reason/strength/weakness: max 15 words each. confidence: 60-90.
 
-Return ONLY this JSON array format, NO markdown:
-[{{""name"":"""",""website"":"""",""reason"":"""",""strength"":"""",""weakness"":"""",""confidence"":0}}]";
+Return a JSON object whose ""competitors"" key holds the array:
+{{""competitors"":[{{""name"":""Example Inc"",""website"":""example.com"",""reason"":"""",""strength"":"""",""weakness"":"""",""confidence"":75}}]}}";
 
         try
         {
@@ -212,32 +245,9 @@ Return ONLY this JSON array format, NO markdown:
             var responseContent = await _openAiService.GenerateContentAsync(
                 userPrompt, systemPrompt, requireJson: true, model: "gpt-4o-mini");
 
-            Console.WriteLine($"[Discovery] AI raw response: {responseContent.Substring(0, Math.Min(200, responseContent.Length))}");
+            Console.WriteLine($"[Discovery] AI raw response: {responseContent[..Math.Min(300, responseContent.Length)]}");
 
-            int startIndex = responseContent.IndexOf('[');
-            int endIndex = responseContent.LastIndexOf(']');
-            if (startIndex < 0 || endIndex <= startIndex)
-            {
-                Console.WriteLine("[Discovery] AI response did not contain JSON array - trying to extract from markdown");
-                // Try to extract from markdown code block
-                var jsonMatch = System.Text.RegularExpressions.Regex.Match(responseContent, @"```(?:json)?\s*([\s\S]*?)```");
-                if (jsonMatch.Success)
-                {
-                    responseContent = jsonMatch.Groups[1].Value.Trim();
-                    startIndex = responseContent.IndexOf('[');
-                    endIndex = responseContent.LastIndexOf(']');
-                }
-                if (startIndex < 0 || endIndex <= startIndex)
-                {
-                    Console.WriteLine("[Discovery] Still no JSON array found");
-                    return new List<CompanyCompetitor>();
-                }
-            }
-
-            responseContent = responseContent.Substring(startIndex, endIndex - startIndex + 1);
-
-            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-            var coldStartCompetitors = JsonSerializer.Deserialize<List<ColdStartCompetitor>>(responseContent, options) ?? new();
+            var coldStartCompetitors = ExtractJsonArray<ColdStartCompetitor>(responseContent, "Cold-start");
             Console.WriteLine($"[Discovery] AI returned {coldStartCompetitors.Count} competitors");
 
             // Create/upsert Company records for each competitor
