@@ -212,12 +212,26 @@ Return ONLY this JSON array format, NO markdown:
             var responseContent = await _openAiService.GenerateContentAsync(
                 userPrompt, systemPrompt, requireJson: true, model: "gpt-4o-mini");
 
+            Console.WriteLine($"[Discovery] AI raw response: {responseContent.Substring(0, Math.Min(200, responseContent.Length))}");
+
             int startIndex = responseContent.IndexOf('[');
             int endIndex = responseContent.LastIndexOf(']');
             if (startIndex < 0 || endIndex <= startIndex)
             {
-                Console.WriteLine("[Discovery] AI response did not contain JSON array");
-                return new List<CompanyCompetitor>();
+                Console.WriteLine("[Discovery] AI response did not contain JSON array - trying to extract from markdown");
+                // Try to extract from markdown code block
+                var jsonMatch = System.Text.RegularExpressions.Regex.Match(responseContent, @"```(?:json)?\s*([\s\S]*?)```");
+                if (jsonMatch.Success)
+                {
+                    responseContent = jsonMatch.Groups[1].Value.Trim();
+                    startIndex = responseContent.IndexOf('[');
+                    endIndex = responseContent.LastIndexOf(']');
+                }
+                if (startIndex < 0 || endIndex <= startIndex)
+                {
+                    Console.WriteLine("[Discovery] Still no JSON array found");
+                    return new List<CompanyCompetitor>();
+                }
             }
 
             responseContent = responseContent.Substring(startIndex, endIndex - startIndex + 1);
