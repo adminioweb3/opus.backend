@@ -1,4 +1,6 @@
+using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Citationly.Application.Interfaces;
 using Citationly.Application.Interfaces.Companies;
 using Citationly.Application.Interfaces.Competitors;
@@ -9,17 +11,45 @@ using Citationly.Infrastructure.Services.Companies;
 namespace Citationly.Infrastructure.Services.Competitors;
 
 /// <summary>
-/// Ranking-only competitor discovery: candidates come exclusively from real companies already in
-/// the Company Knowledge Graph (via ICompanySimilarityService's cosine-similarity search over
-/// real embeddings) — this service never invents a company name. The one AI call here selects
-/// and explains a top-20 subset of the top-100 real candidates; it never touches the similarity
-/// number itself, which always comes straight from cosine similarity so it can't be re-inflated
-/// the way the old additive scoring engine used to saturate at 100.
+/// Hybrid competitor discovery. Real companies already in the Company Knowledge Graph come first:
+/// candidates are found by cosine similarity over real embeddings, gated on a minimum similarity so
+/// a loosely-related company can never pass as a competitor, then ranked/explained by one AI call
+/// that may only pick from the ids it was handed. Their similarity number always comes straight
+/// from cosine similarity, so it can't be re-inflated the way the old additive scoring engine used
+/// to saturate at 100.
+///
+/// The graph rarely holds 20 close matches early in its life, so whatever the graph is short by is
+/// topped up with AI-generated real companies rather than returning a short list — a client seeing
+/// 3 competitors reads as a broken report. Generated entries always rank below every real match and
+/// carry a synthetic similarity, and each one is persisted as a (thin) graph node so the graph
+/// grows with use.
 /// </summary>
 public class CompetitorDiscoveryService : ICompetitorDiscoveryService
 {
     private const int CandidatePoolSize = 100;
     private const int TopSelectionCount = 20;
+
+    /// <summary>
+    /// Minimum cosine similarity for a graph company to count as a real competitor. Without a floor,
+    /// a single unrelated company in the graph was enough to satisfy "candidates exist", which
+    /// suppressed generation entirely and made that one junk row the whole competitor list.
+    ///
+    /// This value is a judgement call, not a natural constant — business descriptions share enough
+    /// vocabulary ("platform", "services", "customers") that unrelated companies still score
+    /// mid-range. Every rejected candidate is logged with its actual score; calibrate from those.
+    /// </summary>
+    private const double MinCosineSimilarity = 0.70;
+
+    /// <summary>Top of the synthetic similarity band used for generated entries, and the step between them.</summary>
+    private const decimal GeneratedTopSimilarity = 80m;
+    private const decimal SimilarityStep = 0.5m;
+
+    /// <summary>
+    /// The model under-delivers on "exactly N" — asked for 20, it returns 18 — and the code-side
+    /// dedup and self-checks can drop more on top of that. Over-ask by this much and take the first
+    /// `count`, so a short model response never reaches the client as a short competitor list.
+    /// </summary>
+    private const int GenerationHeadroom = 6;
 
     private readonly ICompanySimilarityService _similarityService;
     private readonly IOpenAiService _openAiService;
@@ -41,16 +71,65 @@ public class CompetitorDiscoveryService : ICompetitorDiscoveryService
         string rawProfileJson,
         CancellationToken cancellationToken)
     {
-        var candidates = await _similarityService.GetTopSimilarAsync(companyId, CandidatePoolSize);
-        if (candidates.Count == 0)
-        {
-            Console.WriteLine("[Discovery] No candidates in graph, initiating cold-start generation...");
-            // Cold-start: no companies in graph yet. Generate AI competitors as fallback.
-            var coldStartResults = await GenerateColdStartCompetitorsAsync(companyId, businessName, rawProfileJson, cancellationToken);
-            Console.WriteLine($"[Discovery] Cold-start generated {coldStartResults.Count} competitors");
-            return coldStartResults;
-        }
+        var pool = await _similarityService.GetTopSimilarAsync(companyId, CandidatePoolSize);
+        var candidates = pool.Where(c => c.CosineSimilarity >= MinCosineSimilarity).ToList();
+        LogThresholdOutcome(pool, candidates.Count);
 
+        var graphEdges = candidates.Count > 0
+            ? await RankGraphCandidatesAsync(companyId, businessName, rawProfileJson, candidates)
+            : new List<CompanyCompetitor>();
+
+        if (graphEdges.Count >= TopSelectionCount)
+            return graphEdges.Take(TopSelectionCount).ToList();
+
+        var shortfall = TopSelectionCount - graphEdges.Count;
+        Console.WriteLine($"[Discovery] Graph supplied {graphEdges.Count}/{TopSelectionCount}; generating {shortfall} to top up.");
+
+        var usedIds = graphEdges.Select(e => e.CompetitorCompanyId).ToHashSet();
+        var excludeDomains = candidates
+            .Where(c => usedIds.Contains(c.Company.Id))
+            .Select(c => c.Company.NormalizedDomain)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        // Generated entries rank below every real match, so their synthetic similarity has to sit
+        // below the weakest real score too — otherwise the table shows a generated row at 80%
+        // ranked underneath a real row at 72%.
+        var startSimilarity = graphEdges.Count > 0
+            ? Math.Min(graphEdges.Min(e => e.Similarity) - SimilarityStep, GeneratedTopSimilarity)
+            : GeneratedTopSimilarity;
+
+        var generated = await GenerateCompetitorsAsync(
+            companyId,
+            businessName,
+            rawProfileJson,
+            count: shortfall,
+            startRank: graphEdges.Count + 1,
+            startSimilarity: startSimilarity,
+            excludeDomains: excludeDomains,
+            cancellationToken);
+
+        var combined = graphEdges.Concat(generated).ToList();
+        Console.WriteLine($"[Discovery] Returning {combined.Count} competitors ({graphEdges.Count} from graph, {generated.Count} generated).");
+        return combined;
+    }
+
+    /// <summary>
+    /// Logs how the threshold split the pool, and every rejected candidate's actual score, so
+    /// MinCosineSimilarity can be calibrated against real data instead of guessed at.
+    /// </summary>
+    private static void LogThresholdOutcome(List<(Company Company, double CosineSimilarity)> pool, int passedCount)
+    {
+        Console.WriteLine($"[Discovery] Graph pool: {pool.Count} embedded companies, {passedCount} at or above {MinCosineSimilarity:P0}.");
+        foreach (var (company, score) in pool.Where(c => c.CosineSimilarity < MinCosineSimilarity).Take(10))
+            Console.WriteLine($"[Discovery]   rejected {company.CompanyName} ({company.NormalizedDomain}) at {score:P1}");
+    }
+
+    private async Task<List<CompanyCompetitor>> RankGraphCandidatesAsync(
+        Guid companyId,
+        string businessName,
+        string rawProfileJson,
+        List<(Company Company, double CosineSimilarity)> candidates)
+    {
         var candidatesById = candidates.ToDictionary(c => c.Company.Id, c => c);
 
         var selections = await SelectAndExplainAsync(businessName, rawProfileJson, candidates);
@@ -63,8 +142,8 @@ public class CompetitorDiscoveryService : ICompetitorDiscoveryService
             .Take(TopSelectionCount)
             .ToList();
 
-        // AI call failed or returned nothing usable — fall back to the top-20 real candidates
-        // by cosine similarity directly, with no AI-written reason, rather than an empty result.
+        // AI call failed or returned nothing usable — fall back to the candidates that already
+        // passed the threshold, ordered by cosine, with no AI-written reason.
         if (validSelections.Count == 0)
         {
             return candidates
@@ -91,7 +170,7 @@ public class CompetitorDiscoveryService : ICompetitorDiscoveryService
                 CompanyId = companyId,
                 CompetitorCompanyId = s.CompanyId,
                 Similarity = ToSimilarityScore(cosine),
-                Confidence = Math.Clamp(s.Confidence, 0, 100),
+                Confidence = NormalizeConfidence(s.Confidence),
                 Rank = i + 1,
                 Reason = s.Reason,
                 Strength = s.Strength,
@@ -118,20 +197,19 @@ public class CompetitorDiscoveryService : ICompetitorDiscoveryService
         var fence = System.Text.RegularExpressions.Regex.Match(trimmed, @"```(?:json)?\s*([\s\S]*?)```");
         if (fence.Success) trimmed = fence.Groups[1].Value.Trim();
 
-        var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
         try
         {
             using var doc = JsonDocument.Parse(trimmed);
 
             if (doc.RootElement.ValueKind == JsonValueKind.Array)
-                return doc.RootElement.Deserialize<List<T>>(options) ?? new();
+                return DeserializeElements<T>(doc.RootElement, logLabel);
 
             if (doc.RootElement.ValueKind == JsonValueKind.Object)
             {
                 foreach (var prop in doc.RootElement.EnumerateObject())
                 {
                     if (prop.Value.ValueKind == JsonValueKind.Array)
-                        return prop.Value.Deserialize<List<T>>(options) ?? new();
+                        return DeserializeElements<T>(prop.Value, logLabel);
                 }
 
                 // No array anywhere: the model emitted {"c1":{...},"c2":{...}}. Take the
@@ -140,7 +218,7 @@ public class CompetitorDiscoveryService : ICompetitorDiscoveryService
                 foreach (var prop in doc.RootElement.EnumerateObject())
                 {
                     if (prop.Value.ValueKind != JsonValueKind.Object) continue;
-                    var item = prop.Value.Deserialize<T>(options);
+                    var item = TryDeserialize<T>(prop.Value, logLabel);
                     if (item != null) fromValues.Add(item);
                 }
                 if (fromValues.Count > 0) return fromValues;
@@ -155,6 +233,73 @@ public class CompetitorDiscoveryService : ICompetitorDiscoveryService
             Console.WriteLine($"[Discovery] {logLabel}: raw = {trimmed[..Math.Min(500, trimmed.Length)]}");
             return new();
         }
+    }
+
+    /// <summary>
+    /// Deserializes array entries one at a time. Doing the whole array in a single call meant one
+    /// malformed field dropped every entry — a confidence of "85" instead of 85 silently cost the
+    /// ranking path all 20 of its selections and degraded it to raw cosine order.
+    /// </summary>
+    private static List<T> DeserializeElements<T>(JsonElement array, string logLabel)
+    {
+        var items = new List<T>();
+        foreach (var element in array.EnumerateArray())
+        {
+            var item = TryDeserialize<T>(element, logLabel);
+            if (item != null) items.Add(item);
+        }
+        return items;
+    }
+
+    private static T? TryDeserialize<T>(JsonElement element, string logLabel)
+    {
+        try
+        {
+            return element.Deserialize<T>(LenientJson);
+        }
+        catch (JsonException ex)
+        {
+            Console.WriteLine($"[Discovery] {logLabel}: skipped malformed entry: {ex.Message}");
+            return default;
+        }
+    }
+
+    private static readonly JsonSerializerOptions LenientJson = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        NumberHandling = JsonNumberHandling.AllowReadingFromString,
+        Converters = { new TolerantIntConverter() }
+    };
+
+    /// <summary>
+    /// The model formats numeric fields loosely — 85, "85" and 85.0 have all come back for
+    /// confidence. Coerce any of those to an int rather than failing the entry.
+    /// </summary>
+    private sealed class TolerantIntConverter : JsonConverter<int>
+    {
+        public override int Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            switch (reader.TokenType)
+            {
+                case JsonTokenType.Number:
+                    return reader.TryGetInt32(out var i) ? i : (int)Math.Round(reader.GetDouble());
+                case JsonTokenType.String:
+                    var raw = reader.GetString();
+                    if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+                        return parsed;
+                    if (double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var d))
+                        return (int)Math.Round(d);
+                    return 0;
+                case JsonTokenType.Null:
+                    return 0;
+                default:
+                    reader.Skip();
+                    return 0;
+            }
+        }
+
+        public override void Write(Utf8JsonWriter writer, int value, JsonSerializerOptions options)
+            => writer.WriteNumberValue(value);
     }
 
     private async Task<List<Selection>> SelectAndExplainAsync(
@@ -182,8 +327,11 @@ Unique selling proposition: {ctx.Usp}
 CANDIDATES (id | name | industry | services | products | audience):
 {candidateLines}
 
-Select the {TopSelectionCount} candidates most relevant as real competitors to the Business above, ordered
-most-to-least relevant. For each, explain why in a business-relevant way. Reason/strength/weakness: max 20 words each.
+Select up to {TopSelectionCount} candidates that are genuine competitors to the Business above — same
+business model, serving the same kind of customer. Order them most-to-least relevant. Leave out any
+candidate that is merely adjacent rather than competing; returning fewer is correct and expected.
+For each, explain why in a business-relevant way. Reason/strength/weakness: max 20 words each.
+confidence: whole number between 0 and 100 (not a fraction).
 
 Return a JSON object whose ""selections"" key holds the array, with companyId copied EXACTLY from a candidate's id above:
 {{""selections"":[{{""companyId"":""<uuid>"",""confidence"":0,""reason"":"""",""strength"":"""",""weakness"":""""}}]}}";
@@ -207,16 +355,39 @@ Return a JSON object whose ""selections"" key holds the array, with companyId co
     private class Selection
     {
         public Guid CompanyId { get; set; }
-        public int Confidence { get; set; }
+
+        /// <summary>Read as double because the model answers on either scale — see NormalizeConfidence.</summary>
+        public double Confidence { get; set; }
+
         public string? Reason { get; set; }
         public string? Strength { get; set; }
         public string? Weakness { get; set; }
     }
 
-    private async Task<List<CompanyCompetitor>> GenerateColdStartCompetitorsAsync(
+    /// <summary>
+    /// The model answers confidence on whichever scale it feels like: the generation prompt pins a
+    /// 60-90 range and gets 0-100 back, while the ranking prompt returned 0.95 for "very confident",
+    /// which landed in the UI as 1%. Anything at or below 1 is a fraction.
+    /// </summary>
+    private static int NormalizeConfidence(double raw)
+    {
+        var scaled = raw > 0 && raw <= 1.0 ? raw * 100 : raw;
+        return (int)Math.Round(Math.Clamp(scaled, 0, 100));
+    }
+
+    /// <summary>
+    /// Fills the gap between what the graph could supply and TopSelectionCount. Each generated
+    /// company is upserted as a graph node (thin — no profile or embedding until that company is
+    /// itself analyzed), so repeat generations across orgs converge on the same rows.
+    /// </summary>
+    private async Task<List<CompanyCompetitor>> GenerateCompetitorsAsync(
         Guid companyId,
         string businessName,
         string rawProfileJson,
+        int count,
+        int startRank,
+        decimal startSimilarity,
+        HashSet<string> excludeDomains,
         CancellationToken cancellationToken)
     {
         var ctx = CompanyProfileSummarizer.ExtractContext(rawProfileJson);
@@ -225,91 +396,106 @@ Return a JSON object whose ""selections"" key holds the array, with companyId co
             "You are a competitive intelligence analyst. Name only real, existing companies with real " +
             "websites — never invent a company. Output a single JSON object, nothing else.";
 
+        var exclusions = excludeDomains.Count > 0
+            ? $"\nAlready covered, do NOT repeat: {string.Join(", ", excludeDomains)}"
+            : string.Empty;
+
         var userPrompt = $@"Business: {businessName}
 Industry: {ctx.Industry}
 Services: {ctx.Services}
 Products: {ctx.Products}
 Target customers: {ctx.TargetAudience}
-Business model: {ctx.BusinessModel}
+Business model: {ctx.BusinessModel}{exclusions}
 
-List exactly {TopSelectionCount} real, well-known companies that compete with this business.
-Every entry must be a company that actually exists, with its real website domain.
+List {count + GenerationHeadroom} real, well-known companies that compete with this business — same
+business model, serving the same kind of customer. Every entry must be a company that actually
+exists, with its real website domain. Do not include the business itself.
 reason/strength/weakness: max 15 words each. confidence: 60-90.
 
 Return a JSON object whose ""competitors"" key holds the array:
 {{""competitors"":[{{""name"":""Example Inc"",""website"":""example.com"",""reason"":"""",""strength"":"""",""weakness"":"""",""confidence"":75}}]}}";
 
+        List<ColdStartCompetitor> generated;
         try
         {
-            Console.WriteLine("[Discovery] Calling AI for cold-start competitor generation...");
+            Console.WriteLine($"[Discovery] Asking AI for {count + GenerationHeadroom} competitors (need {count})...");
             var responseContent = await _openAiService.GenerateContentAsync(
                 userPrompt, systemPrompt, requireJson: true, model: "gpt-4o-mini");
 
             Console.WriteLine($"[Discovery] AI raw response: {responseContent[..Math.Min(300, responseContent.Length)]}");
+            generated = ExtractJsonArray<ColdStartCompetitor>(responseContent, "Generation");
+            Console.WriteLine($"[Discovery] AI returned {generated.Count} competitors");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Discovery] Generation call failed: {ex.Message}");
+            return new List<CompanyCompetitor>();
+        }
 
-            var coldStartCompetitors = ExtractJsonArray<ColdStartCompetitor>(responseContent, "Cold-start");
-            Console.WriteLine($"[Discovery] AI returned {coldStartCompetitors.Count} competitors");
+        var edges = new List<CompanyCompetitor>();
+        var seen = new HashSet<string>(excludeDomains, StringComparer.OrdinalIgnoreCase);
 
-            // Create/upsert Company records for each competitor
-            var edges = new List<CompanyCompetitor>();
-            var similarityDecrement = 10m / TopSelectionCount;
-            Console.WriteLine($"[Discovery] Processing {coldStartCompetitors.Count} competitors for company {companyId}");
+        foreach (var competitor in generated)
+        {
+            if (edges.Count >= count) break;
 
-            for (int i = 0; i < coldStartCompetitors.Count && i < TopSelectionCount; i++)
+            if (string.IsNullOrWhiteSpace(competitor.Name) || string.IsNullOrWhiteSpace(competitor.Website))
             {
-                var competitor = coldStartCompetitors[i];
-                if (string.IsNullOrWhiteSpace(competitor.Name) || string.IsNullOrWhiteSpace(competitor.Website))
-                {
-                    Console.WriteLine($"[Discovery] Skipping competitor {i}: empty name or website");
-                    continue;
-                }
+                Console.WriteLine("[Discovery] Skipping entry with empty name or website");
+                continue;
+            }
 
-                Console.WriteLine($"[Discovery] Creating company record for {competitor.Name}");
-                // Normalize domain for dedup
-                var normalizedDomain = DomainNormalizer.Normalize(competitor.Website);
+            var normalizedDomain = DomainNormalizer.Normalize(competitor.Website);
 
-                // Create minimal Company record for cold-start competitor
-                var company = new Company
+            // Enforce the exclusion list in code, not just in the prompt — same reason the ranking
+            // path re-checks ids: the model does not reliably honour it.
+            if (!seen.Add(normalizedDomain))
+            {
+                Console.WriteLine($"[Discovery] Skipping {competitor.Name}: {normalizedDomain} already covered");
+                continue;
+            }
+
+            try
+            {
+                var upserted = await _companyRepository.UpsertAsync(new Company
                 {
-                    Id = Guid.NewGuid(),
                     NormalizedDomain = normalizedDomain,
                     Website = competitor.Website,
                     CompanyName = competitor.Name,
                     Industry = ctx.Industry,
-                    BusinessProfileJson = "{}", // Minimal: empty profile until they're analyzed
-                    Embedding = null,
-                    EmbeddingModel = null,
-                    EmbeddingUpdatedAt = null,
-                    SourceOrganizationId = null, // Not from any org, generated for cold-start
+                    BusinessProfileJson = "{}",   // thin node until this company is itself analyzed
+                    SourceOrganizationId = null,  // generated, not contributed by an org
                     LastAnalyzedAt = DateTime.UtcNow
-                };
+                });
 
-                // Upsert company (on conflict update LastAnalyzedAt)
-                var upsertedCompany = await _companyRepository.UpsertAsync(company);
-                Console.WriteLine($"[Discovery] Upserted company {upsertedCompany.CompanyName} with ID {upsertedCompany.Id}");
+                // chk_companycompetitor_not_self would reject this, and it would be wrong anyway —
+                // the model occasionally returns the business itself.
+                if (upserted.Id == companyId)
+                {
+                    Console.WriteLine($"[Discovery] Skipping {competitor.Name}: resolves to the business itself");
+                    continue;
+                }
 
-                // Create edge with descending similarity
                 edges.Add(new CompanyCompetitor
                 {
-                    CompanyId = companyId, // The org's own company
-                    CompetitorCompanyId = upsertedCompany.Id, // The generated competitor
-                    Similarity = 80m - (i * similarityDecrement), // 80, 72, 64... descending
+                    CompanyId = companyId,
+                    CompetitorCompanyId = upserted.Id,
+                    Similarity = Math.Max(startSimilarity - (edges.Count * SimilarityStep), 0m),
                     Confidence = Math.Clamp(competitor.Confidence, 60, 100),
-                    Rank = i + 1,
+                    Rank = startRank + edges.Count,
                     Reason = competitor.Reason,
                     Strength = competitor.Strength,
                     Weakness = competitor.Weakness
                 });
             }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Discovery] Failed to persist {competitor.Name}: {ex.Message}");
+            }
+        }
 
-            Console.WriteLine($"[Discovery] Cold-start complete: {edges.Count} edges created");
-            return edges;
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[Discovery] Cold-start generation failed: {ex.Message}");
-            return new List<CompanyCompetitor>();
-        }
+        Console.WriteLine($"[Discovery] Generated {edges.Count} of {count} requested");
+        return edges;
     }
 
     private class ColdStartCompetitor
