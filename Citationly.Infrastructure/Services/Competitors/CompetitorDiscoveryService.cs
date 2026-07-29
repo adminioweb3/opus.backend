@@ -27,7 +27,7 @@ namespace Citationly.Infrastructure.Services.Competitors;
 public class CompetitorDiscoveryService : ICompetitorDiscoveryService
 {
     private const int CandidatePoolSize = 100;
-    private const int TopSelectionCount = 20;
+    private const int TopSelectionCount = 40;
 
     /// <summary>
     /// Minimum cosine similarity for a graph company to count as a real competitor. Without a floor,
@@ -46,10 +46,26 @@ public class CompetitorDiscoveryService : ICompetitorDiscoveryService
 
     /// <summary>
     /// The model under-delivers on "exactly N" — asked for 20, it returns 18 — and the code-side
-    /// dedup and self-checks can drop more on top of that. Over-ask by this much and take the first
-    /// `count`, so a short model response never reaches the client as a short competitor list.
+    /// dedup and self-checks can drop more on top of that. The scale filter below adds a third
+    /// source of drop-out (a famous giant offered despite instructions gets rejected outright, not
+    /// just discouraged), so this needs more headroom than a plain dedup pass would.
     /// </summary>
-    private const int GenerationHeadroom = 6;
+    private const int GenerationHeadroom = 15;
+
+    private static readonly string[] ScaleTiers = { "startup", "smb", "mid-market", "enterprise" };
+
+    /// <summary>
+    /// 0-3, or -1 if unrecognized/unknown. Matches loosely (contains) since the model doesn't always
+    /// echo the exact casing/hyphenation asked for.
+    /// </summary>
+    private static int ScaleTierIndex(string? scale)
+    {
+        if (string.IsNullOrWhiteSpace(scale)) return -1;
+        var normalized = scale.Trim().ToLowerInvariant();
+        for (int i = 0; i < ScaleTiers.Length; i++)
+            if (normalized.Contains(ScaleTiers[i])) return i;
+        return -1;
+    }
 
     private readonly ICompanySimilarityService _similarityService;
     private readonly IOpenAiService _openAiService;
@@ -317,6 +333,7 @@ public class CompetitorDiscoveryService : ICompetitorDiscoveryService
             "not in this list. Output a single JSON object, nothing else.";
 
         var userPrompt = $@"Business: {businessName}
+Company scale: {ctx.Scale}
 Industry: {ctx.Industry}
 Services: {ctx.Services}
 Products: {ctx.Products}
@@ -327,11 +344,12 @@ Unique selling proposition: {ctx.Usp}
 CANDIDATES (id | name | industry | services | products | audience):
 {candidateLines}
 
-Select up to {TopSelectionCount} candidates that are genuine competitors to the Business above — same
-business model, serving the same kind of customer. Order them most-to-least relevant. Leave out any
-candidate that is merely adjacent rather than competing; returning fewer is correct and expected.
-For each, explain why in a business-relevant way. Reason/strength/weakness: max 20 words each.
-confidence: whole number between 0 and 100 (not a fraction).
+Select up to {TopSelectionCount} candidates that are genuine, FAIR competitors to the Business above —
+same business model, comparable to its stated company scale ({ctx.Scale}), serving the same kind of
+customer. Order them most-to-least relevant. Leave out any candidate that is merely adjacent rather
+than competing, or that is a broad category-dominating giant clearly larger than this business's own
+scale; returning fewer is correct and expected. For each, explain why in a business-relevant way.
+Reason/strength/weakness: max 20 words each. confidence: whole number between 0 and 100 (not a fraction).
 
 Return a JSON object whose ""selections"" key holds the array, with companyId copied EXACTLY from a candidate's id above:
 {{""selections"":[{{""companyId"":""<uuid>"",""confidence"":0,""reason"":"""",""strength"":"""",""weakness"":""""}}]}}";
@@ -400,20 +418,37 @@ Return a JSON object whose ""selections"" key holds the array, with companyId co
             ? $"\nAlready covered, do NOT repeat: {string.Join(", ", excludeDomains)}"
             : string.Empty;
 
+        // "well-known companies" (the old wording) reliably pulled category-dominating giants —
+        // Microsoft, Google, NVIDIA — into every industry's competitor list regardless of the
+        // target business's actual scale, which reads as an unfair, meaningless comparison for a
+        // small or niche business. Ask for peer-level competitors instead, with explicit negative
+        // examples, the same pattern already used elsewhere in this file to steer the model away
+        // from a default bias (see the "do not name the business" prompt in PromptDiscoveryService).
+        // Also require a per-competitor scale tag — this is what lets ValidateScale below reject a
+        // mismatch in code rather than trusting the model's own restraint, which prompt wording
+        // alone can't guarantee.
         var userPrompt = $@"Business: {businessName}
+Company scale: {ctx.Scale}
 Industry: {ctx.Industry}
 Services: {ctx.Services}
 Products: {ctx.Products}
 Target customers: {ctx.TargetAudience}
 Business model: {ctx.BusinessModel}{exclusions}
 
-List {count + GenerationHeadroom} real, well-known companies that compete with this business — same
-business model, serving the same kind of customer. Every entry must be a company that actually
-exists, with its real website domain. Do not include the business itself.
+List {count + GenerationHeadroom} real companies that are FAIR, comparable competitors to this
+business — similar in scale, maturity, and market position, actually competing for the same
+customers. This business's own scale is {ctx.Scale}: do NOT default to broad category-dominating
+giants (e.g. Microsoft, Google, Amazon, NVIDIA, Salesforce) unless that genuinely matches — a
+startup or SMB should be compared against other startups/SMBs in its specific niche, not against
+unrelated market leaders just because they're in the same broad industry.
+Every entry must be a company that actually exists, with its real website domain. Do not include
+the business itself.
 reason/strength/weakness: max 15 words each. confidence: 60-90.
+scale: your own best-guess estimate of that COMPETITOR's size — exactly one of ""Startup"", ""SMB"",
+""Mid-Market"", ""Enterprise"".
 
 Return a JSON object whose ""competitors"" key holds the array:
-{{""competitors"":[{{""name"":""Example Inc"",""website"":""example.com"",""reason"":"""",""strength"":"""",""weakness"":"""",""confidence"":75}}]}}";
+{{""competitors"":[{{""name"":""Example Inc"",""website"":""example.com"",""reason"":"""",""strength"":"""",""weakness"":"""",""confidence"":75,""scale"":""SMB""}}]}}";
 
         List<ColdStartCompetitor> generated;
         try
@@ -435,6 +470,8 @@ Return a JSON object whose ""competitors"" key holds the array:
         var edges = new List<CompanyCompetitor>();
         var seen = new HashSet<string>(excludeDomains, StringComparer.OrdinalIgnoreCase);
 
+        var businessTier = ScaleTierIndex(ctx.Scale);
+
         foreach (var competitor in generated)
         {
             if (edges.Count >= count) break;
@@ -442,6 +479,19 @@ Return a JSON object whose ""competitors"" key holds the array:
             if (string.IsNullOrWhiteSpace(competitor.Name) || string.IsNullOrWhiteSpace(competitor.Website))
             {
                 Console.WriteLine("[Discovery] Skipping entry with empty name or website");
+                continue;
+            }
+
+            // Enforced in code, not just requested in the prompt — a famous giant offered despite
+            // the instructions gets rejected here regardless of how the model justified it. Only
+            // filters when both scales are known, and only rejects when the competitor is MORE than
+            // one tier above the business — an SMB seeing a mid-market competitor is still a
+            // reasonable stretch goal; an SMB seeing an "Enterprise" giant is the exact mismatch
+            // that prompted this whole feature.
+            var competitorTier = ScaleTierIndex(competitor.Scale);
+            if (businessTier >= 0 && competitorTier >= 0 && competitorTier - businessTier > 1)
+            {
+                Console.WriteLine($"[Discovery] Skipping {competitor.Name}: scale '{competitor.Scale}' too far above business scale '{ctx.Scale}'");
                 continue;
             }
 
@@ -506,5 +556,6 @@ Return a JSON object whose ""competitors"" key holds the array:
         public string? Strength { get; set; }
         public string? Weakness { get; set; }
         public int Confidence { get; set; }
+        public string? Scale { get; set; }
     }
 }

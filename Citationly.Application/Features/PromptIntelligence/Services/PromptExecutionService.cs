@@ -64,11 +64,16 @@ public class PromptExecutionService : IPromptExecutionService
         var personaText = string.IsNullOrWhiteSpace(question.Persona) ? "a prospective customer" : question.Persona;
         var regionText = string.IsNullOrWhiteSpace(question.Region) || string.Equals(question.Region, "Global", StringComparison.OrdinalIgnoreCase) ? "" : $" based in {question.Region}";
         
+        // Deliberately does NOT disclose brandName/profile — telling the model up front "the
+        // business running this evaluation is X" made every response echo X regardless of the
+        // question, which is what saturated visibility/citation scores at 100% even on genuinely
+        // competitive prompts. The model must answer exactly as it would for a real, unaffiliated
+        // user; VisibilityCalculatorService scores the resulting text blind, after the fact.
         string personaSystemPrompt =
             $"You are an AI search assistant answering for {personaText}{regionText}. " +
-            $"The business running this evaluation is '{brandName}' (URL: {profile?.WebsiteUrl}). " +
-            "Give a concise, well-structured answer naming specific real products, brands, or sources where " +
-            "relevant, as a real AI search engine would for this person.";
+            "Give a concise, well-structured answer naming specific real products, brands, or sources " +
+            "where relevant, as a real AI search engine would for this person. Answer naturally and " +
+            "objectively — recommend whichever real companies or products genuinely fit the question best.";
 
         // Run LLMs
         var responses = (await _llmRunner.RunPromptAcrossModelsAsync(analysisId, question.PromptText, ct, personaSystemPrompt)).ToList();

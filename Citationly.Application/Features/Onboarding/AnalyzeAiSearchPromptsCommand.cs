@@ -64,7 +64,7 @@ public class AnalyzeAiSearchPromptsCommandHandler : IRequestHandler<AnalyzeAiSea
             }
 
             // 3. Stage 1: Prompt Discovery (Fast sync call)
-            var discoveredPrompts = await _promptDiscoveryService.DiscoverPromptsAsync(request.OrganizationId, profile.RawProfileJson);
+            var discoveredPrompts = await _promptDiscoveryService.DiscoverPromptsAsync(request.OrganizationId, profile.BusinessName, profile.RawProfileJson);
 
             if (discoveredPrompts == null || !discoveredPrompts.Any())
             {

@@ -222,6 +222,25 @@ public class RunCompetitorScanCommandHandler : IRequestHandler<RunCompetitorScan
     private record JudgedCompetitor(int Score, string ThreatLevel, Dictionary<string, int> ModelBreakdown);
     private record JudgedResult(JudgedYou You, List<JudgedCompetitor> Competitors);
 
+    /// <summary>
+    /// Each rescan is an independent, non-deterministic AI judgment call — the prompt asks it to
+    /// "keep scores realistically close to previous," but that's a request, not a guarantee, and
+    /// nothing enforced it: a valid model response was used as-is regardless of how far it moved
+    /// from last time. The result was a leaderboard that could reshuffle noticeably on every click
+    /// of Rescan even though the underlying competitor set never changed. Cap how far any single
+    /// rescan can move a score from its last recorded value — real movement still accumulates
+    /// across repeated scans, it just can't happen in one large jump.
+    /// </summary>
+    private const int MaxScoreSwingPerScan = 8;
+
+    private static int StabilizeScore(int rawScore, int? previousScore)
+    {
+        var clamped = Math.Clamp(rawScore, 0, 100);
+        return previousScore.HasValue
+            ? Math.Clamp(clamped, previousScore.Value - MaxScoreSwingPerScan, previousScore.Value + MaxScoreSwingPerScan)
+            : clamped;
+    }
+
     private static JudgedResult ParseJudgedScores(
         string raw,
         int competitorCount,
@@ -252,7 +271,9 @@ public class RunCompetitorScanCommandHandler : IRequestHandler<RunCompetitorScan
             JudgedYou you;
             if (root.TryGetProperty("you", out var youEl) && youEl.ValueKind == JsonValueKind.Object)
             {
-                var score = youEl.TryGetProperty("score", out var s) && s.TryGetInt32(out var sv) ? Math.Clamp(sv, 0, 100) : youFallback;
+                var score = youEl.TryGetProperty("score", out var s) && s.TryGetInt32(out var sv)
+                    ? StabilizeScore(sv, previousYou?.Score)
+                    : youFallback;
                 var breakdown = youEl.TryGetProperty("modelBreakdown", out var mb) ? ParseBreakdown(mb, score) : DefaultBreakdown(score);
                 you = new JudgedYou(score, breakdown);
             }
@@ -267,14 +288,17 @@ public class RunCompetitorScanCommandHandler : IRequestHandler<RunCompetitorScan
                 var arr = compsEl.EnumerateArray().ToList();
                 for (int i = 0; i < competitorCount; i++)
                 {
-                    var fallback = i < competitors.Count && previousByCompetitorId.TryGetValue(competitors[i].Id, out var prev)
-                        ? prev.Score
-                        : 50;
+                    var prevScore = i < competitors.Count && previousByCompetitorId.TryGetValue(competitors[i].Id, out var prevSnapshot)
+                        ? prevSnapshot.Score
+                        : (int?)null;
+                    var fallback = prevScore ?? 50;
 
                     if (i < arr.Count && arr[i].ValueKind == JsonValueKind.Object)
                     {
                         var el = arr[i];
-                        var score = el.TryGetProperty("score", out var s) && s.TryGetInt32(out var sv) ? Math.Clamp(sv, 0, 100) : fallback;
+                        var score = el.TryGetProperty("score", out var s) && s.TryGetInt32(out var sv)
+                            ? StabilizeScore(sv, prevScore)
+                            : fallback;
                         var threat = el.TryGetProperty("threatLevel", out var t) ? (t.GetString() ?? "low") : "low";
                         if (threat != "low" && threat != "med" && threat != "high") threat = "low";
                         var breakdown = el.TryGetProperty("modelBreakdown", out var mb) ? ParseBreakdown(mb, score) : DefaultBreakdown(score);

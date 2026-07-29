@@ -4,5 +4,5 @@ namespace Citationly.Application.Interfaces.Prompts;
 
 public interface IPromptDiscoveryService
 {
-    Task<List<AiSearchPrompt>> DiscoverPromptsAsync(Guid organizationId, string websiteProfile);
+    Task<List<AiSearchPrompt>> DiscoverPromptsAsync(Guid organizationId, string businessName, string websiteProfile);
 }

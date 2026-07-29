@@ -33,6 +33,15 @@ public class OnboardingAnalysisResult
     public ConfidentTopicalAuthority TopicalAuthority { get; set; } = new();
     public ConfidentString BrandPositioning { get; set; } = new();
     public ConfidentToneOfVoice ToneOfVoice { get; set; } = new();
+
+    /// <summary>
+    /// Value is always one of "Startup", "SMB", "Mid-Market", "Enterprise" — used downstream by
+    /// CompetitorDiscoveryService to keep generated competitors at a comparable scale, instead of
+    /// defaulting to whichever companies are most famous in the industry regardless of whether
+    /// this business is actually anywhere near their size.
+    /// </summary>
+    public ConfidentString CompanyScale { get; set; } = new();
+
     public int OverallConfidence { get; set; }
 }
 
@@ -170,6 +179,11 @@ INSTRUCTIONS:
 3. Every object needs a 'value' and 'confidence' (0-100).
 4. Include deeper SEO (metadata, headings, internal links), structural (nav, UX), brand (mission, values), and market (ICP, pain points, tech stack) insights in the relevant fields (e.g. SEO recommendations, Brand Positioning, Strengths).
 5. Only detect technologies explicitly found. Do not hallucinate.
+6. For companyScale, judge from real signals on the site — team/about page size, number of case
+   studies or logos, funding/press mentions, pricing tier language (built for small teams vs
+   enterprise-grade). Value must be exactly one of: ""Startup"", ""SMB"", ""Mid-Market"", ""Enterprise"".
+   Default to ""Startup"" only if there is genuinely no signal either way — do not default to a
+   bigger tier just because the industry has famous large players.
 
 SCHEMA (Return ONLY this JSON):
 {{
@@ -188,6 +202,7 @@ SCHEMA (Return ONLY this JSON):
   ""topicalAuthority"": {{""value"": {{""primaryTopics"": [], ""authorityLevel"": """", ""reason"": """"}}, ""confidence"": 0}},
   ""brandPositioning"": {{""value"": """", ""confidence"": 0}},
   ""toneOfVoice"": {{""value"": {{""primaryTone"": """", ""secondaryTone"": [], ""writingStyle"": """", ""readingLevel"": """"}}, ""confidence"": 0}},
+  ""companyScale"": {{""value"": ""Startup|SMB|Mid-Market|Enterprise"", ""confidence"": 0}},
   ""overallConfidence"": 0
 }}";
 

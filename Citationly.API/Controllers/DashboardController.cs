@@ -184,7 +184,12 @@ public class DashboardController : ControllerBase
 
         var latest = await _snapshotRepository.GetSnapshotsByScanDateAsync(orgGuid, latestScanDate.Value);
         var youSnap = latest.FirstOrDefault(s => s.IsYou);
-        var compSnaps = latest.Where(s => !s.IsYou).OrderBy(s => s.Rank).Take(4).ToList();
+        // Was capped at 4 — the scan itself (RunCompetitorScanCommand) snapshots every tracked
+        // competitor with no limit, so this was truncating an already-larger real dataset down to
+        // 4 before it ever reached the client. Match CompetitorDiscoveryService's TopSelectionCount
+        // (40) so Competitor Watch reflects the same competitor set as the rest of the product, and
+        // so there's actually more than a page's worth for the frontend's "More" modal to reveal.
+        var compSnaps = latest.Where(s => !s.IsYou).OrderBy(s => s.Rank).Take(40).ToList();
 
         var history = await _snapshotRepository.GetRecentHistoryAsync(orgGuid, 12);
 

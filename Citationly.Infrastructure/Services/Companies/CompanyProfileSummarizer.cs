@@ -10,13 +10,13 @@ namespace Citationly.Infrastructure.Services.Companies;
 /// </summary>
 public static class CompanyProfileSummarizer
 {
-    public record BiContext(string Industry, string Services, string TargetAudience, string BusinessModel, string Products, string Usp, string BrandPositioning);
+    public record BiContext(string Industry, string Services, string TargetAudience, string BusinessModel, string Products, string Usp, string BrandPositioning, string Technologies, string Scale);
 
     public static BiContext ExtractContext(string? rawJson)
     {
         string ind = "Unknown", svc = "Unknown", aud = "Unknown", mod = "Unknown",
-            prod = "Unknown", usp = "Unknown", brand = "Unknown";
-        if (string.IsNullOrEmpty(rawJson)) return new BiContext(ind, svc, aud, mod, prod, usp, brand);
+            prod = "Unknown", usp = "Unknown", brand = "Unknown", tech = "Unknown", scale = "Unknown";
+        if (string.IsNullOrEmpty(rawJson)) return new BiContext(ind, svc, aud, mod, prod, usp, brand, tech, scale);
 
         try
         {
@@ -43,10 +43,16 @@ public static class CompanyProfileSummarizer
 
             if (root.TryGetProperty("brandPositioning", out var bVal) && bVal.TryGetProperty("value", out var bStr))
                 brand = bStr.GetString() ?? "Unknown";
+
+            if (root.TryGetProperty("primaryTechnologies", out var techVal) && techVal.TryGetProperty("value", out var techArr) && techArr.ValueKind == JsonValueKind.Array)
+                tech = string.Join(", ", techArr.EnumerateArray().Select(x => x.GetString()));
+
+            if (root.TryGetProperty("companyScale", out var scaleVal) && scaleVal.TryGetProperty("value", out var scaleStr))
+                scale = scaleStr.GetString() ?? "Unknown";
         }
         catch { /* malformed/partial profile JSON — fall through with defaults */ }
 
-        return new BiContext(ind, svc, aud, mod, prod, usp, brand);
+        return new BiContext(ind, svc, aud, mod, prod, usp, brand, tech, scale);
     }
 
     /// <summary>Clean text blob for embedding — real prose, not raw JSON syntax noise.</summary>

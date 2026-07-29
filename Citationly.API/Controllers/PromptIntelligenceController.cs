@@ -289,7 +289,13 @@ public class PromptIntelligenceController : ControllerBase
             .OrderByDescending(t => t.score)
             .Select((t, i) => new
             {
-                rank = i + 1,
+                // A rank number (and the frontend's "Leader" badge built on it) implies real
+                // competitive standing. Assigning #1 to whichever topic merely happens to sort
+                // first among an all-zero tie — which stable-sorts to "whichever was analyzed
+                // first" — reads as "you're winning" when there's no brand mention at all. Only
+                // rank topics that actually have measured visibility; leave the rest unranked, the
+                // same as topics with no completed analysis yet.
+                rank = t.score > 0 ? (int?)(i + 1) : null,
                 t.topicId,
                 t.topicName,
                 t.promptCount,
