@@ -33,7 +33,10 @@ public class OnboardingController : ControllerBase
             BusinessName = request.BusinessName ?? string.Empty,
             Industry = request.Industry ?? string.Empty,
             TargetAudience = request.TargetAudience ?? string.Empty,
-            Keywords = request.Keywords ?? string.Empty
+            Keywords = request.Keywords ?? string.Empty,
+            WhoDoYouSellTo = request.WhoDoYouSellTo ?? string.Empty,
+            KnownCompetitors = request.KnownCompetitors ?? string.Empty,
+            MainOffering = request.MainOffering ?? string.Empty
         };
 
         var result = await _mediator.Send(command);
@@ -361,6 +364,23 @@ public class OnboardingController : ControllerBase
         return Ok(result);
     }
 
+    [AllowAnonymous]
+    [HttpPost("detect-offering")]
+    public async Task<IActionResult> DetectOffering([FromBody] DetectIndustryRequest request)
+    {
+        if (string.IsNullOrEmpty(request.WebsiteUrl) || string.IsNullOrEmpty(request.BusinessName))
+            return BadRequest("WebsiteUrl and BusinessName are required.");
+
+        var command = new DetectOfferingCommand
+        {
+            WebsiteUrl = request.WebsiteUrl,
+            BusinessName = request.BusinessName
+        };
+
+        var result = await _mediator.Send(command);
+        return Ok(result);
+    }
+
     [HttpGet("competitors/unified")]
     public async Task<IActionResult> GetUnifiedCompetitors([FromQuery] Guid organizationId)
     {
@@ -394,6 +414,9 @@ public class AnalyzeOnboardingRequest
     public string? Industry { get; set; }
     public string? TargetAudience { get; set; }
     public string? Keywords { get; set; }
+    public string? WhoDoYouSellTo { get; set; }
+    public string? KnownCompetitors { get; set; }
+    public string? MainOffering { get; set; }
 }
 
 public class CompleteOnboardingRequest

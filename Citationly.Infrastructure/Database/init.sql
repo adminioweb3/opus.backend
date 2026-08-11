@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS Organizations (
     PlanType VARCHAR(50) NOT NULL DEFAULT 'Trial',
     TrialEndsAt TIMESTAMP WITH TIME ZONE DEFAULT (CURRENT_TIMESTAMP + INTERVAL '7 days'),
     Industry VARCHAR(255),
+    WhoDoYouSellTo TEXT,
+    KnownCompetitors TEXT,
+    MainOffering TEXT,
     CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 

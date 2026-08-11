@@ -13,6 +13,9 @@ public class AnalyzeOnboardingCommand : IRequest<OnboardingAnalysisResult>
     public string Industry { get; set; } = string.Empty;
     public string TargetAudience { get; set; } = string.Empty;
     public string Keywords { get; set; } = string.Empty;
+    public string WhoDoYouSellTo { get; set; } = string.Empty;
+    public string KnownCompetitors { get; set; } = string.Empty;
+    public string MainOffering { get; set; } = string.Empty;
 
 }
 
@@ -251,12 +254,22 @@ SCHEMA (Return ONLY this JSON):
                         };
                         await _websiteRepository.InsertWebsiteProfileAsync(profile);
 
-                        // Also update the Organization name and Industry
+                        // Also update the Organization name, Industry, and the competitor-derivation fields
                         using var connection = _dbConnectionFactory.CreateConnection();
                         await Dapper.SqlMapper.ExecuteAsync(
                             connection,
-                            "UPDATE Organizations SET Name = @Name, Industry = @Industry WHERE Id = @Id",
-                            new { Name = request.BusinessName, Industry = request.Industry, Id = request.OrganizationId }
+                            @"UPDATE Organizations SET Name = @Name, Industry = @Industry,
+                              WhoDoYouSellTo = @WhoDoYouSellTo, KnownCompetitors = @KnownCompetitors, MainOffering = @MainOffering
+                              WHERE Id = @Id",
+                            new
+                            {
+                                Name = request.BusinessName,
+                                Industry = request.Industry,
+                                WhoDoYouSellTo = request.WhoDoYouSellTo,
+                                KnownCompetitors = request.KnownCompetitors,
+                                MainOffering = request.MainOffering,
+                                Id = request.OrganizationId
+                            }
                         );
                     }
                     catch (Exception dbEx)

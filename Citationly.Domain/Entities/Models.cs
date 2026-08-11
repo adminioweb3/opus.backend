@@ -7,6 +7,9 @@ public class Organization
     public string PlanType { get; set; } = "Trial";
     public DateTime? TrialEndsAt { get; set; }
     public string? Industry { get; set; }
+    public string? WhoDoYouSellTo { get; set; }
+    public string? KnownCompetitors { get; set; }
+    public string? MainOffering { get; set; }
     public Guid? RelatedOrganizationId { get; set; } // Link to related org for unified competitor view
     public DateTime CreatedAt { get; set; }
 }

@@ -17,6 +17,9 @@ public static class SelfHealingMigrations
         ALTER TABLE Organizations ADD COLUMN IF NOT EXISTS PlanType VARCHAR(50) NOT NULL DEFAULT 'Trial';
         ALTER TABLE Organizations ADD COLUMN IF NOT EXISTS TrialEndsAt TIMESTAMP WITH TIME ZONE;
         ALTER TABLE Organizations ADD COLUMN IF NOT EXISTS Industry VARCHAR(255);
+        ALTER TABLE Organizations ADD COLUMN IF NOT EXISTS WhoDoYouSellTo TEXT;
+        ALTER TABLE Organizations ADD COLUMN IF NOT EXISTS KnownCompetitors TEXT;
+        ALTER TABLE Organizations ADD COLUMN IF NOT EXISTS MainOffering TEXT;
         UPDATE Organizations SET TrialEndsAt = CreatedAt + INTERVAL '7 days' WHERE TrialEndsAt IS NULL;
 
         -- Company Knowledge Graph: shared, deduplicated company directory for competitor discovery
