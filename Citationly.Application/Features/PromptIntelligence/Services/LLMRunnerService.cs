@@ -11,10 +11,10 @@ public interface ILLMRunnerService
 }
 
 /// <summary>
-/// Runs a prompt across the 7 tracked platform labels using only the org's own OpenAI key —
-/// OpenRouter is not used. "ChatGPT" gets an unmodified GPT-4o-mini answer. The other 6 labels
-/// (Claude, Gemini, Perplexity, Mistral, Grok, DeepSeek) are GPT-4o-mini answering while
-/// instructed to respond in that platform's style, since no per-vendor API keys are configured.
+/// Runs a prompt across the 3 tracked platform labels using only the org's own OpenAI key.
+/// "ChatGPT" gets an unmodified GPT-4o-mini answer. "Claude" and "Gemini" are GPT-4o-mini
+/// answering while instructed to respond in that platform's style, since no per-vendor API
+/// keys are configured.
 /// </summary>
 public class LLMRunnerService : ILLMRunnerService
 {
@@ -23,7 +23,7 @@ public class LLMRunnerService : ILLMRunnerService
 
     private static readonly string[] PlatformNames =
     {
-        "ChatGPT", "Claude", "Gemini", "Perplexity", "Mistral", "Grok", "DeepSeek"
+        "ChatGPT", "Claude", "Gemini"
     };
 
     public LLMRunnerService(HttpClient httpClient, IConfiguration configuration)

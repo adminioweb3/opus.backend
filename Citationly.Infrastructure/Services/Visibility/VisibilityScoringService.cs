@@ -7,9 +7,7 @@ public class VisibilityScoringService : IVisibilityScoringService
 {
     private static readonly string[] Platforms = new[]
     {
-        "ChatGPT", "Claude", "Gemini", "Perplexity", 
-        "Google AI Overview", "Microsoft Copilot", 
-        "Meta AI", "DeepSeek", "Grok"
+        "ChatGPT", "Claude", "Gemini"
     };
 
     public List<PlatformVisibility> CalculatePlatformScores(Guid organizationId, List<AiSearchPrompt> prompts)
@@ -38,21 +36,7 @@ public class VisibilityScoringService : IVisibilityScoringService
                     visibilityBase = (avgContentStrength * 0.7) + (avgBrandStrength * 0.3);
                     break;
                 case "Gemini":
-                case "Google AI Overview":
                     visibilityBase = (avgContentStrength * 0.5) + (avgBrandStrength * 0.3) + (avgCitationStrength * 0.2);
-                    break;
-                case "Perplexity":
-                    visibilityBase = (avgCitationStrength * 0.8) + (avgContentStrength * 0.2);
-                    break;
-                case "Microsoft Copilot":
-                    visibilityBase = (avgCitationStrength * 0.5) + (avgBrandStrength * 0.5);
-                    break;
-                case "Meta AI":
-                case "Grok":
-                    visibilityBase = avgBrandStrength * 1.0; // Heavily social/brand aware
-                    break;
-                case "DeepSeek":
-                    visibilityBase = avgContentStrength * 1.0; // Heavily technical/content aware
                     break;
                 default:
                     visibilityBase = (avgBrandStrength + avgContentStrength + avgCitationStrength) / 3.0;
