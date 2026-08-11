@@ -1,0 +1,318 @@
+================================================================================
+CITATIONLY — COMPETITOR DERIVATION PROMPT  v2.1
+Stage: Calibrate (Gate 2). Runs once per workspace, and on demand from Settings.
+Portable: identical text on OpenAI and Gemini. Only the schema binding differs.
+================================================================================
+
+---------- SYSTEM MESSAGE ----------
+
+You identify the commercial competitors of a business.
+
+You are accurate before you are complete. A short correct list is a success; a
+long plausible list is a failure. You never invent a company. If you are not
+confident a company exists and sells what you say it sells, leave it out.
+
+You return JSON only, conforming exactly to the supplied schema. No prose,
+no markdown, no commentary outside the JSON.
+
+---------- USER MESSAGE ----------
+
+## BUSINESS
+Use only the fields below. Do not infer facts that are not stated here.
+
+company_name:        {{company_name}}
+website:             {{root_domain}}
+primary_offering:    {{single_main_thing_they_sell}}
+what_they_sell:      {{core_services_and_products}}
+who_they_sell_to:    {{buyer_description}}
+buyer_type:          {{B2B | B2C | B2B2C}}
+primary_market:      {{primary_country}}
+other_countries:     {{other_countries_served}}
+company_stage:       {{stage}}
+known_competitors:   {{user_seeded_competitors}}
+never_include:       {{user_blacklist}}
+current_locked_set:  {{domains_already_locked_or_empty}}
+
+GROUNDING RULE — this is not optional.
+The ONLY sources of competitor names are `primary_offering`, `what_they_sell`
+and `who_they_sell_to`. Geography, company stage, SEO keywords and the
+industries this business serves are NEVER sources of competitor names. If a
+company came to mind because of a country, an industry, or a keyword rather
+than because it sells the same thing, do not return it.
+
+MISSING FIELDS: if `what_they_sell` or `who_they_sell_to` is empty, or says
+only "Other", do not guess. Return an empty competitor list with
+status = "missing_input" and name the missing field in what_would_help.
+
+MULTI-PRODUCT BUSINESSES: if `what_they_sell` spans several unrelated product
+lines, derive competitors for `primary_offering` ONLY. Do not spread the list
+across product lines — a set that changes focus between runs is useless for
+tracking over time.
+
+## THE TEST FOR "COMPETITOR"
+A competitor is a company that a buyer matching `who_they_sell_to` could choose
+INSTEAD OF {{company_name}} to get the same job done — or that such a buyer
+would see recommended alongside {{company_name}} as an alternative choice for
+that same need.
+
+Substitution is the test. Not similarity, not adjacency, not "same industry",
+not "appears in the same articles".
+
+A company is NOT a competitor if it would more plausibly BUY from
+{{company_name}}, SUPPLY it, PARTNER with it, or RESELL it.
+
+Size is not part of the test. A company ten times larger that a buyer would
+consider instead IS a competitor.
+
+## WHAT TO RETURN
+Name up to {{max_competitors}} companies that pass the test above.
+Returning fewer is correct and expected. Returning zero is correct when the
+input does not support a confident answer.
+
+## STABILITY — read this before you start
+If `current_locked_set` is not empty, those companies are already being tracked
+over time and the customer's historical numbers depend on them.
+
+  - Return every company in `current_locked_set` unchanged, unless it now fails
+    the competitor test or a hard exclusion. If you drop one, say why in
+    why_competitor, prefixed "DROPPED: ".
+  - Any new company you would add is a PROPOSAL. Return it normally; the
+    application decides whether to add it. Do not attempt to swap one out.
+  - Do not re-order the locked companies for cosmetic reasons.
+
+## PRECEDENCE — apply in this order, top wins
+  1. `never_include`               — always removed, no exceptions.
+  2. {{company_name}} itself, its parent, subsidiaries, former and trading
+     names, and any brand it owns — always removed.
+  3. `known_competitors` supplied by the user — always included, source="user".
+     Fill every field honestly and set model_agrees to your true view, even if
+     that is false. Never silently drop one.
+  4. `current_locked_set`          — retained per the stability rule above.
+  5. Companies you name yourself    — source="model".
+If rule 3 and 4 together already exceed {{max_competitors}}, return them all
+and add nothing of your own; note the overflow in what_would_help.
+
+## HARD EXCLUSIONS
+1.  Companies drawn from the INDUSTRIES THIS BUSINESS SELLS INTO. If
+    {{company_name}} sells to defence, robotics or automotive firms, then
+    defence, robotics and automotive firms are its CUSTOMERS, not its rivals —
+    unless that company also sells the thing described in primary_offering.
+2.  Anything that is not a company selling this: review sites and directories
+    (G2, Clutch, Capterra, TrustRadius), marketplaces, listicles, blogs, media
+    outlets, conferences, job boards, subreddits, open-source projects with no
+    commercial vendor behind them.
+3.  Generic consultancies, agencies or staffing firms — UNLESS
+    {{company_name}} is itself a consultancy, agency or staffing firm, in which
+    case peer firms of that kind are exactly the right answer; or unless a
+    named, productised offering of theirs directly substitutes for
+    primary_offering.
+4.  Companies you believe have ceased trading.
+5.  Any company you are not confident actually exists.
+
+DO NOT exclude a company for being much larger than {{company_name}}.
+Record size in `relative_scale`; never use it to filter. The buyer sees the
+market leaders whether or not this business is their size.
+
+DO NOT substitute a parent or acquiring company for a brand. If a product still
+sells under its own name, return that name and that domain. Corporate ownership
+changes faster than your knowledge of it, and naming an acquirer is how a
+mega-cap ends up in a small business's competitor set.
+
+## RANKING
+Order by SUBSTITUTION LIKELIHOOD — how often a buyer matching
+`who_they_sell_to`, making a real choice, would have this company in front of
+them alongside {{company_name}}. Most likely first.
+
+Two tie-breakers, in order:
+  a. Companies that sell into `primary_market` rank above those that do not.
+  b. Companies whose offering overlaps `primary_offering` most directly rank
+     above those with partial overlap.
+
+Never rank by size, fame, funding, or alphabetical order.
+
+## CONFIDENCE — use these anchors, do not drift
+  90-100  I can name this company's own page for this exact offering.
+  70-89   I am certain they sell in this category; less certain the overlap is direct.
+  50-69   Plausible category match; I cannot confirm the overlap.
+  below 50  Do not return it — unless it is a user-supplied company, which you
+            must return with your honest low score and model_agrees = false.
+Whole integers only.
+
+## BEFORE YOU ANSWER — mandatory self-check
+Re-read your list once. For each company ask:
+  "Would this company more plausibly be a CUSTOMER of {{company_name}}
+   than a rival to it?"
+If the honest answer is yes, delete it and record it in excluded_notable.
+Also delete any company you added because it is famous, because it shares a
+country, or because it appears in the same articles — rather than because a
+buyer would actually choose it instead.
+
+If fewer than 3 companies survive, that is the correct answer. Set
+status = "thin_market". Never pad the list to reach a number.
+
+## FIELD DEFINITIONS — all of these are graded, none are optional
+name                  Common trading name. Not the legal entity name.
+domain                Canonical root domain: lowercase, no scheme, no "www.",
+                      no path, no trailing slash. THIS IS THE IDENTITY KEY —
+                      it is used to join records across runs and engines. Give
+                      the domain you are most confident is correct. If you are
+                      unsure of the exact domain, still give your best answer
+                      but cap confidence at 69.
+hq_country            ISO 3166-1 alpha-2, uppercase (US, IN, GB, DE). Use "ZZ"
+                      if you do not know.
+relative_scale        smaller  — materially smaller than {{company_name}}
+                      peer     — same order of magnitude
+                      larger   — materially larger, but not the category leader
+                      category_leader — one of the 2-3 best-known names buyers
+                                        reach for first in this category
+                      unknown  — you cannot judge
+serves_same_market    true only if they actively sell into `primary_market`.
+                      If you do not know, false.
+why_competitor        <= 20 words. What they sell that overlaps primary_offering.
+                      Concrete. No marketing adjectives.
+their_edge_vs_client  <= 20 words. Why a buyer might pick them over
+                      {{company_name}}.
+client_edge_vs_them   <= 20 words. Where {{company_name}} wins. Write
+                      "unclear from the input" rather than inventing an
+                      advantage.
+basis                 named_direct_rival    — widely and specifically known as a
+                                              rival of this company
+                      known_category_vendor — I know this company sells in this
+                                              category; the head-to-head is my
+                                              judgement
+                      inferred_from_description — reasoned from the description
+                                              alone. Cap confidence at 69.
+confidence            Per the anchors above.
+model_agrees          true if you independently believe this is a competitor.
+                      Always true for companies you named yourself. For
+                      user-supplied companies, your honest view.
+source                "user" if it came from known_competitors or
+                      current_locked_set, otherwise "model".
+status                ok | thin_market | missing_input
+what_would_help       One sentence naming the single input that would most
+                      improve this result. Empty string "" when status is "ok".
+excluded_notable      Up to 5 companies you seriously considered and rejected,
+                      each with a one-line reason. Used to audit this prompt.
+                      Be candid — this field is read by humans, not customers.
+
+Respond with JSON only.
+
+================================================================================
+OUTPUT SCHEMA  (JSON Schema — same shape on both APIs)
+maxItems on `competitors` must be templated from {{max_competitors}}, not
+hardcoded. It is shown as 8 here because 8 is the experiment's value.
+================================================================================
+
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["competitors", "excluded_notable", "status", "what_would_help"],
+  "properties": {
+    "competitors": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name","domain","hq_country","relative_scale","serves_same_market",
+                     "why_competitor","their_edge_vs_client","client_edge_vs_them",
+                     "basis","confidence","model_agrees","source"],
+        "properties": {
+          "name":               {"type":"string"},
+          "domain":             {"type":"string"},
+          "hq_country":         {"type":"string"},
+          "relative_scale":     {"type":"string","enum":["smaller","peer","larger","category_leader","unknown"]},
+          "serves_same_market": {"type":"boolean"},
+          "why_competitor":     {"type":"string"},
+          "their_edge_vs_client":{"type":"string"},
+          "client_edge_vs_them":{"type":"string"},
+          "basis":              {"type":"string","enum":["named_direct_rival","known_category_vendor","inferred_from_description"]},
+          "confidence":         {"type":"integer","minimum":0,"maximum":100},
+          "model_agrees":       {"type":"boolean"},
+          "source":             {"type":"string","enum":["model","user"]}
+        }
+      }
+    },
+    "excluded_notable": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name","reason"],
+        "properties": {
+          "name":   {"type":"string"},
+          "reason": {"type":"string"}
+        }
+      }
+    },
+    "status":          {"type":"string","enum":["ok","thin_market","missing_input"]},
+    "what_would_help": {"type":"string"}
+  }
+}
+
+================================================================================
+GATES THAT LIVE IN CODE, NOT IN THIS PROMPT
+================================================================================
+The prompt is a request. Code is a guarantee. Enforce these after the model
+returns, never by asking the model nicely:
+
+  1. ENTITY LIVE      — resolve every `domain` over HTTP. Non-resolving, parked,
+                        or redirect-to-unrelated => drop the row. The prompt
+                        deliberately does not claim to know what is live; an
+                        ungrounded model cannot know.
+  2. DOMAIN REPAIR    — before counting agreement, normalise each row to a
+                        resolved entity: strip www/scheme, follow redirects,
+                        and fuzzy-match name+domain against rows already seen.
+                        Models emit surge.ai for surgehq.ai and samasource.org
+                        for sama.com. Un-repaired, one real competitor named
+                        10/10 splits into two 5/10 rows and both get discarded.
+  3. SELF / ALIAS     — drop the client's own domain and every known alias.
+  4. BLACKLIST        — drop everything in never_include, even source="user".
+  5. NOT-A-VENDOR     — drop known directory, review and marketplace domains
+                        from a maintained denylist.
+  6. SET SIZE         — LOCKED tier truncated to 8 by appearance count, then by
+                        substitution rank. Fewer than 3 survivors triggers the
+                        user ask; it never pads.
+
+================================================================================
+API BINDING NOTES
+================================================================================
+
+OpenAI (Responses API)
+  text: { format: { type: "json_schema", name: "competitor_set",
+                    schema: <above>, strict: true } }
+  - strict mode requires every property listed in "required" and
+    "additionalProperties": false at every level. The schema above already is.
+
+OpenAI (Chat Completions)
+  response_format: { type: "json_schema",
+                     json_schema: { name: "competitor_set",
+                                    schema: <above>, strict: true } }
+
+Gemini
+  generationConfig: { responseMimeType: "application/json",
+                      responseSchema: <above> }
+  - Gemini's responseSchema does not accept "additionalProperties" — strip it.
+  - Gemini ignores JSON key order. Add "propertyOrdering" to each object so
+    why_competitor is generated BEFORE confidence; a model that has already
+    written its reasoning scores itself more honestly.
+
+KNOWN CONSTRAINT — Gemini cannot combine responseSchema with the
+google_search grounding tool. The API returns
+  400: "controlled generation is not supported with google_search tool".
+For the comparison experiment, run BOTH engines UNGROUNDED. Grounding is a
+confound — the two engines search different indexes, so a grounded-vs-ungrounded
+comparison measures search coverage, not prompt quality. If you later add a
+grounded arm on Gemini, use two calls: (1) grounded, free text; (2) ungrounded
+conversion whose system message says "reformat only — you may not add a company,
+a fact, or a field value that is not present in the input text; use ZZ, unknown
+and 0 where the input is silent."
+
+RUN SETTINGS FOR THE COMPARISON
+  temperature: production value (do NOT set 0 — 0 hides the run-to-run
+               instability the experiment exists to measure)
+  max_competitors: 8
+  current_locked_set: empty for all experiment runs
+  no seed, no caching, fresh conversation per run
+================================================================================
