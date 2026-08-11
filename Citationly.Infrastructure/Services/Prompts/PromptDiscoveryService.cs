@@ -123,6 +123,7 @@ applications"" — not a generic marketing-funnel label like ""Pricing"" or ""Co
 Return a JSON object whose ""topics"" key holds the array of {TopicCount} name strings:
 {{""topics"":[""""]}}";
 
+
         try
         {
             var response = await _openAiService.GenerateContentAsync(userPrompt, systemPrompt, requireJson: true, model: "gpt-4o-mini");
@@ -178,32 +179,236 @@ Return a JSON object whose ""topics"" key holds the array of {TopicCount} name s
     private async Task<List<DiscoveryPromptItem>> DiscoverBusinessLineBatchAsync(string businessName, string topicName, CompanyProfileSummarizer.BiContext ctx, string systemPrompt)
     {
         var userPrompt = $@"
-Your task is to generate realistic prompts that potential customers would ask AI search engines when
-searching for products or services in this specific space — NOT about any single vendor.
+You are an AI visibility research system.
 
-## Business context (for grounding only — do not name this business in your output)
+Your job is to generate realistic questions that potential customers would ask
+AI assistants when they are trying to discover, evaluate, compare, shortlist,
+or hire companies that provide services in a specific market.
+
+These prompts will be used to measure whether a target business is naturally
+recommended or mentioned by AI assistants.
+
+## BUSINESS CONTEXT
+
 Industry: {ctx.Industry}
-Target customers: {ctx.TargetAudience}
-Business model: {ctx.BusinessModel}
+Target Audience: {ctx.TargetAudience}
+Business Model: {ctx.BusinessModel}
 
-## Objective
-Generate {RequestCount} unique, realistic prompts a prospective customer would ask an AI assistant
-about: {topicName}
+Topic / Service Category:
+{topicName}
 
-## Instructions
-1. Write each prompt exactly as a real, undecided buyer would ask — someone who does NOT yet know
-   which company they'll choose.
-2. CRITICAL: Do NOT mention '{businessName}' or any other specific company name in the prompt text.
-   Ask about the category/capability itself (e.g. ""best tools for X"", ""how do I choose a provider
-   for Y"", ""top platforms for Z"") so any real vendor could plausibly be the answer.
-3. Every prompt must fit the topic above — do not drift into unrelated question types.
-4. Descriptions should sound conversational, the way real users talk to AI assistants.
-5. Maximum prompt length: 25 words.
-6. Provide ONLY Prompt ID and Prompt text.
-7. Output MUST remain below 1000 tokens.
-8. Return {RequestCount} distinct prompts. Return exactly the following JSON structure. Do NOT include markdown. Do NOT wrap in ```json.
+Target Business:
+{businessName}
 
-Return exactly this schema:
+IMPORTANT:
+The target business is ONLY used as hidden evaluation context.
+It must NEVER appear in the generated prompts.
+
+--------------------------------------------------
+
+## PRIMARY OBJECTIVE
+
+Generate {RequestCount} realistic buyer questions that create a genuine
+opportunity for AI assistants to recommend companies operating in this category.
+
+The person asking the question:
+
+- has a real business requirement
+- is looking for a company, provider, agency, vendor, platform, specialist,
+  consultant, or service
+- does not already know which company to choose
+- wants AI to help discover or evaluate available options
+
+The prompt must therefore create a realistic vendor-discovery situation.
+
+--------------------------------------------------
+
+## CRITICAL BRAND-NEUTRALITY RULES
+
+NEVER mention:
+
+- {businessName}
+- the target business
+- any specific competitor
+- any specific company
+- any invented company
+
+Do NOT ask questions such as:
+
+- ""How does X compare with Y?""
+- ""Is X the best company?""
+- ""What are alternatives to X?""
+- ""Why should I choose X?""
+- ""What does X offer?""
+
+The user must not know any vendor beforehand.
+
+--------------------------------------------------
+
+## PROMPT TYPES
+
+Generate a natural mixture of these buyer-intent patterns:
+
+1. VENDOR DISCOVERY
+
+Examples:
+""Which companies provide professional {topicName} services?""
+
+""Which providers specialize in enterprise {topicName}?""
+
+2. BEST / TOP PROVIDER
+
+Examples:
+""What are the best {topicName} companies for startups?""
+
+""Which are the leading companies for {topicName}?""
+
+3. SPECIALIST DISCOVERY
+
+Examples:
+""Which companies specialize in {topicName} for {ctx.Industry}?""
+
+""Are there providers experienced in {topicName} for enterprises?""
+
+4. REQUIREMENT-BASED SEARCH
+
+Examples:
+""Which {topicName} companies can handle a complex, large-scale project?""
+
+""Who can help with a secure, custom {topicName} implementation?""
+
+5. BUYER EVALUATION
+
+Examples:
+""What should I look for when choosing a {topicName} company?""
+
+""How should I evaluate {topicName} providers for an enterprise project?""
+
+6. COMPARISON OF OPTIONS
+
+The comparison must be category-level, NOT brand-level.
+
+Examples:
+""How do the top {topicName} companies differ in their services?""
+
+""What factors should I use to compare {topicName} providers?""
+
+7. INDUSTRY-SPECIFIC PROVIDER SEARCH
+
+Examples:
+""Which {topicName} companies have experience serving {ctx.TargetAudience}?""
+
+""Which {topicName} providers work with {ctx.Industry} companies?""
+
+8. BUDGET / COMMERCIAL INTENT
+
+Examples:
+""What does it typically cost to hire a {topicName} company?""
+
+""Which {topicName} providers offer cost-effective solutions for startups?""
+
+9. TECHNOLOGY / CAPABILITY + PROVIDER
+
+Examples:
+""Which companies specialize in advanced {topicName} capabilities?""
+
+""Which providers offer end-to-end {topicName} services?""
+
+10. ALTERNATIVE / SHORTLIST DISCOVERY
+
+Do NOT mention a known company.
+
+Examples:
+""What are some good alternatives when choosing a {topicName} provider?""
+
+""Which {topicName} companies should I consider for my shortlist?""
+
+--------------------------------------------------
+
+## IMPORTANT: AVOID LOW-VALUE INFORMATIONAL QUESTIONS
+
+Do NOT generate questions whose answer can be completely satisfied
+without mentioning any company or provider — e.g. ""What is {topicName}?"" or
+""How does {topicName} work?"". These are educational questions, not
+vendor-discovery questions.
+
+--------------------------------------------------
+
+## REALISTIC BUYER BEHAVIOR
+
+Imagine a real buyer who is saying:
+
+""I have this problem. I need someone to solve it.
+Which companies should I consider?""
+
+The question should naturally cause an AI assistant to potentially
+return a list of companies or service providers.
+
+--------------------------------------------------
+
+## DIVERSITY
+
+Do not generate multiple versions of the same question.
+
+Vary:
+
+- buyer intent
+- business problem
+- service requirement
+- industry
+- company size
+- technical requirement
+- project complexity
+- budget
+- scalability requirement
+- security requirement
+- geography when relevant
+- evaluation criteria
+- buying stage
+
+--------------------------------------------------
+
+## VERY IMPORTANT
+
+The goal is NOT to guarantee that the target business appears.
+
+The goal is to create a neutral market question where the target business
+could naturally appear if it has sufficient market visibility.
+
+Do not bias the prompt toward the target business.
+
+--------------------------------------------------
+
+## QUALITY TEST
+
+Before returning each prompt, internally ask:
+
+1. Could a real customer ask this?
+2. Does it relate directly to the topic?
+3. Is the customer looking for a provider/vendor/company/service?
+4. Could multiple real companies plausibly answer it?
+5. Does it avoid all company names?
+6. Would an AI assistant reasonably recommend companies in its answer?
+7. Is it different from the other generated prompts?
+
+Only return prompts that pass all seven checks.
+
+--------------------------------------------------
+
+## OUTPUT
+
+Maximum 25 words per prompt.
+
+Return exactly {RequestCount} distinct prompts.
+
+Return ONLY valid JSON.
+
+Do not include markdown.
+Do not include explanations.
+Do not include analysis.
+
+Schema:
+
 {{
   ""prompts"": [
     {{
