@@ -1,8 +1,5 @@
-using System.Text;
-using System.Text.Json;
 using Citationly.Application.Interfaces;
 using Citationly.Domain.Entities;
-using Microsoft.Extensions.Configuration;
 
 namespace Citationly.Application.Features.PromptIntelligence.Services;
 
@@ -12,64 +9,72 @@ public interface ILLMRunnerService
 }
 
 /// <summary>
-/// Runs a prompt across the 3 tracked platform labels using only the org's own OpenAI key.
-/// "ChatGPT" gets an unmodified GPT-4o-mini answer. "Claude" and "Gemini" are GPT-4o-mini
-/// answering while instructed to respond in that platform's style, since no per-vendor API
-/// keys are configured.
+/// Runs a prompt against every REAL, independently-configured AI provider (IAiProviderRegistry).
+/// This used to run the same OpenAI key three times with a "respond in the style of Claude/
+/// Gemini" instruction and label the result as if it came from those vendors - see
+/// CITATIONLY_PRODUCT_AUDIT.md's core finding. Now: each configured provider is genuinely that
+/// vendor's own API, so no "acting as X" system-prompt wrapper is needed - a provider IS its
+/// platform. A provider with no API key configured is skipped entirely, not simulated.
 /// </summary>
 public class LLMRunnerService : ILLMRunnerService
 {
-    private readonly HttpClient _httpClient;
-    private readonly string _openAiKey;
-    private readonly IAiRequestContextAccessor _aiContext;
-    private readonly IAiUsageLimiter _aiUsageLimiter;
-    private readonly IAiResilienceService _aiResilience;
+    private readonly IAiProviderRegistry _providerRegistry;
 
-    private static readonly string[] PlatformNames =
+    public LLMRunnerService(IAiProviderRegistry providerRegistry)
     {
-        "ChatGPT", "Claude", "Gemini"
-    };
-
-    public LLMRunnerService(
-        HttpClient httpClient,
-        IConfiguration configuration,
-        IAiRequestContextAccessor aiContext,
-        IAiUsageLimiter aiUsageLimiter,
-        IAiResilienceService aiResilience)
-    {
-        _httpClient = httpClient;
-        _openAiKey = configuration["OpenAI:ApiKey"] ?? string.Empty;
-        _aiContext = aiContext;
-        _aiUsageLimiter = aiUsageLimiter;
-        _aiResilience = aiResilience;
+        _providerRegistry = providerRegistry;
     }
 
     public async Task<IEnumerable<PromptResponse>> RunPromptAcrossModelsAsync(Guid analysisId, string promptText, CancellationToken ct, string? personaSystemPrompt = null)
     {
-        var tasks = PlatformNames.Select(platform => ExecuteModelAsync(analysisId, platform, promptText, ct, personaSystemPrompt));
-        var results = await Task.WhenAll(tasks);
-        return results;
+        var providers = _providerRegistry.GetConfiguredProviders();
+
+        if (providers.Count == 0)
+        {
+            return new[]
+            {
+                new PromptResponse
+                {
+                    PromptAnalysisId = analysisId,
+                    Platform = "none",
+                    ResponseText = "[Error] No AI providers are configured. Set at least one of OpenAI/Anthropic/Google/Perplexity's API key.",
+                    ResponseLength = 0,
+                    CreatedAt = DateTime.UtcNow,
+                }
+            };
+        }
+
+        var tasks = providers.Select(provider => ExecuteProviderAsync(analysisId, provider, promptText, ct, personaSystemPrompt));
+        return await Task.WhenAll(tasks);
     }
 
-    private async Task<PromptResponse> ExecuteModelAsync(Guid analysisId, string platformName, string promptText, CancellationToken ct, string? personaSystemPrompt)
+    private static async Task<PromptResponse> ExecuteProviderAsync(
+        Guid analysisId,
+        IAiProvider provider,
+        string promptText,
+        CancellationToken ct,
+        string? personaSystemPrompt)
     {
+        var systemPrompt = string.IsNullOrWhiteSpace(personaSystemPrompt)
+            ? "You are a helpful AI assistant answering a user's question."
+            : personaSystemPrompt;
+
         try
         {
-            if (string.IsNullOrEmpty(_openAiKey))
-            {
-                throw new InvalidOperationException("OpenAI API key is required to generate real data. Simulated responses are disabled.");
-            }
-
-            await _aiUsageLimiter.EnsureWithinLimitsAsync(_aiContext.OrganizationId, $"prompt-intelligence:{platformName}", ct);
-            string responseText = await CallOpenAiAsync(promptText, platformName, ct, personaSystemPrompt);
-
+            var result = await provider.CompleteAsync(systemPrompt, promptText, ct);
             return new PromptResponse
             {
                 PromptAnalysisId = analysisId,
-                Platform = platformName,
-                ResponseText = responseText,
-                ResponseLength = responseText.Length,
-                CreatedAt = DateTime.UtcNow
+                Platform = provider.PlatformName,
+                ResponseText = result.Content,
+                ResponseLength = result.Content.Length,
+                CreatedAt = DateTime.UtcNow,
+                ProviderKey = provider.ProviderKey,
+                ModelUsed = result.ModelUsed,
+                PromptTokens = result.PromptTokens,
+                CompletionTokens = result.CompletionTokens,
+                CostUsd = result.CostUsd,
+                WasSearchGrounded = result.WasSearchGrounded,
             };
         }
         catch (Exception ex)
@@ -77,55 +82,12 @@ public class LLMRunnerService : ILLMRunnerService
             return new PromptResponse
             {
                 PromptAnalysisId = analysisId,
-                Platform = platformName,
+                Platform = provider.PlatformName,
                 ResponseText = $"[Error] Failed to fetch response: {ex.Message}",
                 ResponseLength = 0,
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = DateTime.UtcNow,
+                ProviderKey = provider.ProviderKey,
             };
         }
-    }
-
-    private async Task<string> CallOpenAiAsync(string promptText, string platformName, CancellationToken ct, string? personaSystemPrompt)
-    {
-        string platformActing = platformName == "ChatGPT"
-            ? "You are ChatGPT."
-            : $"You are acting as {platformName}. Respond in a style typical of {platformName}.";
-        string sysMsg = string.IsNullOrWhiteSpace(personaSystemPrompt)
-            ? platformActing
-            : $"{personaSystemPrompt} {platformActing}";
-
-        var body = new
-        {
-            model = "gpt-4o-mini",
-            messages = new[]
-            {
-                new { role = "system", content = sysMsg },
-                new { role = "user", content = promptText }
-            },
-            max_tokens = 700
-        };
-
-        return await _aiResilience.ExecuteAsync($"prompt-intelligence:{platformName}", async innerCt =>
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/chat/completions");
-            request.Headers.Add("Authorization", $"Bearer {_openAiKey}");
-            request.Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
-
-            var response = await _httpClient.SendAsync(request, innerCt);
-            var responseText = await response.Content.ReadAsStringAsync(innerCt);
-
-            if (!response.IsSuccessStatusCode)
-            {
-                if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests || (int)response.StatusCode >= 500)
-                {
-                    throw new HttpRequestException($"OpenAI call for platform '{platformName}' failed: {response.StatusCode}");
-                }
-
-                throw new InvalidOperationException($"OpenAI call for platform '{platformName}' failed: {response.StatusCode} — {responseText}");
-            }
-
-            using var doc = JsonDocument.Parse(responseText);
-            return doc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString() ?? "";
-        }, ct);
     }
 }

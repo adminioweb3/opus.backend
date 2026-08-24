@@ -501,7 +501,13 @@ CREATE TABLE IF NOT EXISTS PromptResponses (
     ResponseLength INT NOT NULL DEFAULT 0,
     Sentiment VARCHAR(10),
     SentimentQuote TEXT,
-    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    ProviderKey VARCHAR(50),
+    ModelUsed VARCHAR(100),
+    PromptTokens INT,
+    CompletionTokens INT,
+    CostUsd NUMERIC(10,6),
+    WasSearchGrounded BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 CREATE TABLE IF NOT EXISTS PromptMentions (

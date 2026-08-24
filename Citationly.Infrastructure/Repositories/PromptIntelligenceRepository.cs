@@ -125,8 +125,10 @@ public class PromptIntelligenceRepository : IPromptIntelligenceRepository
         if (!responses.Any()) return;
         using var connection = _dbConnectionFactory.CreateConnection();
         var sql = @"
-            INSERT INTO PromptResponses (PromptAnalysisId, Platform, ResponseText, ResponseLength, CreatedAt)
-            VALUES (@PromptAnalysisId, @Platform, @ResponseText, @ResponseLength, @CreatedAt);";
+            INSERT INTO PromptResponses (PromptAnalysisId, Platform, ResponseText, ResponseLength, CreatedAt,
+                                          ProviderKey, ModelUsed, PromptTokens, CompletionTokens, CostUsd, WasSearchGrounded)
+            VALUES (@PromptAnalysisId, @Platform, @ResponseText, @ResponseLength, @CreatedAt,
+                    @ProviderKey, @ModelUsed, @PromptTokens, @CompletionTokens, @CostUsd, @WasSearchGrounded);";
         await connection.ExecuteAsync(sql, responses);
     }
 

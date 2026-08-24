@@ -32,6 +32,46 @@ public static class SelfHealingMigrations
         ALTER TABLE HistoricalScans ADD COLUMN IF NOT EXISTS AeoReadiness INT DEFAULT 0;
         ALTER TABLE HistoricalScans ADD COLUMN IF NOT EXISTS GeoReadiness INT DEFAULT 0;
 
+        -- Evidence provenance (Phase 2 B1) - which real provider/model produced a stored
+        -- response, its cost, and whether it was grounded in a live web search. Backfills as
+        -- NULL for pre-existing rows (their provider was never recorded), so a NULL here is
+        -- itself meaningful: ""we don't know"", not ""OpenAI"" by default.
+        ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS ProviderKey VARCHAR(50);
+        ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS ModelUsed VARCHAR(100);
+        ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS PromptTokens INT;
+        ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS CompletionTokens INT;
+        ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS CostUsd NUMERIC(10,6);
+        ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS WasSearchGrounded BOOLEAN NOT NULL DEFAULT FALSE;
+
+        -- Immutable evidence enforcement (Phase 2 B2): once a raw AI response is stored, nothing
+        -- may rewrite what was actually observed. The one legitimate post-hoc write is sentiment
+        -- classification (SentimentClassifierService, run after the fact against the immutable
+        -- text) - everything else describing the original API call is frozen at insert time.
+        CREATE OR REPLACE FUNCTION trg_promptresponses_protect_evidence() RETURNS TRIGGER AS $body$
+        BEGIN
+            IF NEW.ResponseText IS DISTINCT FROM OLD.ResponseText
+                OR NEW.ResponseLength IS DISTINCT FROM OLD.ResponseLength
+                OR NEW.Platform IS DISTINCT FROM OLD.Platform
+                OR NEW.PromptAnalysisId IS DISTINCT FROM OLD.PromptAnalysisId
+                OR NEW.CreatedAt IS DISTINCT FROM OLD.CreatedAt
+                OR NEW.ProviderKey IS DISTINCT FROM OLD.ProviderKey
+                OR NEW.ModelUsed IS DISTINCT FROM OLD.ModelUsed
+                OR NEW.PromptTokens IS DISTINCT FROM OLD.PromptTokens
+                OR NEW.CompletionTokens IS DISTINCT FROM OLD.CompletionTokens
+                OR NEW.CostUsd IS DISTINCT FROM OLD.CostUsd
+                OR NEW.WasSearchGrounded IS DISTINCT FROM OLD.WasSearchGrounded
+            THEN
+                RAISE EXCEPTION 'PromptResponses evidence fields are immutable once inserted - only Sentiment/SentimentQuote may be updated (see roadmap Phase 2 B2).';
+            END IF;
+            RETURN NEW;
+        END;
+        $body$ LANGUAGE plpgsql;
+
+        DROP TRIGGER IF EXISTS trg_protect_promptresponses_evidence ON PromptResponses;
+        CREATE TRIGGER trg_protect_promptresponses_evidence
+            BEFORE UPDATE ON PromptResponses
+            FOR EACH ROW EXECUTE FUNCTION trg_promptresponses_protect_evidence();
+
         -- Company Knowledge Graph: shared, deduplicated company directory for competitor discovery
         CREATE TABLE IF NOT EXISTS Company (
             Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

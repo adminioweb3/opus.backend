@@ -39,6 +39,16 @@ public class PromptResponse
     public string? Sentiment { get; set; } // "pos" | "neu" | "neg" — null if never classified
     public string? SentimentQuote { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    // Evidence-provenance fields (roadmap Phase 2 B1) - which provider/model actually produced
+    // this text, what it cost, and whether it was grounded in a real web search, so a stored
+    // response can be audited after the fact instead of trusting the Platform label alone.
+    public string? ProviderKey { get; set; } // "openai", "anthropic", "google", "perplexity"
+    public string? ModelUsed { get; set; }
+    public int? PromptTokens { get; set; }
+    public int? CompletionTokens { get; set; }
+    public decimal? CostUsd { get; set; }
+    public bool WasSearchGrounded { get; set; }
 }
 
 public class PromptMention

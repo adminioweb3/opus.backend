@@ -70,6 +70,15 @@ public static class DependencyInjection
         // Application Services
         services.AddScoped<IOpenAiService, OpenAiService>();
         services.AddScoped<IEmbeddingService, OpenAiEmbeddingService>();
+
+        // AI provider abstraction (Phase 2) - one real implementation per vendor. Each is
+        // IsConfigured=false (and simply excluded by AiProviderRegistry.GetConfiguredProviders())
+        // until its own API key is set - no provider ever fabricates another vendor's response.
+        services.AddScoped<Citationly.Application.Interfaces.IAiProvider, Citationly.Infrastructure.Services.AiProviders.OpenAiProvider>();
+        services.AddScoped<Citationly.Application.Interfaces.IAiProvider, Citationly.Infrastructure.Services.AiProviders.AnthropicProvider>();
+        services.AddScoped<Citationly.Application.Interfaces.IAiProvider, Citationly.Infrastructure.Services.AiProviders.GoogleGeminiProvider>();
+        services.AddScoped<Citationly.Application.Interfaces.IAiProvider, Citationly.Infrastructure.Services.AiProviders.PerplexityProvider>();
+        services.AddScoped<Citationly.Application.Interfaces.IAiProviderRegistry, Citationly.Infrastructure.Services.AiProviders.AiProviderRegistry>();
         // Onboarding Pipeline Services
         services.AddScoped<Citationly.Application.Interfaces.Onboarding.IPageClassificationService, Citationly.Infrastructure.Services.Onboarding.PageClassificationService>();
         services.AddScoped<Citationly.Application.Interfaces.Onboarding.IPageRankingService, Citationly.Infrastructure.Services.Onboarding.PageRankingService>();
