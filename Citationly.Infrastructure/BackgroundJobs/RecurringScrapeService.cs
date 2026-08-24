@@ -65,16 +65,20 @@ public class RecurringScrapeService : BackgroundService
                 var pageId = await websiteRepo.InsertCrawledPageAsync(page);
                 page.Id = pageId;
 
-                // Generate and save embedding for the crawled page
+                // Generate and save embedding for the crawled page. A real embedding call can fail
+                // (e.g. missing/invalid key) — skip storing rather than fabricate a vector.
                 var pageVector = await aiService.GenerateEmbeddingAsync(page.Content ?? page.Title ?? "");
-                await scope.ServiceProvider.GetRequiredService<IEmbeddingRepository>().InsertEmbeddingAsync(new Citationly.Domain.Entities.Embedding
+                if (pageVector != null)
                 {
-                    OrganizationId = website.OrganizationId,
-                    ReferenceId = pageId,
-                    ReferenceType = "Page",
-                    TextContent = page.Content ?? page.Title ?? "",
-                    Vector = pageVector
-                });
+                    await scope.ServiceProvider.GetRequiredService<IEmbeddingRepository>().InsertEmbeddingAsync(new Citationly.Domain.Entities.Embedding
+                    {
+                        OrganizationId = website.OrganizationId,
+                        ReferenceId = pageId,
+                        ReferenceType = "Page",
+                        TextContent = page.Content ?? page.Title ?? "",
+                        Vector = pageVector
+                    });
+                }
 
                 var recommendations = await aiService.AnalyzePageAsync(page);
 
@@ -83,38 +87,44 @@ public class RecurringScrapeService : BackgroundService
                     rec.WebsiteId = website.Id;
                     rec.CrawledPageId = pageId;
                     var recId = await websiteRepo.InsertRecommendationAsync(rec);
-                    
+
                     // Generate and save embedding for recommendation
                     var recVector = await aiService.GenerateEmbeddingAsync(rec.Title + " " + rec.Description);
-                    await scope.ServiceProvider.GetRequiredService<IEmbeddingRepository>().InsertEmbeddingAsync(new Citationly.Domain.Entities.Embedding
+                    if (recVector != null)
                     {
-                        OrganizationId = website.OrganizationId,
-                        ReferenceId = recId,
-                        ReferenceType = "Recommendation",
-                        TextContent = rec.Title + " " + rec.Description,
-                        Vector = recVector
-                    });
+                        await scope.ServiceProvider.GetRequiredService<IEmbeddingRepository>().InsertEmbeddingAsync(new Citationly.Domain.Entities.Embedding
+                        {
+                            OrganizationId = website.OrganizationId,
+                            ReferenceId = recId,
+                            ReferenceType = "Recommendation",
+                            TextContent = rec.Title + " " + rec.Description,
+                            Vector = recVector
+                        });
+                    }
                 }
             }
 
             // --- COMPETITOR INTELLIGENCE ENGINE ---
             var searchService = scope.ServiceProvider.GetRequiredService<ISearchService>();
-            var metricsService = scope.ServiceProvider.GetRequiredService<IMetricsCalculationService>();
 
             _logger.LogInformation("Running Competitor Intelligence for: {DomainUrl}", website.DomainUrl);
-            
+
             var industry = "Web3 Development";
             var services = "Smart Contracts, dApps, Blockchain Consulting";
-            
+
             var competitors = await searchService.DiscoverCompetitorsAsync(website.OrganizationId, industry, services);
             var prompts = await searchService.GeneratePromptsAsync(website.OrganizationId, industry, services);
-            
+
             foreach(var prompt in prompts)
             {
                 await searchService.ExecutePromptSearchAsync(prompt, competitors, website.DomainUrl);
             }
 
-            await metricsService.CalculateAndStoreMetricsAsync(website.OrganizationId, DateTime.UtcNow.Date, website.DomainUrl);
+            // Real historical scoring (visibility/citation/sentiment/competitor + share-of-voice) is
+            // owned exclusively by GeoScanRecurringJob -> RunScanCommand, which is LLM-grounded in
+            // real business signals and cadence-gated per org. This service used to also write
+            // HistoricalScans/ShareOfVoice via a Random-based MetricsCalculationService, which raced
+            // with the real job and could silently clobber a real scan with noise — removed.
         }
     }
 }

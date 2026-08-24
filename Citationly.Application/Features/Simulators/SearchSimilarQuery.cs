@@ -33,6 +33,7 @@ public class SearchSimilarQueryHandler : IRequestHandler<SearchSimilarQuery, IEn
     {
         // 1. Convert the query text into a vector using the AI service
         var queryVector = await _aiService.GenerateEmbeddingAsync(request.QueryText);
+        if (queryVector == null) return Enumerable.Empty<SearchResult>();
 
         // 2. Fetch all embeddings for this organization
         var allEmbeddings = await _repository.GetEmbeddingsByOrgAsync(request.OrganizationId);

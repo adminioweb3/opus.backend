@@ -90,6 +90,24 @@ public class WebsiteRepository : IWebsiteRepository
             new { rec.WebsiteId, rec.CrawledPageId, rec.Title, rec.Description, rec.ActionType, rec.Priority });
     }
 
+    public async Task<Recommendation?> GetRecommendationByIdAsync(Guid id, Guid organizationId)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        return await connection.QuerySingleOrDefaultAsync<Recommendation>(
+            @"SELECT r.* FROM Recommendations r
+              JOIN Websites w ON r.WebsiteId = w.Id
+              WHERE r.Id = @Id AND w.OrganizationId = @OrganizationId",
+            new { Id = id, OrganizationId = organizationId });
+    }
+
+    public async Task UpdateRecommendationStatusAsync(Guid id, string status, string? deployedUrl)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        await connection.ExecuteAsync(
+            "UPDATE Recommendations SET Status = @Status, DeployedUrl = @DeployedUrl WHERE Id = @Id",
+            new { Id = id, Status = status, DeployedUrl = deployedUrl });
+    }
+
     public async Task<Guid> InsertWebsiteProfileAsync(WebsiteProfile profile)
     {
         using var connection = _dbConnectionFactory.CreateConnection();

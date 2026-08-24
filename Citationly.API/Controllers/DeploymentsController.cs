@@ -20,14 +20,8 @@ public class DeploymentsController : ControllerBase
     [HttpPost("execute")]
     public async Task<IActionResult> ExecuteDeployment([FromBody] DeployRecommendationCommand command)
     {
-        try
-        {
-            var resultUrl = await _mediator.Send(command);
-            return Ok(new { DeployedUrl = resultUrl, Status = "Success" });
-        }
-        catch (Exception ex)
-        {
-            return StatusCode(500, new { Error = ex.Message });
-        }
+        var result = await _mediator.Send(command);
+        if (!result.Success) return BadRequest(new { Error = result.Message });
+        return Ok(new { DeployedUrl = result.DeployedUrl, Status = "Success" });
     }
 }

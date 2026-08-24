@@ -11,6 +11,8 @@ public interface IWebsiteRepository
     Task<Website> ConnectWebsiteAsync(Guid organizationId, string domainUrl, string platformName);
     Task<Guid> InsertCrawledPageAsync(CrawledPage page);
     Task<Guid> InsertRecommendationAsync(Recommendation recommendation);
+    Task<Recommendation?> GetRecommendationByIdAsync(Guid id, Guid organizationId);
+    Task UpdateRecommendationStatusAsync(Guid id, string status, string? deployedUrl);
     Task<Guid> InsertWebsiteProfileAsync(WebsiteProfile profile);
     Task<WebsiteProfile?> GetLatestWebsiteProfileAsync(Guid organizationId);
     Task InsertCompetitorsAsync(IEnumerable<Competitor> competitors);

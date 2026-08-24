@@ -12,4 +12,7 @@ public interface IIntegrationRepository
     /// which intentionally omits it. Never expose this result directly to a client response.
     /// </summary>
     Task<Integration?> GetIntegrationByOrgAndPlatformAsync(Guid organizationId, string platformName);
+
+    /// <summary>Server-side only: includes the real ApiKey. Scoped to organizationId for tenant safety.</summary>
+    Task<Integration?> GetIntegrationByIdAsync(Guid id, Guid organizationId);
 }

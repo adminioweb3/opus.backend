@@ -51,31 +51,4 @@ public class MetricsRepository : IMetricsRepository
               ORDER BY SharePercentage DESC",
             new { OrgId = organizationId });
     }
-
-    public async Task InsertMockScanAsync(HistoricalScan scan, IEnumerable<ShareOfVoice> shareOfVoices)
-    {
-        using var connection = _dbConnectionFactory.CreateConnection();
-        
-        // Upsert HistoricalScan
-        var scanSql = @"
-            INSERT INTO HistoricalScans (OrganizationId, ScanDate, VisibilityScore, CitationScore, SentimentScore, CompetitorScore)
-            VALUES (@OrganizationId, @ScanDate::date, @VisibilityScore, @CitationScore, @SentimentScore, @CompetitorScore)
-            ON CONFLICT (OrganizationId, ScanDate) DO UPDATE 
-            SET VisibilityScore = EXCLUDED.VisibilityScore,
-                CitationScore = EXCLUDED.CitationScore,
-                SentimentScore = EXCLUDED.SentimentScore,
-                CompetitorScore = EXCLUDED.CompetitorScore;
-        ";
-        await connection.ExecuteAsync(scanSql, scan);
-
-        // Upsert new SoV
-        var sovSql = @"
-            INSERT INTO ShareOfVoice (OrganizationId, ScanDate, CompetitorName, SharePercentage, ColorCode)
-            VALUES (@OrganizationId, @ScanDate::date, @CompetitorName, @SharePercentage, @ColorCode)
-            ON CONFLICT (OrganizationId, ScanDate, CompetitorName) DO UPDATE 
-            SET SharePercentage = EXCLUDED.SharePercentage,
-                ColorCode = EXCLUDED.ColorCode;
-        ";
-        await connection.ExecuteAsync(sovSql, shareOfVoices);
-    }
 }

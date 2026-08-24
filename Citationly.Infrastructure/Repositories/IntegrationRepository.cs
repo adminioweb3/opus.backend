@@ -42,4 +42,12 @@ public class IntegrationRepository : IIntegrationRepository
             "SELECT * FROM Integrations WHERE OrganizationId = @OrganizationId AND PlatformName = @PlatformName LIMIT 1",
             new { OrganizationId = organizationId, PlatformName = platformName });
     }
+
+    public async Task<Integration?> GetIntegrationByIdAsync(Guid id, Guid organizationId)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        return await connection.QuerySingleOrDefaultAsync<Integration>(
+            "SELECT * FROM Integrations WHERE Id = @Id AND OrganizationId = @OrganizationId LIMIT 1",
+            new { Id = id, OrganizationId = organizationId });
+    }
 }

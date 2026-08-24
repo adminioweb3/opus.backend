@@ -3,7 +3,7 @@ using Citationly.Application.Interfaces;
 
 namespace Citationly.Application.Features.Deployments;
 
-public class DeployRecommendationCommand : IRequest<string>
+public class DeployRecommendationCommand : IRequest<DeployRecommendationResult>
 {
     public Guid OrganizationId { get; set; }
     public Guid RecommendationId { get; set; }
@@ -11,61 +11,62 @@ public class DeployRecommendationCommand : IRequest<string>
     public string Status { get; set; } = "draft";
 }
 
-public class DeployRecommendationCommandHandler : IRequestHandler<DeployRecommendationCommand, string>
+public record DeployRecommendationResult(bool Success, string Message, string? DeployedUrl);
+
+public class DeployRecommendationCommandHandler : IRequestHandler<DeployRecommendationCommand, DeployRecommendationResult>
 {
-    private readonly IOpenAiService _openRouterService;
-    private readonly ICmsIntegrationService _cmsIntegrationService;
-    // We would normally need IRecommendationRepository and IIntegrationRepository here,
-    // but for the sake of MVP we will simulate fetching them or inject them if they exist.
+    private readonly IOpenAiService _openAiService;
+    private readonly IWebsiteRepository _websiteRepository;
+    private readonly IIntegrationRepository _integrationRepository;
+    private readonly IEnumerable<ICmsIntegrationService> _cmsServices;
 
     public DeployRecommendationCommandHandler(
-        IOpenAiService openRouterService,
-        ICmsIntegrationService cmsIntegrationService)
+        IOpenAiService openAiService,
+        IWebsiteRepository websiteRepository,
+        IIntegrationRepository integrationRepository,
+        IEnumerable<ICmsIntegrationService> cmsServices)
     {
-        _openRouterService = openRouterService;
-        _cmsIntegrationService = cmsIntegrationService;
+        _openAiService = openAiService;
+        _websiteRepository = websiteRepository;
+        _integrationRepository = integrationRepository;
+        _cmsServices = cmsServices;
     }
 
-    public async Task<string> Handle(DeployRecommendationCommand request, CancellationToken cancellationToken)
+    public async Task<DeployRecommendationResult> Handle(DeployRecommendationCommand request, CancellationToken cancellationToken)
     {
-        // 1. Fetch Recommendation (Simulated for MVP)
-        var recommendationTitle = "Optimize your CRM landing page for 'best CRM for startups'";
-        var recommendationDescription = "Your CRM landing page is missing key AEO terms related to startups. Add a section addressing specific startup pain points.";
-
-        // 2. Fetch Integration (Simulated for MVP)
-        var dummyIntegration = new Domain.Entities.Integration
+        var recommendation = await _websiteRepository.GetRecommendationByIdAsync(request.RecommendationId, request.OrganizationId);
+        if (recommendation == null)
         {
-            Id = request.IntegrationId,
-            OrganizationId = request.OrganizationId,
-            PlatformName = "WordPress",
-            ApiUrl = "https://example.com",
-            ApiKey = "dummy"
-        };
-
-        // 3. Generate Content via AI
-        var prompt = $"Create a blog post addressing this SEO recommendation: Title: {recommendationTitle}, Description: {recommendationDescription}";
-        var generatedContent = await _openRouterService.GenerateContentAsync(prompt);
-
-        // 4. Deploy Content
-        string deployedUrl;
-        if (dummyIntegration.ApiUrl == "https://example.com")
-        {
-            // Simulate WordPress response for the UI Demo
-            await Task.Delay(1500); // simulate network latency
-            deployedUrl = $"https://your-wordpress-site.com/draft?id={Guid.NewGuid().ToString().Substring(0, 8)}";
-        }
-        else
-        {
-            deployedUrl = await _cmsIntegrationService.DeployContentAsync(
-                dummyIntegration, 
-                recommendationTitle, 
-                generatedContent, 
-                request.Status);
+            return new DeployRecommendationResult(false, "Recommendation not found.", null);
         }
 
-        // 5. Update Recommendation Status
-        // _recommendationRepository.UpdateStatusAsync(request.RecommendationId, "Deployed", deployedUrl);
+        var integration = await _integrationRepository.GetIntegrationByIdAsync(request.IntegrationId, request.OrganizationId);
+        if (integration == null || string.IsNullOrWhiteSpace(integration.ApiUrl) || string.IsNullOrWhiteSpace(integration.ApiKey))
+        {
+            return new DeployRecommendationResult(false, "No integration connected yet. Connect one first.", null);
+        }
 
-        return deployedUrl;
+        var cmsService = _cmsServices.FirstOrDefault(s => s.PlatformName.Equals(integration.PlatformName, StringComparison.OrdinalIgnoreCase));
+        if (cmsService == null)
+        {
+            return new DeployRecommendationResult(false, $"{integration.PlatformName} publishing is not supported yet.", null);
+        }
+
+        var prompt = $"Create a blog post addressing this SEO recommendation: Title: {recommendation.Title}, Description: {recommendation.Description}";
+        var generatedContent = await _openAiService.GenerateContentAsync(prompt);
+
+        try
+        {
+            var deployedUrl = await cmsService.DeployContentAsync(integration, recommendation.Title, generatedContent, request.Status);
+
+            await _websiteRepository.UpdateRecommendationStatusAsync(recommendation.Id, "Deployed", deployedUrl);
+
+            return new DeployRecommendationResult(true, "Deployed successfully.", deployedUrl);
+        }
+        catch (Exception ex)
+        {
+            await _websiteRepository.UpdateRecommendationStatusAsync(recommendation.Id, "Failed", null);
+            return new DeployRecommendationResult(false, $"Deploy failed: {ex.Message}", null);
+        }
     }
 }

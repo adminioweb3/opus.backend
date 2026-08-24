@@ -57,35 +57,10 @@ public class WebsitesController : ControllerBase
         return Ok(result);
     }
 
-    [HttpPost("analyze")]
-    public async Task<IActionResult> Analyze([FromBody] AnalyzeWebsiteRequest request)
-    {
-        var orgId = await GetOrganizationIdAsync() ?? (request.OrganizationId == Guid.Empty ? Guid.NewGuid() : request.OrganizationId);
-
-        var command = new AnalyzeWebsiteCommand
-        {
-            OrganizationId = orgId,
-            DomainUrl = request.DomainUrl
-        };
-
-        var result = await _mediator.Send(command);
-
-        return Ok(new
-        {
-            Message = $"Analyzed {request.DomainUrl} successfully.",
-            Recommendations = result
-        });
-    }
 }
 
 public class ConnectWebsiteRequest
 {
     public string DomainUrl { get; set; } = string.Empty;
     public string PlatformName { get; set; } = "Custom";
-}
-
-public class AnalyzeWebsiteRequest
-{
-    public string DomainUrl { get; set; } = string.Empty;
-    public Guid OrganizationId { get; set; } 
 }

@@ -60,6 +60,7 @@ public class Recommendation
     public string? ActionType { get; set; }
     public string? Priority { get; set; }
     public string Status { get; set; } = "Pending";
+    public string? DeployedUrl { get; set; }
     public DateTime CreatedAt { get; set; }
 }
 

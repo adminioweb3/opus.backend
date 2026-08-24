@@ -150,6 +150,7 @@ CREATE TABLE IF NOT EXISTS Recommendations (
     ActionType VARCHAR(100), -- e.g., 'Content Update', 'Meta Tag'
     Priority VARCHAR(50), -- 'High', 'Medium', 'Low'
     Status VARCHAR(50) DEFAULT 'Pending',
+    DeployedUrl VARCHAR(2048),
     CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 

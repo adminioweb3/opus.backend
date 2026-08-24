@@ -128,12 +128,7 @@ public class ScraperController : ControllerBase
     public async Task<IActionResult> GetStatus(Guid jobId)
     {
         var job = await _repository.GetJobAsync(jobId);
-        if (job == null) 
-        {
-            // If the job wasn't found (e.g. dummy JobId for mock data),
-            // simulate a completed status so the frontend onboarding can proceed.
-            return Ok(new { Status = "Completed", ProcessedPages = 15, TotalPages = 15, MaxPages = 15, StartedAt = DateTime.UtcNow, CompletedAt = DateTime.UtcNow });
-        }
+        if (job == null) return NotFound();
 
         return Ok(new
         {

@@ -40,7 +40,7 @@ public static class DependencyInjection
         services.AddScoped<IAnalysisRepository, AnalysisRepository>();
         services.AddScoped<IAnalysisOrchestrator, Citationly.Application.Features.AnalysisEngine.AnalysisOrchestrator>();
         services.AddScoped<IWebScraperService, WebScraperService>();
-        services.AddScoped<IAiAnalysisService, DummyAiAnalysisService>();
+        services.AddScoped<IAiAnalysisService, WebsiteAiAnalysisService>();
         services.AddScoped<IMarkdownGeneratorService, MarkdownGeneratorService>();
         services.AddScoped<IScraperEngine, PlaywrightScraperEngine>();
         services.AddScoped<IScrapingJobService, ScrapingJobService>();
@@ -62,7 +62,6 @@ public static class DependencyInjection
         services.AddScoped<IOpenAiService, OpenAiService>();
         services.AddScoped<IEmbeddingService, OpenAiEmbeddingService>();
         services.AddScoped<ISearchService, MockSearchService>();
-        services.AddScoped<IMetricsCalculationService, MetricsCalculationService>();
 
         // Onboarding Pipeline Services
         services.AddScoped<Citationly.Application.Interfaces.Onboarding.IPageClassificationService, Citationly.Infrastructure.Services.Onboarding.PageClassificationService>();
@@ -111,8 +110,7 @@ public static class DependencyInjection
             client.Timeout = TimeSpan.FromMinutes(10);
         });
         services.AddScoped<ISearchService, MockSearchService>();
-        services.AddScoped<IMetricsCalculationService, MetricsCalculationService>();
-        
+
         services.AddHostedService<Citationly.Infrastructure.BackgroundJobs.RecurringScrapeService>();
         services.AddScoped<Citationly.Infrastructure.BackgroundJobs.GeoScanRecurringJob>();
         services.AddScoped<Citationly.Infrastructure.BackgroundJobs.CompetitorScanRecurringJob>();
