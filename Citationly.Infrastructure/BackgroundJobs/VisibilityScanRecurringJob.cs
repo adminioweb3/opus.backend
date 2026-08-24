@@ -7,26 +7,31 @@ namespace Citationly.Infrastructure.BackgroundJobs;
 
 /// <summary>
 /// Hangfire-invoked, runs daily. Only re-scans an organization's AI-platform visibility once
-/// 7+ days have passed since its last VisibilityScanSummary, so Visibility Radar stays fresh
-/// automatically.
+/// its plan's configured interval (PlanLimits "recurring_scan_interval_days", default 7 if
+/// unset) has passed since its last VisibilityScanSummary. Processes organizations with bounded
+/// concurrency rather than one giant sequential loop, per the audit's cost-scale finding.
 /// </summary>
 public class VisibilityScanRecurringJob
 {
-    private const int ScanIntervalDays = 7;
+    private const int DefaultScanIntervalDays = 7;
+    private const int MaxConcurrency = 5;
 
     private readonly IAiVisibilityRepository _visibilityRepo;
     private readonly IVisibilitySnapshotRepository _snapshotRepo;
+    private readonly IEntitlementService _entitlements;
     private readonly IMediator _mediator;
     private readonly ILogger<VisibilityScanRecurringJob> _logger;
 
     public VisibilityScanRecurringJob(
         IAiVisibilityRepository visibilityRepo,
         IVisibilitySnapshotRepository snapshotRepo,
+        IEntitlementService entitlements,
         IMediator mediator,
         ILogger<VisibilityScanRecurringJob> logger)
     {
         _visibilityRepo = visibilityRepo;
         _snapshotRepo = snapshotRepo;
+        _entitlements = entitlements;
         _mediator = mediator;
         _logger = logger;
     }
@@ -41,19 +46,20 @@ public class VisibilityScanRecurringJob
 
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
 
-        foreach (var organizationId in organizationIds)
+        await Parallel.ForEachAsync(organizationIds, new ParallelOptions { MaxDegreeOfParallelism = MaxConcurrency }, async (organizationId, ct) =>
         {
             try
             {
+                var scanIntervalDays = (int)(await _entitlements.GetPlanLimitValueAsync(organizationId, "recurring_scan_interval_days", ct) ?? DefaultScanIntervalDays);
                 var latestScanDate = await _snapshotRepo.GetLatestScanDateAsync(organizationId);
-                var isDue = latestScanDate == null || today.DayNumber - latestScanDate.Value.DayNumber >= ScanIntervalDays;
+                var isDue = latestScanDate == null || today.DayNumber - latestScanDate.Value.DayNumber >= scanIntervalDays;
 
                 if (!isDue)
                 {
-                    continue;
+                    return;
                 }
 
-                var result = await _mediator.Send(new RunVisibilityScanCommand { OrganizationId = organizationId });
+                var result = await _mediator.Send(new RunVisibilityScanCommand { OrganizationId = organizationId }, ct);
                 _logger.LogInformation(
                     "VisibilityScanRecurringJob: org {OrganizationId} success={Success} message={Message}",
                     organizationId, result.Success, result.Message);
@@ -62,6 +68,6 @@ public class VisibilityScanRecurringJob
             {
                 _logger.LogError(ex, "VisibilityScanRecurringJob: scan failed for org {OrganizationId}", organizationId);
             }
-        }
+        });
     }
 }

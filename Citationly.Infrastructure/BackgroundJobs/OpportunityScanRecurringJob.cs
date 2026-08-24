@@ -6,28 +6,32 @@ using Citationly.Application.Interfaces;
 namespace Citationly.Infrastructure.BackgroundJobs;
 
 /// <summary>
-/// Hangfire-invoked, runs daily. Only re-scans an organization's opportunities once 7+ days
-/// have passed since its last OpportunitySnapshot, so Opportunity Finder stays fresh
-/// automatically — this is the same 7-day cadence enforced client-facing by the manual
-/// "Run deep scan" button's cooldown.
+/// Hangfire-invoked, runs daily. Only re-scans an organization's opportunities once its plan's
+/// configured interval (PlanLimits "recurring_scan_interval_days", default 7 if unset) has
+/// passed since its last OpportunitySnapshot. Processes organizations with bounded concurrency
+/// rather than one giant sequential loop, per the audit's cost-scale finding.
 /// </summary>
 public class OpportunityScanRecurringJob
 {
-    private const int ScanIntervalDays = 7;
+    private const int DefaultScanIntervalDays = 7;
+    private const int MaxConcurrency = 5;
 
     private readonly IAiVisibilityRepository _visibilityRepo;
     private readonly IOpportunitySnapshotRepository _snapshotRepo;
+    private readonly IEntitlementService _entitlements;
     private readonly IMediator _mediator;
     private readonly ILogger<OpportunityScanRecurringJob> _logger;
 
     public OpportunityScanRecurringJob(
         IAiVisibilityRepository visibilityRepo,
         IOpportunitySnapshotRepository snapshotRepo,
+        IEntitlementService entitlements,
         IMediator mediator,
         ILogger<OpportunityScanRecurringJob> logger)
     {
         _visibilityRepo = visibilityRepo;
         _snapshotRepo = snapshotRepo;
+        _entitlements = entitlements;
         _mediator = mediator;
         _logger = logger;
     }
@@ -42,19 +46,20 @@ public class OpportunityScanRecurringJob
 
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
 
-        foreach (var organizationId in organizationIds)
+        await Parallel.ForEachAsync(organizationIds, new ParallelOptions { MaxDegreeOfParallelism = MaxConcurrency }, async (organizationId, ct) =>
         {
             try
             {
+                var scanIntervalDays = (int)(await _entitlements.GetPlanLimitValueAsync(organizationId, "recurring_scan_interval_days", ct) ?? DefaultScanIntervalDays);
                 var latestScanDate = await _snapshotRepo.GetLatestScanDateAsync(organizationId);
-                var isDue = latestScanDate == null || today.DayNumber - latestScanDate.Value.DayNumber >= ScanIntervalDays;
+                var isDue = latestScanDate == null || today.DayNumber - latestScanDate.Value.DayNumber >= scanIntervalDays;
 
                 if (!isDue)
                 {
-                    continue;
+                    return;
                 }
 
-                var result = await _mediator.Send(new RunOpportunityScanCommand { OrganizationId = organizationId });
+                var result = await _mediator.Send(new RunOpportunityScanCommand { OrganizationId = organizationId }, ct);
                 _logger.LogInformation(
                     "OpportunityScanRecurringJob: org {OrganizationId} success={Success} message={Message}",
                     organizationId, result.Success, result.Message);
@@ -63,6 +68,6 @@ public class OpportunityScanRecurringJob
             {
                 _logger.LogError(ex, "OpportunityScanRecurringJob: scan failed for org {OrganizationId}", organizationId);
             }
-        }
+        });
     }
 }

@@ -6,24 +6,30 @@ using Citationly.Application.Interfaces;
 namespace Citationly.Infrastructure.BackgroundJobs;
 
 /// <summary>
-/// Hangfire-invoked, runs daily. Only re-scans an organization once 7+ days have
-/// passed since its last HistoricalScan, so orgs stay on their own 7-day cadence
-/// regardless of when they onboarded (and a missed run self-corrects the next day).
+/// Hangfire-invoked, runs daily. Only re-scans an organization once its plan's configured
+/// interval (PlanLimits "recurring_scan_interval_days" - Trial=7, Pro=1, Enterprise=1, default
+/// 7 if unset) has passed since its last HistoricalScan, so higher tiers get fresher data
+/// without every org running at the same unconditional cadence. Processes organizations with
+/// bounded concurrency rather than one giant sequential loop, per the audit's cost-scale finding.
 /// </summary>
 public class GeoScanRecurringJob
 {
-    private const int ScanIntervalDays = 7;
+    private const int DefaultScanIntervalDays = 7;
+    private const int MaxConcurrency = 5;
 
     private readonly IAiVisibilityRepository _visibilityRepo;
+    private readonly IEntitlementService _entitlements;
     private readonly IMediator _mediator;
     private readonly ILogger<GeoScanRecurringJob> _logger;
 
     public GeoScanRecurringJob(
         IAiVisibilityRepository visibilityRepo,
+        IEntitlementService entitlements,
         IMediator mediator,
         ILogger<GeoScanRecurringJob> logger)
     {
         _visibilityRepo = visibilityRepo;
+        _entitlements = entitlements;
         _mediator = mediator;
         _logger = logger;
     }
@@ -36,20 +42,21 @@ public class GeoScanRecurringJob
 
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
 
-        foreach (var organizationId in organizationIds)
+        await Parallel.ForEachAsync(organizationIds, new ParallelOptions { MaxDegreeOfParallelism = MaxConcurrency }, async (organizationId, ct) =>
         {
             try
             {
+                var scanIntervalDays = (int)(await _entitlements.GetPlanLimitValueAsync(organizationId, "recurring_scan_interval_days", ct) ?? DefaultScanIntervalDays);
                 var scans = await _visibilityRepo.GetHistoricalScansByOrgAsync(organizationId);
                 var latestScan = scans.OrderByDescending(s => s.ScanDate).FirstOrDefault();
-                var isDue = latestScan == null || today.DayNumber - latestScan.ScanDate.DayNumber >= ScanIntervalDays;
+                var isDue = latestScan == null || today.DayNumber - latestScan.ScanDate.DayNumber >= scanIntervalDays;
 
                 if (!isDue)
                 {
-                    continue;
+                    return;
                 }
 
-                var result = await _mediator.Send(new RunScanCommand { OrganizationId = organizationId });
+                var result = await _mediator.Send(new RunScanCommand { OrganizationId = organizationId }, ct);
                 _logger.LogInformation(
                     "GeoScanRecurringJob: org {OrganizationId} success={Success} message={Message}",
                     organizationId, result.Success, result.Message);
@@ -58,6 +65,6 @@ public class GeoScanRecurringJob
             {
                 _logger.LogError(ex, "GeoScanRecurringJob: scan failed for org {OrganizationId}", organizationId);
             }
-        }
+        });
     }
 }

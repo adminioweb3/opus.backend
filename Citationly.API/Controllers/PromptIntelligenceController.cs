@@ -19,6 +19,7 @@ public class PromptIntelligenceController : ControllerBase
     private readonly IQueryFanoutService _fanoutService;
     private readonly ITopicPromptGeneratorService _topicPromptGenerator;
     private readonly IPromptTopicSeedingService _seedingService;
+    private readonly IEntitlementService _entitlements;
     private readonly ILogger<PromptIntelligenceController> _logger;
 
     public PromptIntelligenceController(
@@ -29,6 +30,7 @@ public class PromptIntelligenceController : ControllerBase
         IQueryFanoutService fanoutService,
         ITopicPromptGeneratorService topicPromptGenerator,
         IPromptTopicSeedingService seedingService,
+        IEntitlementService entitlements,
         ILogger<PromptIntelligenceController> logger)
     {
         _repo = repo;
@@ -38,6 +40,7 @@ public class PromptIntelligenceController : ControllerBase
         _fanoutService = fanoutService;
         _topicPromptGenerator = topicPromptGenerator;
         _seedingService = seedingService;
+        _entitlements = entitlements;
         _logger = logger;
     }
 
@@ -524,9 +527,9 @@ public class PromptIntelligenceController : ControllerBase
         var orgId = await GetOrganizationIdAsync();
         if (orgId == null) return Unauthorized();
 
-        var planType = await _repo.GetOrganizationPlanTypeAsync(orgId.Value);
-        if (!string.Equals(planType, "Enterprise", StringComparison.OrdinalIgnoreCase))
+        if (!await _entitlements.CanUseFeatureAsync(orgId.Value, "regions_summary"))
         {
+            var planType = await _entitlements.GetPlanKeyAsync(orgId.Value);
             return StatusCode(403, new { error = "Regional breakdowns are available on the Enterprise plan.", planType });
         }
 
@@ -539,9 +542,9 @@ public class PromptIntelligenceController : ControllerBase
         var orgId = await GetOrganizationIdAsync();
         if (orgId == null) return Unauthorized();
 
-        var planType = await _repo.GetOrganizationPlanTypeAsync(orgId.Value);
-        if (!string.Equals(planType, "Enterprise", StringComparison.OrdinalIgnoreCase))
+        if (!await _entitlements.CanUseFeatureAsync(orgId.Value, "personas_summary"))
         {
+            var planType = await _entitlements.GetPlanKeyAsync(orgId.Value);
             return StatusCode(403, new { error = "Persona breakdowns are available on the Enterprise plan.", planType });
         }
 

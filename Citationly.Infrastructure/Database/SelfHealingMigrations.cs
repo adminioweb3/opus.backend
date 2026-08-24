@@ -115,6 +115,94 @@ public static class SelfHealingMigrations
         );
         CREATE INDEX IF NOT EXISTS idx_apikeys_org_created ON ApiKeys (OrganizationId, CreatedAt DESC);
 
+        -- Billing (Phase 1) - Stripe-backed subscription/invoice/payment records.
+        -- Organizations.PlanType remains a cached/derived mirror of Subscriptions.Status,
+        -- kept in sync by the billing webhook handler once a real Stripe account is wired in.
+        ALTER TABLE Organizations ADD COLUMN IF NOT EXISTS StripeCustomerId VARCHAR(255);
+        CREATE INDEX IF NOT EXISTS idx_organizations_stripecustomerid ON Organizations (StripeCustomerId);
+
+        CREATE TABLE IF NOT EXISTS Subscriptions (
+            Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            OrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,
+            StripeSubscriptionId VARCHAR(255) UNIQUE,
+            PlanKey VARCHAR(100) NOT NULL,
+            Status VARCHAR(50) NOT NULL DEFAULT 'trialing',
+            CurrentPeriodStart TIMESTAMP WITH TIME ZONE,
+            CurrentPeriodEnd TIMESTAMP WITH TIME ZONE,
+            CancelAtPeriodEnd BOOLEAN NOT NULL DEFAULT FALSE,
+            CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UpdatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_subscriptions_org ON Subscriptions (OrganizationId);
+
+        CREATE TABLE IF NOT EXISTS Invoices (
+            Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            OrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,
+            StripeInvoiceId VARCHAR(255) UNIQUE,
+            AmountDueCents BIGINT NOT NULL DEFAULT 0,
+            AmountPaidCents BIGINT NOT NULL DEFAULT 0,
+            Currency VARCHAR(10) NOT NULL DEFAULT 'usd',
+            Status VARCHAR(50) NOT NULL DEFAULT 'draft',
+            HostedInvoiceUrl VARCHAR(2048),
+            IssuedAt TIMESTAMP WITH TIME ZONE,
+            CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_invoices_org_issued ON Invoices (OrganizationId, IssuedAt DESC);
+
+        CREATE TABLE IF NOT EXISTS PaymentMethods (
+            Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            OrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,
+            StripePaymentMethodId VARCHAR(255) UNIQUE,
+            Brand VARCHAR(50),
+            Last4 VARCHAR(4),
+            ExpMonth INT,
+            ExpYear INT,
+            IsDefault BOOLEAN NOT NULL DEFAULT FALSE,
+            CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_paymentmethods_org ON PaymentMethods (OrganizationId);
+
+        -- Usage metering (Phase 1) - per-org, per-metric, per-period counters so AI-cost
+        -- endpoints and recurring jobs can be capped by plan instead of running unbounded.
+        -- Persisted (unlike the in-process burst limiter in AiUsageLimiter) so a quota
+        -- survives an app restart and is shared across all instances of the API.
+        CREATE TABLE IF NOT EXISTS UsageCounters (
+            Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            OrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,
+            MetricKey VARCHAR(100) NOT NULL,
+            PeriodStart TIMESTAMP WITH TIME ZONE NOT NULL,
+            PeriodEnd TIMESTAMP WITH TIME ZONE NOT NULL,
+            Count BIGINT NOT NULL DEFAULT 0,
+            UpdatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (OrganizationId, MetricKey, PeriodStart)
+        );
+        CREATE INDEX IF NOT EXISTS idx_usagecounters_org_metric ON UsageCounters (OrganizationId, MetricKey, PeriodStart DESC);
+
+        -- Plan limits (Phase 1) - one row per plan/feature, read by IEntitlementService.
+        -- A NULL LimitValue means unlimited. Seeded with today's actual plan set
+        -- (Trial/Pro/Enterprise); adjust via a real admin UI once billing is live,
+        -- not by hand-editing rows in production.
+        CREATE TABLE IF NOT EXISTS PlanLimits (
+            PlanKey VARCHAR(100) NOT NULL,
+            FeatureKey VARCHAR(100) NOT NULL,
+            LimitValue BIGINT,
+            PRIMARY KEY (PlanKey, FeatureKey)
+        );
+        INSERT INTO PlanLimits (PlanKey, FeatureKey, LimitValue) VALUES
+            ('Trial', 'ai_calls_per_day', 50),
+            ('Trial', 'recurring_scan_interval_days', 7),
+            ('Trial', 'regions_summary', 0),
+            ('Trial', 'personas_summary', 0),
+            ('Pro', 'ai_calls_per_day', 1000),
+            ('Pro', 'recurring_scan_interval_days', 1),
+            ('Pro', 'regions_summary', 0),
+            ('Pro', 'personas_summary', 0),
+            ('Enterprise', 'ai_calls_per_day', NULL),
+            ('Enterprise', 'recurring_scan_interval_days', 1),
+            ('Enterprise', 'regions_summary', 1),
+            ('Enterprise', 'personas_summary', 1)
+        ON CONFLICT (PlanKey, FeatureKey) DO NOTHING;
+
         CREATE TABLE IF NOT EXISTS ContentDrafts (
             Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,

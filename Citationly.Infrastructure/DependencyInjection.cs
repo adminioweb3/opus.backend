@@ -48,6 +48,10 @@ public static class DependencyInjection
         services.AddSingleton<Citationly.Application.Interfaces.IAiRequestContextAccessor, AiRequestContextAccessor>();
         services.AddSingleton<Citationly.Application.Interfaces.IAiUsageLimiter, AiUsageLimiter>();
         services.AddSingleton<Citationly.Application.Interfaces.IAiResilienceService, AiResilienceService>();
+        // Singleton (not Scoped): it only opens per-call connections via the already-singleton
+        // IDbConnectionFactory and holds no per-request state, so it can be safely injected into
+        // the singleton AiUsageLimiter without becoming a captive dependency.
+        services.AddSingleton<Citationly.Application.Interfaces.IEntitlementService, EntitlementService>();
         
         // Company Knowledge Graph
         services.AddTransient<ICompanyRepository, CompanyRepository>();

@@ -230,40 +230,44 @@ using (var scope = app.Services.CreateScope())
     recurringJobManager.RemoveIfExists("command-center-daily-insights");
     recurringJobManager.RemoveIfExists("competitor-watch-daily-scan");
 
+    // Staggered by 20 minutes each (00:00, 00:20, ... 02:00 UTC) instead of all seven firing at
+    // the same Cron.Daily instant - each job already caps its own per-run concurrency, but
+    // without staggering, seven jobs still start their AI-cost work simultaneously against the
+    // same shared OpenAI key. See CITATIONLY_PRODUCT_AUDIT.md / roadmap Phase 1 C3.
     recurringJobManager.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.GeoScanRecurringJob>(
         "geo-scan-7-day-check",
         job => job.RunAsync(),
-        Cron.Daily);
+        "0 0 * * *");
 
     recurringJobManager.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.CompetitorScanRecurringJob>(
         "competitor-scan-7-day-check",
         job => job.RunAsync(),
-        Cron.Daily);
+        "20 0 * * *");
 
     recurringJobManager.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.VisibilityScanRecurringJob>(
         "visibility-scan-7-day-check",
         job => job.RunAsync(),
-        Cron.Daily);
+        "40 0 * * *");
 
     recurringJobManager.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.CitationScanRecurringJob>(
         "citation-scan-7-day-check",
         job => job.RunAsync(),
-        Cron.Daily);
+        "0 1 * * *");
 
     recurringJobManager.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.BrandPulseScanRecurringJob>(
         "brand-pulse-scan-7-day-check",
         job => job.RunAsync(),
-        Cron.Daily);
+        "20 1 * * *");
 
     recurringJobManager.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.CommandCenterInsightsRecurringJob>(
         "command-center-insights-7-day-check",
         job => job.RunAsync(),
-        Cron.Daily);
+        "40 1 * * *");
 
     recurringJobManager.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.OpportunityScanRecurringJob>(
         "opportunity-scan-7-day-check",
         job => job.RunAsync(),
-        Cron.Daily);
+        "0 2 * * *");
 }
 
 app.UseHttpsRedirection();
