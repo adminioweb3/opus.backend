@@ -93,10 +93,11 @@ public class PromptExecutionService : IPromptExecutionService
         // Calculate Visibility
         var trackedCompetitors = await _websiteRepo.GetCompetitorsAsync(organizationId);
         var competitors = trackedCompetitors.Select(c => c.Name).Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
+        var competitorDomains = trackedCompetitors.Select(c => c.WebsiteUrl).Where(u => !string.IsNullOrWhiteSpace(u)).ToList();
         var (visibility, mentions, compComparisons) = _calculator.CalculateVisibilityMetrics(analysisId, responses, brandName, competitors);
 
         // Real citation extraction from the actual captured response text
-        var citations = responses.SelectMany(r => _citationExtractor.ExtractCitations(analysisId, r.Platform, r.ResponseText, ownDomain)).ToList();
+        var citations = responses.SelectMany(r => _citationExtractor.ExtractCitations(analysisId, r.Platform, r.ResponseText, ownDomain, competitorDomains)).ToList();
         
         // Use real citation count
         if (ownDomain != null)
