@@ -1,9 +1,8 @@
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
+using Citationly.API.Services;
 using Citationly.Application.Features.Integrations;
-using Citationly.Application.Interfaces;
-using System.Security.Claims;
 
 namespace Citationly.API.Controllers;
 
@@ -13,27 +12,18 @@ namespace Citationly.API.Controllers;
 public class IntegrationsController : ControllerBase
 {
     private readonly IMediator _mediator;
-    private readonly IUserRepository _userRepository;
+    private readonly ICurrentOrganizationAccessor _currentOrg;
 
-    public IntegrationsController(IMediator mediator, IUserRepository userRepository)
+    public IntegrationsController(IMediator mediator, ICurrentOrganizationAccessor currentOrg)
     {
         _mediator = mediator;
-        _userRepository = userRepository;
-    }
-
-    private async Task<Guid?> GetOrganizationIdAsync()
-    {
-        var firebaseUid = User.FindFirst("user_id")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-        if (string.IsNullOrEmpty(firebaseUid)) return null;
-
-        var user = await _userRepository.GetUserByFirebaseUidAsync(firebaseUid);
-        return user?.OrganizationId;
+        _currentOrg = currentOrg;
     }
 
     [HttpGet]
     public async Task<IActionResult> Get()
     {
-        var orgId = await GetOrganizationIdAsync();
+        var orgId = await _currentOrg.GetOrganizationIdAsync(User);
         if (orgId == null) return Unauthorized("User not found or unlinked.");
 
         var result = await _mediator.Send(new GetIntegrationsQuery { OrganizationId = orgId.Value });
@@ -43,7 +33,7 @@ public class IntegrationsController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> Upsert([FromBody] UpsertIntegrationRequest request)
     {
-        var orgId = await GetOrganizationIdAsync();
+        var orgId = await _currentOrg.GetOrganizationIdAsync(User);
         if (orgId == null) return Unauthorized("User not found or unlinked.");
 
         var command = new UpsertIntegrationCommand

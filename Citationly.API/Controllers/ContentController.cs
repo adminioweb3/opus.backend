@@ -1,9 +1,8 @@
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Citationly.API.Services;
 using Citationly.Application.Features.Content;
-using Citationly.Application.Interfaces;
-using System.Security.Claims;
 
 namespace Citationly.API.Controllers;
 
@@ -13,28 +12,19 @@ namespace Citationly.API.Controllers;
 public class ContentController : ControllerBase
 {
     private readonly IMediator _mediator;
-    private readonly IUserRepository _userRepository;
+    private readonly ICurrentOrganizationAccessor _currentOrg;
 
-    public ContentController(IMediator mediator, IUserRepository userRepository)
+    public ContentController(IMediator mediator, ICurrentOrganizationAccessor currentOrg)
     {
         _mediator = mediator;
-        _userRepository = userRepository;
-    }
-
-    private async Task<Guid?> GetOrganizationIdAsync()
-    {
-        var firebaseUid = User.FindFirst("user_id")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-        if (string.IsNullOrEmpty(firebaseUid)) return null;
-
-        var user = await _userRepository.GetUserByFirebaseUidAsync(firebaseUid);
-        return user?.OrganizationId;
+        _currentOrg = currentOrg;
     }
 
     // GET /api/Content
     [HttpGet]
     public async Task<IActionResult> GetDrafts()
     {
-        var orgId = await GetOrganizationIdAsync();
+        var orgId = await _currentOrg.GetOrganizationIdAsync(User);
         if (orgId == null) return Unauthorized("User not found or unlinked.");
 
         var result = await _mediator.Send(new GetContentDraftsQuery { OrganizationId = orgId.Value });
@@ -45,7 +35,7 @@ public class ContentController : ControllerBase
     [HttpGet("{id}")]
     public async Task<IActionResult> GetDraft(Guid id)
     {
-        var orgId = await GetOrganizationIdAsync();
+        var orgId = await _currentOrg.GetOrganizationIdAsync(User);
         if (orgId == null) return Unauthorized("User not found or unlinked.");
 
         var result = await _mediator.Send(new GetContentDraftQuery { OrganizationId = orgId.Value, DraftId = id });
@@ -57,7 +47,7 @@ public class ContentController : ControllerBase
     [HttpPost("generate")]
     public async Task<IActionResult> Generate([FromBody] GenerateContentRequest request)
     {
-        var orgId = await GetOrganizationIdAsync();
+        var orgId = await _currentOrg.GetOrganizationIdAsync(User);
         if (orgId == null) return Unauthorized("User not found or unlinked.");
 
         if (string.IsNullOrWhiteSpace(request.Prompt))
@@ -97,7 +87,7 @@ public class ContentController : ControllerBase
     [HttpPost("analyze-competitor")]
     public async Task<IActionResult> AnalyzeCompetitor([FromBody] AnalyzeCompetitorRequest request)
     {
-        var orgId = await GetOrganizationIdAsync();
+        var orgId = await _currentOrg.GetOrganizationIdAsync(User);
         if (orgId == null) return Unauthorized("User not found or unlinked.");
 
         if (string.IsNullOrWhiteSpace(request.Url))
@@ -118,7 +108,7 @@ public class ContentController : ControllerBase
     [HttpPost("{id}/rewrite")]
     public async Task<IActionResult> Rewrite(Guid id, [FromBody] RewriteContentRequest request)
     {
-        var orgId = await GetOrganizationIdAsync();
+        var orgId = await _currentOrg.GetOrganizationIdAsync(User);
         if (orgId == null) return Unauthorized("User not found or unlinked.");
 
         var result = await _mediator.Send(new RewriteContentCommand
@@ -135,7 +125,7 @@ public class ContentController : ControllerBase
     [HttpPut("{id}")]
     public async Task<IActionResult> UpdateDraft(Guid id, [FromBody] UpdateContentDraftRequest request)
     {
-        var orgId = await GetOrganizationIdAsync();
+        var orgId = await _currentOrg.GetOrganizationIdAsync(User);
         if (orgId == null) return Unauthorized("User not found or unlinked.");
 
         var result = await _mediator.Send(new UpdateContentDraftCommand
@@ -153,7 +143,7 @@ public class ContentController : ControllerBase
     [HttpPost("{id}/optimize")]
     public async Task<IActionResult> Optimize(Guid id, [FromBody] OptimizeContentRequest request)
     {
-        var orgId = await GetOrganizationIdAsync();
+        var orgId = await _currentOrg.GetOrganizationIdAsync(User);
         if (orgId == null) return Unauthorized("User not found or unlinked.");
 
         var result = await _mediator.Send(new OptimizeContentCommand
@@ -174,7 +164,7 @@ public class ContentController : ControllerBase
     [HttpPost("{id}/publish")]
     public async Task<IActionResult> Publish(Guid id)
     {
-        var orgId = await GetOrganizationIdAsync();
+        var orgId = await _currentOrg.GetOrganizationIdAsync(User);
         if (orgId == null) return Unauthorized("User not found or unlinked.");
 
         var result = await _mediator.Send(new PublishContentDraftCommand
@@ -189,7 +179,7 @@ public class ContentController : ControllerBase
     [HttpGet("publishing-summary")]
     public async Task<IActionResult> GetPublishingSummary()
     {
-        var orgId = await GetOrganizationIdAsync();
+        var orgId = await _currentOrg.GetOrganizationIdAsync(User);
         if (orgId == null) return Unauthorized("User not found or unlinked.");
 
         var result = await _mediator.Send(new GetPublishingSummaryQuery { OrganizationId = orgId.Value });

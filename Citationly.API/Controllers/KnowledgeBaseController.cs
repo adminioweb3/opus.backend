@@ -1,9 +1,9 @@
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Citationly.API.Services;
 using Citationly.Application.Features.KnowledgeBases;
 using Citationly.Application.Interfaces;
-using System.Security.Claims;
 
 namespace Citationly.API.Controllers;
 
@@ -13,29 +13,20 @@ namespace Citationly.API.Controllers;
 public class KnowledgeBaseController : ControllerBase
 {
     private readonly IMediator _mediator;
-    private readonly IUserRepository _userRepository;
+    private readonly ICurrentOrganizationAccessor _currentOrg;
     private readonly IKnowledgeBaseRepository _knowledgeBaseRepository;
 
-    public KnowledgeBaseController(IMediator mediator, IUserRepository userRepository, IKnowledgeBaseRepository knowledgeBaseRepository)
+    public KnowledgeBaseController(IMediator mediator, ICurrentOrganizationAccessor currentOrg, IKnowledgeBaseRepository knowledgeBaseRepository)
     {
         _mediator = mediator;
-        _userRepository = userRepository;
+        _currentOrg = currentOrg;
         _knowledgeBaseRepository = knowledgeBaseRepository;
-    }
-
-    private async Task<Guid?> GetOrganizationIdAsync()
-    {
-        var firebaseUid = User.FindFirst("user_id")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-        if (string.IsNullOrEmpty(firebaseUid)) return null;
-
-        var user = await _userRepository.GetUserByFirebaseUidAsync(firebaseUid);
-        return user?.OrganizationId;
     }
 
     [HttpGet]
     public async Task<IActionResult> GetKnowledgeBases()
     {
-        var orgId = await GetOrganizationIdAsync();
+        var orgId = await _currentOrg.GetOrganizationIdAsync(User);
         if (orgId == null) return Unauthorized("User not found or unlinked.");
 
         var result = await _mediator.Send(new GetKnowledgeBasesQuery { OrganizationId = orgId.Value });
@@ -45,7 +36,7 @@ public class KnowledgeBaseController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> CreateKnowledgeBase([FromBody] CreateKnowledgeBaseRequest request)
     {
-        var orgId = await GetOrganizationIdAsync();
+        var orgId = await _currentOrg.GetOrganizationIdAsync(User);
         if (orgId == null) return Unauthorized("User not found or unlinked.");
 
         var command = new CreateKnowledgeBaseCommand
@@ -66,7 +57,7 @@ public class KnowledgeBaseController : ControllerBase
     [HttpPost("{id}/ask")]
     public async Task<IActionResult> AskKnowledgeBase(Guid id, [FromBody] AskKnowledgeBaseRequest request)
     {
-        var orgId = await GetOrganizationIdAsync();
+        var orgId = await _currentOrg.GetOrganizationIdAsync(User);
         if (orgId == null) return Unauthorized("User not found or unlinked.");
 
         var kb = await _knowledgeBaseRepository.GetByIdAsync(id);

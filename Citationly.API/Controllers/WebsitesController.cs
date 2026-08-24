@@ -1,9 +1,8 @@
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Citationly.API.Services;
 using Citationly.Application.Features.Websites;
-using Citationly.Application.Interfaces;
-using System.Security.Claims;
 
 namespace Citationly.API.Controllers;
 
@@ -13,27 +12,18 @@ namespace Citationly.API.Controllers;
 public class WebsitesController : ControllerBase
 {
     private readonly IMediator _mediator;
-    private readonly IUserRepository _userRepository;
+    private readonly ICurrentOrganizationAccessor _currentOrg;
 
-    public WebsitesController(IMediator mediator, IUserRepository userRepository)
+    public WebsitesController(IMediator mediator, ICurrentOrganizationAccessor currentOrg)
     {
         _mediator = mediator;
-        _userRepository = userRepository;
-    }
-
-    private async Task<Guid?> GetOrganizationIdAsync()
-    {
-        var firebaseUid = User.FindFirst("user_id")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-        if (string.IsNullOrEmpty(firebaseUid)) return null;
-
-        var user = await _userRepository.GetUserByFirebaseUidAsync(firebaseUid);
-        return user?.OrganizationId;
+        _currentOrg = currentOrg;
     }
 
     [HttpGet]
     public async Task<IActionResult> GetWebsites()
     {
-        var orgId = await GetOrganizationIdAsync();
+        var orgId = await _currentOrg.GetOrganizationIdAsync(User);
         if (orgId == null) return Unauthorized("User not found or unlinked.");
 
         var result = await _mediator.Send(new GetWebsitesQuery { OrganizationId = orgId.Value });
@@ -43,7 +33,7 @@ public class WebsitesController : ControllerBase
     [HttpPost("connect")]
     public async Task<IActionResult> ConnectWebsite([FromBody] ConnectWebsiteRequest request)
     {
-        var orgId = await GetOrganizationIdAsync();
+        var orgId = await _currentOrg.GetOrganizationIdAsync(User);
         if (orgId == null) return Unauthorized("User not found or unlinked.");
 
         var command = new ConnectWebsiteCommand

@@ -1,6 +1,6 @@
-using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
+using Citationly.API.Services;
 using Citationly.Application.Interfaces;
 using Citationly.Domain.Entities;
 using Microsoft.AspNetCore.Authorization;
@@ -13,28 +13,19 @@ namespace Citationly.API.Controllers;
 [Route("api/[controller]")]
 public class ApiKeysController : ControllerBase
 {
-    private readonly IUserRepository _userRepository;
+    private readonly ICurrentOrganizationAccessor _currentOrg;
     private readonly IApiKeyRepository _apiKeyRepository;
 
-    public ApiKeysController(IUserRepository userRepository, IApiKeyRepository apiKeyRepository)
+    public ApiKeysController(ICurrentOrganizationAccessor currentOrg, IApiKeyRepository apiKeyRepository)
     {
-        _userRepository = userRepository;
+        _currentOrg = currentOrg;
         _apiKeyRepository = apiKeyRepository;
-    }
-
-    private async Task<Guid?> GetOrganizationIdAsync()
-    {
-        var firebaseUid = User.FindFirst("user_id")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-        if (string.IsNullOrWhiteSpace(firebaseUid)) return null;
-
-        var user = await _userRepository.GetUserByFirebaseUidAsync(firebaseUid);
-        return user?.OrganizationId;
     }
 
     [HttpGet]
     public async Task<IActionResult> Get()
     {
-        var orgId = await GetOrganizationIdAsync();
+        var orgId = await _currentOrg.GetOrganizationIdAsync(User);
         if (orgId == null) return Unauthorized("User not found or unlinked.");
 
         var keys = await _apiKeyRepository.GetApiKeysByOrgAsync(orgId.Value);
@@ -53,7 +44,7 @@ public class ApiKeysController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> Generate([FromBody] GenerateApiKeyRequest request)
     {
-        var orgId = await GetOrganizationIdAsync();
+        var orgId = await _currentOrg.GetOrganizationIdAsync(User);
         if (orgId == null) return Unauthorized("User not found or unlinked.");
 
         var name = request.Name?.Trim();
@@ -98,7 +89,7 @@ public class ApiKeysController : ControllerBase
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Revoke(Guid id)
     {
-        var orgId = await GetOrganizationIdAsync();
+        var orgId = await _currentOrg.GetOrganizationIdAsync(User);
         if (orgId == null) return Unauthorized("User not found or unlinked.");
 
         var revoked = await _apiKeyRepository.RevokeApiKeyAsync(id, orgId.Value, DateTime.UtcNow);

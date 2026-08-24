@@ -1,4 +1,4 @@
-using System.Security.Claims;
+using Citationly.API.Services;
 using Citationly.Application.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -11,32 +11,23 @@ namespace Citationly.API.Controllers;
 public class AnalysisController : ControllerBase
 {
     private readonly IAnalysisRepository _repository;
-    private readonly IUserRepository _userRepository;
+    private readonly ICurrentOrganizationAccessor _currentOrg;
     private readonly IAnalysisOrchestrator _orchestrator;
 
     public AnalysisController(
-        IAnalysisRepository repository, 
-        IUserRepository userRepository,
+        IAnalysisRepository repository,
+        ICurrentOrganizationAccessor currentOrg,
         IAnalysisOrchestrator orchestrator)
     {
         _repository = repository;
-        _userRepository = userRepository;
+        _currentOrg = currentOrg;
         _orchestrator = orchestrator;
-    }
-
-    private async Task<Guid?> GetOrganizationIdAsync()
-    {
-        var firebaseUid = User.FindFirst("user_id")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-        if (string.IsNullOrEmpty(firebaseUid)) return null;
-
-        var user = await _userRepository.GetUserByFirebaseUidAsync(firebaseUid);
-        return user?.OrganizationId;
     }
 
     [HttpGet("latest")]
     public async Task<IActionResult> GetLatestDashboardSnapshot()
     {
-        var orgId = await GetOrganizationIdAsync();
+        var orgId = await _currentOrg.GetOrganizationIdAsync(User);
         if (orgId == null) return Unauthorized();
 
         var snapshot = await _repository.GetLatestDashboardSnapshotAsync(orgId.Value);
@@ -51,7 +42,7 @@ public class AnalysisController : ControllerBase
     [HttpGet("stream")]
     public async Task ExecuteAnalysisStream([FromQuery] Guid? websiteId)
     {
-        var orgId = await GetOrganizationIdAsync();
+        var orgId = await _currentOrg.GetOrganizationIdAsync(User);
         if (orgId == null)
         {
             Response.StatusCode = 401;

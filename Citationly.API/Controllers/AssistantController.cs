@@ -1,7 +1,7 @@
+using Citationly.API.Services;
 using Citationly.Application.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using System.Security.Claims;
 using System.Text.Json;
 using System.Text;
 
@@ -14,34 +14,25 @@ public class AssistantController : ControllerBase
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IConfiguration _configuration;
-    private readonly IUserRepository _userRepository;
+    private readonly ICurrentOrganizationAccessor _currentOrg;
     private readonly IWebsiteRepository _websiteRepository;
     private readonly IMetricsRepository _metricsRepository;
     private readonly Citationly.Application.Interfaces.IDbConnectionFactory _dbConnectionFactory;
 
     public AssistantController(
-        IHttpClientFactory httpClientFactory, 
+        IHttpClientFactory httpClientFactory,
         IConfiguration configuration,
-        IUserRepository userRepository,
+        ICurrentOrganizationAccessor currentOrg,
         IWebsiteRepository websiteRepository,
         IMetricsRepository metricsRepository,
         Citationly.Application.Interfaces.IDbConnectionFactory dbConnectionFactory)
     {
         _httpClientFactory = httpClientFactory;
         _configuration = configuration;
-        _userRepository = userRepository;
+        _currentOrg = currentOrg;
         _websiteRepository = websiteRepository;
         _metricsRepository = metricsRepository;
         _dbConnectionFactory = dbConnectionFactory;
-    }
-
-    private async Task<Guid?> GetOrganizationIdAsync()
-    {
-        var firebaseUid = User.FindFirst("user_id")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-        if (string.IsNullOrEmpty(firebaseUid)) return null;
-
-        var user = await _userRepository.GetUserByFirebaseUidAsync(firebaseUid);
-        return user?.OrganizationId;
     }
 
     [HttpGet("recent")]
@@ -68,7 +59,7 @@ public class AssistantController : ControllerBase
         Response.Headers.Add("Cache-Control", "no-cache");
         Response.Headers.Add("Connection", "keep-alive");
 
-        var orgId = await GetOrganizationIdAsync();
+        var orgId = await _currentOrg.GetOrganizationIdAsync(User);
         
         await foreach (var status in orchestrator.ExecutePipelineAsync(orgId, request.Message, request.History, HttpContext.RequestAborted))
         {
