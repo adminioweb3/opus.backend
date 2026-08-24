@@ -15,24 +15,15 @@ public class AssistantController : ControllerBase
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IConfiguration _configuration;
     private readonly ICurrentOrganizationAccessor _currentOrg;
-    private readonly IWebsiteRepository _websiteRepository;
-    private readonly IMetricsRepository _metricsRepository;
-    private readonly Citationly.Application.Interfaces.IDbConnectionFactory _dbConnectionFactory;
 
     public AssistantController(
         IHttpClientFactory httpClientFactory,
         IConfiguration configuration,
-        ICurrentOrganizationAccessor currentOrg,
-        IWebsiteRepository websiteRepository,
-        IMetricsRepository metricsRepository,
-        Citationly.Application.Interfaces.IDbConnectionFactory dbConnectionFactory)
+        ICurrentOrganizationAccessor currentOrg)
     {
         _httpClientFactory = httpClientFactory;
         _configuration = configuration;
         _currentOrg = currentOrg;
-        _websiteRepository = websiteRepository;
-        _metricsRepository = metricsRepository;
-        _dbConnectionFactory = dbConnectionFactory;
     }
 
     [HttpGet("recent")]

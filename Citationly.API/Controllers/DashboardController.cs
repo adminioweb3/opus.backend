@@ -23,7 +23,6 @@ namespace Citationly.API.Controllers;
 public class DashboardController : ControllerBase
 {
     private readonly IAiVisibilityRepository _visibilityRepository;
-    private readonly IDbConnectionFactory _dbConnectionFactory;
     private readonly IMemoryCache _cache;
     private readonly GeoDashboardAggregator _aggregator;
     private readonly ICompetitorSnapshotRepository _snapshotRepository;
@@ -38,7 +37,6 @@ public class DashboardController : ControllerBase
 
     public DashboardController(
         IAiVisibilityRepository visibilityRepository,
-        IDbConnectionFactory dbConnectionFactory,
         IMemoryCache cache,
         GeoDashboardAggregator aggregator,
         ICompetitorSnapshotRepository snapshotRepository,
@@ -52,7 +50,6 @@ public class DashboardController : ControllerBase
         ICurrentOrganizationAccessor currentOrganization)
     {
         _visibilityRepository = visibilityRepository;
-        _dbConnectionFactory = dbConnectionFactory;
         _cache = cache;
         _aggregator = aggregator;
         _snapshotRepository = snapshotRepository;
@@ -286,26 +283,6 @@ public class DashboardController : ControllerBase
         // Validate range
         var validRanges = new HashSet<string> { "7D", "30D", "90D", "1Y" };
         if (!validRanges.Contains(range)) range = "30D";
-
-        // Self-healing migration for missing columns
-        try 
-        {
-            await _visibilityRepository.GetHistoricalScansByOrgAsync(orgGuid.Value);
-        }
-        catch (Exception)
-        {
-            try
-            {
-                using var connection = _dbConnectionFactory.CreateConnection();
-                var alterSql = @"ALTER TABLE HistoricalScans 
-                                 ADD COLUMN IF NOT EXISTS HallucinationRisk INT DEFAULT 0, 
-                                 ADD COLUMN IF NOT EXISTS SeoHealth INT DEFAULT 0, 
-                                 ADD COLUMN IF NOT EXISTS AeoReadiness INT DEFAULT 0, 
-                                 ADD COLUMN IF NOT EXISTS GeoReadiness INT DEFAULT 0;";
-                await connection.ExecuteAsync(alterSql);
-            }
-            catch { /* Ignore, next call will fail gracefully if it's a real issue */ }
-        }
 
         // Cache key = authenticated organization + range, 30-second TTL
         var cacheKey = $"geo-dash:{orgGuid.Value}:{range}";

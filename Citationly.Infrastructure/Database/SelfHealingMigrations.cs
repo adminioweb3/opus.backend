@@ -23,6 +23,15 @@ public static class SelfHealingMigrations
         ALTER TABLE Recommendations ADD COLUMN IF NOT EXISTS DeployedUrl VARCHAR(2048);
         UPDATE Organizations SET TrialEndsAt = CreatedAt + INTERVAL '7 days' WHERE TrialEndsAt IS NULL;
 
+        -- init.sql's CREATE TABLE HistoricalScans already includes these columns for a fresh DB,
+        -- but this ALTER was missing here for existing databases, so DashboardController used to
+        -- patch the live schema itself on request with a try/catch ALTER TABLE - that ad-hoc
+        -- request-time DDL has been removed now that it belongs in this file instead.
+        ALTER TABLE HistoricalScans ADD COLUMN IF NOT EXISTS HallucinationRisk INT DEFAULT 0;
+        ALTER TABLE HistoricalScans ADD COLUMN IF NOT EXISTS SeoHealth INT DEFAULT 0;
+        ALTER TABLE HistoricalScans ADD COLUMN IF NOT EXISTS AeoReadiness INT DEFAULT 0;
+        ALTER TABLE HistoricalScans ADD COLUMN IF NOT EXISTS GeoReadiness INT DEFAULT 0;
+
         -- Company Knowledge Graph: shared, deduplicated company directory for competitor discovery
         CREATE TABLE IF NOT EXISTS Company (
             Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
