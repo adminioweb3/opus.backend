@@ -38,7 +38,9 @@ For each prompt in the batch, generate the following metadata:
 - Intent: (Informational, Commercial, Transactional, Navigational, Comparative, Educational)
 - Persona: (Startup Founder, CTO, CEO, Product Manager, etc.)
 - Difficulty: (Easy, Medium, Hard)
-- MonthlySearchEstimate: (Very Low, Low, Medium, High, Very High)
+- EstimatedInterestLevel: your own qualitative guess at how much search interest this prompt
+  might attract, based only on the prompt text itself - NOT a real measurement. One of:
+  (Very Low, Low, Medium, High, Very High)
 - Region: (Global, North America, Europe, etc.)
 - Language: (English or specific language based on text)
 - CommercialValue: Score 1-10
@@ -58,7 +60,7 @@ Return exactly this schema:
       ""intent"": """",
       ""persona"": """",
       ""difficulty"": """",
-      ""monthlySearchEstimate"": """",
+      ""estimatedInterestLevel"": """",
       ""region"": """",
       ""language"": """",
       ""commercialValue"": 0,
@@ -110,7 +112,7 @@ Return exactly this schema:
                         promptEntity.Intent = enriched.intent;
                         promptEntity.Persona = enriched.persona;
                         promptEntity.Difficulty = enriched.difficulty;
-                        promptEntity.MonthlySearchEstimate = enriched.monthlySearchEstimate;
+                        promptEntity.EstimatedInterestLevel = enriched.estimatedInterestLevel;
                         promptEntity.Region = enriched.region;
                         promptEntity.Language = enriched.language;
                         promptEntity.CommercialValue = enriched.commercialValue;
@@ -140,7 +142,7 @@ Return exactly this schema:
         public string? intent { get; set; }
         public string? persona { get; set; }
         public string? difficulty { get; set; }
-        public string? monthlySearchEstimate { get; set; }
+        public string? estimatedInterestLevel { get; set; }
         public string? region { get; set; }
         public string? language { get; set; }
         public int commercialValue { get; set; }

@@ -288,15 +288,8 @@ public class WebsiteRepository : IWebsiteRepository
             connection.Open();
         }
 
-        // Auto-migrate schema for the new JSON properties
-        await connection.ExecuteAsync(@"
-            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Topic VARCHAR(255);
-            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Intent VARCHAR(100);
-            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Difficulty VARCHAR(50);
-            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Persona VARCHAR(255);
-            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS CommercialValue INTEGER DEFAULT 0;
-            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS RawJson JSONB DEFAULT '{}'::jsonb;
-        ");
+        // Schema for these columns lives in SelfHealingMigrations.cs (runs once at boot) - see
+        // the note in UpdateAiSearchPromptsAsync below for why this per-call ALTER TABLE was removed.
 
         using var transaction = connection.BeginTransaction();
 
@@ -399,16 +392,10 @@ public class WebsiteRepository : IWebsiteRepository
             connection.Open();
         }
 
-        // Auto-migrate schema for the new enrichment properties
-        await connection.ExecuteAsync(@"
-            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS MonthlySearchEstimate VARCHAR(50);
-            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Region VARCHAR(100);
-            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Language VARCHAR(50);
-            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS TopicValidation VARCHAR(255);
-            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS BuyerJourneyStage VARCHAR(100);
-            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS IsEnriched BOOLEAN DEFAULT FALSE;
-            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS EnrichedAt TIMESTAMP WITH TIME ZONE;
-        ");
+        // Schema for these columns lives in SelfHealingMigrations.cs (runs once at boot), not
+        // here - this method used to run the same ALTER TABLE on every single call, which is the
+        // request-time-DDL anti-pattern the roadmap's Phase 1 A2 already removed from
+        // DashboardController; this was the other instance of it.
 
         using var transaction = connection.BeginTransaction();
 
@@ -421,7 +408,7 @@ public class WebsiteRepository : IWebsiteRepository
                     SET Intent = @Intent,
                         Persona = @Persona,
                         Difficulty = @Difficulty,
-                        MonthlySearchEstimate = @MonthlySearchEstimate,
+                        EstimatedInterestLevel = @EstimatedInterestLevel,
                         Region = @Region,
                         Language = @Language,
                         CommercialValue = @CommercialValue,

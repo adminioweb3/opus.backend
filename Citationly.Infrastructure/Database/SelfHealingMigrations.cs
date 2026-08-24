@@ -43,6 +43,43 @@ public static class SelfHealingMigrations
         ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS CostUsd NUMERIC(10,6);
         ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS WasSearchGrounded BOOLEAN NOT NULL DEFAULT FALSE;
 
+        -- AiSearchPrompts enrichment columns - previously added via a per-call ALTER TABLE inside
+        -- WebsiteRepository.InsertAiSearchPromptsAsync/UpdateAiSearchPromptsAsync (the same
+        -- request-time-DDL anti-pattern Phase 1 A2 removed from DashboardController). Consolidated
+        -- here so it runs once at boot instead of on every write.
+        ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Topic VARCHAR(255);
+        ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Intent VARCHAR(100);
+        ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Difficulty VARCHAR(50);
+        ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Persona VARCHAR(255);
+        ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS CommercialValue INTEGER DEFAULT 0;
+        ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS RawJson JSONB DEFAULT '{}'::jsonb;
+        ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Region VARCHAR(100);
+        ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Language VARCHAR(50);
+        ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS TopicValidation VARCHAR(255);
+        ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS BuyerJourneyStage VARCHAR(100);
+        ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS IsEnriched BOOLEAN DEFAULT FALSE;
+        ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS EnrichedAt TIMESTAMP WITH TIME ZONE;
+
+        -- Phase 3 B3: ""MonthlySearchEstimate"" implied a real search-volume metric, but this
+        -- value has only ever been an LLM's qualitative guess - no search-volume API (SEMrush/
+        -- Ahrefs/DataForSEO/etc.) is integrated anywhere in this codebase. Renamed to
+        -- EstimatedInterestLevel so the column name itself doesn't misrepresent the data.
+        -- Idempotent rename: only fires once, when the old column exists and the new one doesn't.
+        DO $rename$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'aisearchprompts' AND column_name = 'monthlysearchestimate'
+            ) AND NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'aisearchprompts' AND column_name = 'estimatedinterestlevel'
+            ) THEN
+                ALTER TABLE AiSearchPrompts RENAME COLUMN MonthlySearchEstimate TO EstimatedInterestLevel;
+            END IF;
+        END;
+        $rename$;
+        ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS EstimatedInterestLevel VARCHAR(50);
+
         -- Immutable evidence enforcement (Phase 2 B2): once a raw AI response is stored, nothing
         -- may rewrite what was actually observed. The one legitimate post-hoc write is sentiment
         -- classification (SentimentClassifierService, run after the fact against the immutable

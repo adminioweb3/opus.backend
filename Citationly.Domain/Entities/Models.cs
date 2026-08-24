@@ -399,7 +399,11 @@ public class AiSearchPrompt
     public int ContentStrength { get; set; }
     public int CitationStrength { get; set; }
     public string? VisibilityReason { get; set; }
-    public string MonthlySearchEstimate { get; set; } = string.Empty;
+
+    /// <summary>An LLM's qualitative guess at how much search interest this prompt might have
+    /// (Very Low..Very High) - NOT sourced from any real search-volume API (no such integration
+    /// exists). Named to avoid implying real market data; see roadmap Phase 3 B3.</summary>
+    public string EstimatedInterestLevel { get; set; } = string.Empty;
     public string Region { get; set; } = string.Empty;
     public string Language { get; set; } = string.Empty;
     public string TopicValidation { get; set; } = string.Empty;
