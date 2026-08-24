@@ -103,6 +103,18 @@ public static class SelfHealingMigrations
             UNIQUE(OrganizationId, PlatformName)
         );
 
+        CREATE TABLE IF NOT EXISTS ApiKeys (
+            Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+            Name VARCHAR(255) NOT NULL,
+            KeyPrefix VARCHAR(32) NOT NULL,
+            KeyHash VARCHAR(128) NOT NULL UNIQUE,
+            Last4 VARCHAR(4) NOT NULL,
+            CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            RevokedAt TIMESTAMP WITH TIME ZONE
+        );
+        CREATE INDEX IF NOT EXISTS idx_apikeys_org_created ON ApiKeys (OrganizationId, CreatedAt DESC);
+
         CREATE TABLE IF NOT EXISTS ContentDrafts (
             Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,

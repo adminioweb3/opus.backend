@@ -1,7 +1,8 @@
 using System.Text;
 using System.Text.Json;
-using Microsoft.Extensions.Configuration;
+using Citationly.Application.Interfaces;
 using Citationly.Domain.Entities;
+using Microsoft.Extensions.Configuration;
 
 namespace Citationly.Application.Features.PromptIntelligence.Services;
 
@@ -20,16 +21,27 @@ public class LLMRunnerService : ILLMRunnerService
 {
     private readonly HttpClient _httpClient;
     private readonly string _openAiKey;
+    private readonly IAiRequestContextAccessor _aiContext;
+    private readonly IAiUsageLimiter _aiUsageLimiter;
+    private readonly IAiResilienceService _aiResilience;
 
     private static readonly string[] PlatformNames =
     {
         "ChatGPT", "Claude", "Gemini"
     };
 
-    public LLMRunnerService(HttpClient httpClient, IConfiguration configuration)
+    public LLMRunnerService(
+        HttpClient httpClient,
+        IConfiguration configuration,
+        IAiRequestContextAccessor aiContext,
+        IAiUsageLimiter aiUsageLimiter,
+        IAiResilienceService aiResilience)
     {
         _httpClient = httpClient;
         _openAiKey = configuration["OpenAI:ApiKey"] ?? string.Empty;
+        _aiContext = aiContext;
+        _aiUsageLimiter = aiUsageLimiter;
+        _aiResilience = aiResilience;
     }
 
     public async Task<IEnumerable<PromptResponse>> RunPromptAcrossModelsAsync(Guid analysisId, string promptText, CancellationToken ct, string? personaSystemPrompt = null)
@@ -48,6 +60,7 @@ public class LLMRunnerService : ILLMRunnerService
                 throw new InvalidOperationException("OpenAI API key is required to generate real data. Simulated responses are disabled.");
             }
 
+            await _aiUsageLimiter.EnsureWithinLimitsAsync(_aiContext.OrganizationId, $"prompt-intelligence:{platformName}", ct);
             string responseText = await CallOpenAiAsync(promptText, platformName, ct, personaSystemPrompt);
 
             return new PromptResponse
@@ -74,9 +87,6 @@ public class LLMRunnerService : ILLMRunnerService
 
     private async Task<string> CallOpenAiAsync(string promptText, string platformName, CancellationToken ct, string? personaSystemPrompt)
     {
-        var request = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/chat/completions");
-        request.Headers.Add("Authorization", $"Bearer {_openAiKey}");
-
         string platformActing = platformName == "ChatGPT"
             ? "You are ChatGPT."
             : $"You are acting as {platformName}. Respond in a style typical of {platformName}.";
@@ -95,17 +105,27 @@ public class LLMRunnerService : ILLMRunnerService
             max_tokens = 700
         };
 
-        request.Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
-
-        var response = await _httpClient.SendAsync(request, ct);
-        if (!response.IsSuccessStatusCode)
+        return await _aiResilience.ExecuteAsync($"prompt-intelligence:{platformName}", async innerCt =>
         {
-            var errorBody = await response.Content.ReadAsStringAsync(ct);
-            throw new HttpRequestException($"OpenAI call for platform '{platformName}' failed: {response.StatusCode} — {errorBody}");
-        }
+            using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/chat/completions");
+            request.Headers.Add("Authorization", $"Bearer {_openAiKey}");
+            request.Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
 
-        var json = await response.Content.ReadAsStringAsync(ct);
-        using var doc = JsonDocument.Parse(json);
-        return doc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString() ?? "";
+            var response = await _httpClient.SendAsync(request, innerCt);
+            var responseText = await response.Content.ReadAsStringAsync(innerCt);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests || (int)response.StatusCode >= 500)
+                {
+                    throw new HttpRequestException($"OpenAI call for platform '{platformName}' failed: {response.StatusCode}");
+                }
+
+                throw new InvalidOperationException($"OpenAI call for platform '{platformName}' failed: {response.StatusCode} — {responseText}");
+            }
+
+            using var doc = JsonDocument.Parse(responseText);
+            return doc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString() ?? "";
+        }, ct);
     }
 }

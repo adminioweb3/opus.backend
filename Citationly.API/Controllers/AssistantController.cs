@@ -17,7 +17,6 @@ public class AssistantController : ControllerBase
     private readonly IUserRepository _userRepository;
     private readonly IWebsiteRepository _websiteRepository;
     private readonly IMetricsRepository _metricsRepository;
-    private readonly ISearchService _searchService;
     private readonly Citationly.Application.Interfaces.IDbConnectionFactory _dbConnectionFactory;
 
     public AssistantController(
@@ -26,7 +25,6 @@ public class AssistantController : ControllerBase
         IUserRepository userRepository,
         IWebsiteRepository websiteRepository,
         IMetricsRepository metricsRepository,
-        ISearchService searchService,
         Citationly.Application.Interfaces.IDbConnectionFactory dbConnectionFactory)
     {
         _httpClientFactory = httpClientFactory;
@@ -34,7 +32,6 @@ public class AssistantController : ControllerBase
         _userRepository = userRepository;
         _websiteRepository = websiteRepository;
         _metricsRepository = metricsRepository;
-        _searchService = searchService;
         _dbConnectionFactory = dbConnectionFactory;
     }
 

@@ -5,6 +5,7 @@ using Citationly.Domain.Entities;
 using Hangfire;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Citationly.API.Services;
 
 namespace Citationly.API.Controllers;
 
@@ -18,38 +19,34 @@ public class ScraperController : ControllerBase
     private readonly IBackgroundJobClient _backgroundJobClient;
     private readonly IMarkdownGeneratorService _markdownGenerator;
     private readonly ILogger<ScraperController> _logger;
+    private readonly ICurrentOrganizationAccessor _currentOrganization;
 
     public ScraperController(
         IScrapingJobRepository repository,
         IBackgroundJobClient backgroundJobClient,
         IMarkdownGeneratorService markdownGenerator,
-        ILogger<ScraperController> logger)
+        ILogger<ScraperController> logger,
+        ICurrentOrganizationAccessor currentOrganization)
     {
         _repository = repository;
         _backgroundJobClient = backgroundJobClient;
         _markdownGenerator = markdownGenerator;
         _logger = logger;
+        _currentOrganization = currentOrganization;
     }
 
     // POST /api/scraper/start
     [HttpPost("start")]
     public async Task<IActionResult> StartScraping([FromBody] StartScrapeRequest request)
     {
-        if (string.IsNullOrEmpty(request.OrganizationId))
-            return BadRequest(new { message = "OrganizationId is required." });
-
-        if (!Guid.TryParse(request.OrganizationId, out var orgGuid) || orgGuid == Guid.Empty)
-        {
-            // If it's a mock string like "org_acme_001", just return a dummy JobId
-            // so the frontend can still simulate the progress bar!
-            return Ok(new { JobId = Guid.NewGuid(), Status = "Pending" });
-        }
+        var orgGuid = await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
+        if (orgGuid is null) return Unauthorized();
 
         try
         {
             // A scrape/crawl for this exact URL is already in flight — return that job
             // instead of starting a second, duplicate crawl of the same site.
-            var existingJob = await _repository.GetActiveJobForUrlAsync(orgGuid, request.Url);
+            var existingJob = await _repository.GetActiveJobForUrlAsync(orgGuid.Value, request.Url);
             if (existingJob != null)
             {
                 return Ok(new { JobId = existingJob.Id, Status = existingJob.Status });
@@ -60,7 +57,7 @@ public class ScraperController : ControllerBase
 
             var job = new ScrapingJob
             {
-                OrganizationId = orgGuid,
+                OrganizationId = orgGuid.Value,
                 KnowledgeBaseId = knowledgeBaseId,
                 FolderId = folderId,
                 Url = request.Url,
@@ -79,21 +76,21 @@ public class ScraperController : ControllerBase
             // "simulate" a Pending job — that just guaranteed a later 404 on /result/{jobId} once
             // the frontend polled it, and hid whatever the real failure was (FK violation, schema
             // issue, etc.) from ever being logged. Surface it for real instead.
-            _logger.LogError(ex, "Failed to create scraping job for organization {OrganizationId}, url {Url}", request.OrganizationId, request.Url);
+            _logger.LogError(ex, "Failed to create scraping job for authenticated organization {OrganizationId}, url {Url}", orgGuid, request.Url);
             return StatusCode(500, new { message = "Failed to start scraping job. Please try again." });
         }
     }
 
-    // GET /api/scraper/jobs?organizationId=xxx&knowledgeBaseId=yyy
+    // GET /api/scraper/jobs?knowledgeBaseId=yyy
     [HttpGet("jobs")]
-    public async Task<IActionResult> GetJobs([FromQuery] Guid organizationId, [FromQuery] Guid? knowledgeBaseId)
+    public async Task<IActionResult> GetJobs([FromQuery] Guid? knowledgeBaseId)
     {
-        if (organizationId == Guid.Empty)
-            return BadRequest(new { message = "OrganizationId is required." });
+        var organizationId = await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
+        if (organizationId is null) return Unauthorized();
 
         var jobs = knowledgeBaseId.HasValue && knowledgeBaseId.Value != Guid.Empty
-            ? await _repository.GetJobsByOrgAndKbAsync(organizationId, knowledgeBaseId.Value)
-            : await _repository.GetAllJobsByOrgAsync(organizationId);
+            ? await _repository.GetJobsByOrgAndKbAsync(organizationId.Value, knowledgeBaseId.Value)
+            : await _repository.GetAllJobsByOrgAsync(organizationId.Value);
 
         var result = new List<object>();
         foreach (var job in jobs)
@@ -127,7 +124,7 @@ public class ScraperController : ControllerBase
     [HttpGet("status/{jobId}")]
     public async Task<IActionResult> GetStatus(Guid jobId)
     {
-        var job = await _repository.GetJobAsync(jobId);
+        var job = await GetOwnedJobAsync(jobId);
         if (job == null) return NotFound();
 
         return Ok(new
@@ -145,7 +142,7 @@ public class ScraperController : ControllerBase
     [HttpGet("result/{jobId}")]
     public async Task<IActionResult> GetResult(Guid jobId)
     {
-        var job = await _repository.GetJobAsync(jobId);
+        var job = await GetOwnedJobAsync(jobId);
         if (job == null) return NotFound();
 
         var pages = await _repository.GetPagesByJobIdAsync(jobId);
@@ -160,6 +157,7 @@ public class ScraperController : ControllerBase
     {
         var page = await _repository.GetPageAsync(pageId);
         if (page == null) return NotFound();
+        if (await GetOwnedJobAsync(page.JobId) == null) return NotFound();
 
         return Ok(MapPageResult(page));
     }
@@ -189,7 +187,7 @@ public class ScraperController : ControllerBase
     [HttpGet("download/{jobId}")]
     public async Task<IActionResult> DownloadMarkdown(Guid jobId)
     {
-        var job = await _repository.GetJobAsync(jobId);
+        var job = await GetOwnedJobAsync(jobId);
         if (job == null) return NotFound();
 
         var pages = await _repository.GetPagesByJobIdAsync(jobId);
@@ -217,7 +215,7 @@ public class ScraperController : ControllerBase
     [HttpDelete("jobs/{jobId}")]
     public async Task<IActionResult> DeleteJob(Guid jobId)
     {
-        var job = await _repository.GetJobAsync(jobId);
+        var job = await GetOwnedJobAsync(jobId);
         if (job == null) return NotFound();
 
         await _repository.DeleteJobAsync(jobId);
@@ -228,8 +226,20 @@ public class ScraperController : ControllerBase
     [HttpDelete("pages/{pageId}")]
     public async Task<IActionResult> DeletePage(Guid pageId)
     {
+        var page = await _repository.GetPageAsync(pageId);
+        if (page == null || await GetOwnedJobAsync(page.JobId) == null) return NotFound();
+
         await _repository.DeletePageAsync(pageId);
         return Ok(new { message = "Page deleted successfully." });
+    }
+
+    private async Task<ScrapingJob?> GetOwnedJobAsync(Guid jobId)
+    {
+        var organizationId = await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
+        if (organizationId is null) return null;
+
+        var job = await _repository.GetJobAsync(jobId);
+        return job?.OrganizationId == organizationId.Value ? job : null;
     }
 
     private static string GetDisplayName(ScrapingJob job)
@@ -290,7 +300,6 @@ public class ScraperController : ControllerBase
 
 public class StartScrapeRequest
 {
-    public string OrganizationId { get; set; } = string.Empty;
     public string? KnowledgeBaseId { get; set; }
     public string? FolderId { get; set; }
     public string Url { get; set; } = string.Empty;

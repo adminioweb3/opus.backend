@@ -37,6 +37,7 @@ public class VisibilityCalculatorService : IVisibilityCalculatorService
         {
             // Simple text analysis
             var text = response.ResponseText;
+            brandCitationCount += Regex.Matches(text, @"https?://[^\s)\]]+").Count;
             // Extract Brand Mentions
             var brandIdx = text.IndexOf(brandName, StringComparison.OrdinalIgnoreCase);
             if (brandIdx >= 0)

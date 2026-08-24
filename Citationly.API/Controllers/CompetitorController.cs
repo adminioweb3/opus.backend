@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Citationly.Application.Interfaces;
 using Citationly.Application.Interfaces.Competitors;
+using Citationly.API.Services;
 
 namespace Citationly.API.Controllers;
 
@@ -14,26 +15,32 @@ public class CompetitorController : ControllerBase
     private readonly ICompetitorRankingService _rankingService;
     private readonly IWebsiteRepository _websiteRepository;
     private readonly ICompetitorCacheService _cacheService;
+    private readonly ICurrentOrganizationAccessor _currentOrganization;
 
     public CompetitorController(
         ICompetitorRankingService rankingService,
         IWebsiteRepository websiteRepository,
-        ICompetitorCacheService cacheService)
+        ICompetitorCacheService cacheService,
+        ICurrentOrganizationAccessor currentOrganization)
     {
         _rankingService = rankingService;
         _websiteRepository = websiteRepository;
         _cacheService = cacheService;
+        _currentOrganization = currentOrganization;
     }
 
     /// <summary>
     /// Returns the full competitive ranking dashboard with chart data.
     /// </summary>
-    [HttpGet("{organizationId}/rankings")]
-    public async Task<IActionResult> GetRankings(Guid organizationId)
+    [HttpGet("rankings")]
+    public async Task<IActionResult> GetRankings()
     {
         try
         {
-            var result = await _rankingService.ComputeRankingsAsync(organizationId, HttpContext.RequestAborted);
+            var organizationId = await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
+            if (organizationId is null) return Unauthorized();
+
+            var result = await _rankingService.ComputeRankingsAsync(organizationId.Value, HttpContext.RequestAborted);
             return Ok(result);
         }
         catch (Exception ex)
@@ -45,10 +52,13 @@ public class CompetitorController : ControllerBase
     /// <summary>
     /// Returns the enrichment status for all competitors of an organization.
     /// </summary>
-    [HttpGet("{organizationId}/enrichment-status")]
-    public async Task<IActionResult> GetEnrichmentStatus(Guid organizationId)
+    [HttpGet("enrichment-status")]
+    public async Task<IActionResult> GetEnrichmentStatus()
     {
-        var competitors = await _websiteRepository.GetCompetitorsAsync(organizationId);
+        var organizationId = await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
+        if (organizationId is null) return Unauthorized();
+
+        var competitors = await _websiteRepository.GetCompetitorsAsync(organizationId.Value);
         var list = competitors.ToList();
 
         var result = new
@@ -78,10 +88,13 @@ public class CompetitorController : ControllerBase
     /// <summary>
     /// Force re-discovery and re-enrichment for an organization.
     /// </summary>
-    [HttpPost("{organizationId}/refresh")]
-    public async Task<IActionResult> Refresh(Guid organizationId)
+    [HttpPost("refresh")]
+    public async Task<IActionResult> Refresh()
     {
-        await _cacheService.InvalidateCacheAsync(organizationId, HttpContext.RequestAborted);
+        var organizationId = await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
+        if (organizationId is null) return Unauthorized();
+
+        await _cacheService.InvalidateCacheAsync(organizationId.Value, HttpContext.RequestAborted);
         return Ok(new { message = "Cache invalidated. Run analyze-competitors again to re-discover." });
     }
 }

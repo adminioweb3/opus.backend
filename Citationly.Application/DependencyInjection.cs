@@ -1,7 +1,9 @@
 using Microsoft.Extensions.DependencyInjection;
 using System.Reflection;
+using Citationly.Application.Behaviors;
 using Citationly.Application.Features.Assistant.Pipeline;
 using Citationly.Application.Features.Assistant.Services;
+using MediatR;
 
 namespace Citationly.Application;
 
@@ -10,6 +12,7 @@ public static class DependencyInjection
     public static IServiceCollection AddApplication(this IServiceCollection services)
     {
         services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(Assembly.GetExecutingAssembly()));
+        services.AddTransient(typeof(IPipelineBehavior<,>), typeof(AiRequestContextBehavior<,>));
         
         // Assistant Pipeline Services
         services.AddScoped<OpenAiClientService>();

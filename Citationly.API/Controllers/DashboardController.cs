@@ -13,6 +13,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Memory;
 using Dapper;
 using System.Text.Json;
+using Citationly.API.Services;
 
 namespace Citationly.API.Controllers;
 
@@ -33,6 +34,7 @@ public class DashboardController : ControllerBase
     private readonly OpportunityFinderAggregator _opportunityAggregator;
     private readonly IOpportunitySnapshotRepository _opportunitySnapshotRepository;
     private readonly IMediator _mediator;
+    private readonly ICurrentOrganizationAccessor _currentOrganization;
 
     public DashboardController(
         IAiVisibilityRepository visibilityRepository,
@@ -46,7 +48,8 @@ public class DashboardController : ControllerBase
         CommandCenterAggregator commandCenterAggregator,
         OpportunityFinderAggregator opportunityAggregator,
         IOpportunitySnapshotRepository opportunitySnapshotRepository,
-        IMediator mediator)
+        IMediator mediator,
+        ICurrentOrganizationAccessor currentOrganization)
     {
         _visibilityRepository = visibilityRepository;
         _dbConnectionFactory = dbConnectionFactory;
@@ -60,20 +63,22 @@ public class DashboardController : ControllerBase
         _opportunityAggregator = opportunityAggregator;
         _opportunitySnapshotRepository = opportunitySnapshotRepository;
         _mediator = mediator;
+        _currentOrganization = currentOrganization;
     }
 
     [HttpGet("visibility-summary")]
-    public async Task<IActionResult> GetVisibilitySummary([FromQuery] Guid organizationId)
+    public async Task<IActionResult> GetVisibilitySummary()
     {
-        if (organizationId == Guid.Empty) return BadRequest("OrganizationId is required.");
+        var organizationId = await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
+        if (organizationId is null) return Unauthorized();
 
-        var scans = await _visibilityRepository.GetHistoricalScansByOrgAsync(organizationId);
+        var scans = await _visibilityRepository.GetHistoricalScansByOrgAsync(organizationId.Value);
         var latestScan = scans.LastOrDefault();
 
         if (latestScan == null)
             return Ok(new { message = "No data yet. Scan might be running." });
 
-        var competitors = await _visibilityRepository.GetCompetitorsByOrgAsync(organizationId);
+        var competitors = await _visibilityRepository.GetCompetitorsByOrgAsync(organizationId.Value);
 
         return Ok(new
         {
@@ -88,20 +93,22 @@ public class DashboardController : ControllerBase
     }
 
     [HttpGet("top-competitors")]
-    public async Task<IActionResult> GetTopCompetitors([FromQuery] Guid organizationId)
+    public async Task<IActionResult> GetTopCompetitors()
     {
-        if (organizationId == Guid.Empty) return BadRequest("OrganizationId is required.");
+        var organizationId = await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
+        if (organizationId is null) return Unauthorized();
 
-        var competitors = await _visibilityRepository.GetCompetitorsByOrgAsync(organizationId);
+        var competitors = await _visibilityRepository.GetCompetitorsByOrgAsync(organizationId.Value);
         return Ok(competitors);
     }
 
     [HttpGet("visibility-trend")]
-    public async Task<IActionResult> GetVisibilityTrend([FromQuery] Guid organizationId)
+    public async Task<IActionResult> GetVisibilityTrend()
     {
-        if (organizationId == Guid.Empty) return BadRequest("OrganizationId is required.");
+        var organizationId = await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
+        if (organizationId is null) return Unauthorized();
 
-        var scans = await _visibilityRepository.GetHistoricalScansByOrgAsync(organizationId);
+        var scans = await _visibilityRepository.GetHistoricalScansByOrgAsync(organizationId.Value);
         
         var trend = scans.Select(s => new
         {
@@ -114,11 +121,12 @@ public class DashboardController : ControllerBase
     }
     
     [HttpGet("share-of-voice")]
-    public async Task<IActionResult> GetShareOfVoice([FromQuery] Guid organizationId)
+    public async Task<IActionResult> GetShareOfVoice()
     {
-        if (organizationId == Guid.Empty) return BadRequest("OrganizationId is required.");
+        var organizationId = await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
+        if (organizationId is null) return Unauthorized();
 
-        var shareOfVoice = await _visibilityRepository.GetShareOfVoiceByOrgAsync(organizationId);
+        var shareOfVoice = await _visibilityRepository.GetShareOfVoiceByOrgAsync(organizationId.Value);
         
         // Group by scan date and return the latest
         var latestScanDate = shareOfVoice.OrderByDescending(s => s.ScanDate).FirstOrDefault()?.ScanDate;
@@ -140,37 +148,37 @@ public class DashboardController : ControllerBase
     private static readonly string[] CompetitorPalette = { "#7C3AED", "#2563EB", "#14B8A6", "#D97706", "#DB2777" };
 
     [HttpGet("competitor-watch")]
-    public async Task<IActionResult> GetCompetitorWatch([FromQuery] string organizationId)
+    public async Task<IActionResult> GetCompetitorWatch()
     {
-        if (!Guid.TryParse(organizationId, out var orgGuid))
-            return BadRequest("Invalid organizationId format.");
+        var orgGuid = await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
+        if (orgGuid is null) return Unauthorized();
 
         await _snapshotRepository.EnsureTableCreatedAsync();
 
-        var latestScanDate = await _snapshotRepository.GetLatestScanDateAsync(orgGuid);
+        var latestScanDate = await _snapshotRepository.GetLatestScanDateAsync(orgGuid.Value);
         if (latestScanDate == null)
         {
-            await _mediator.Send(new RunCompetitorScanCommand { OrganizationId = orgGuid });
+            await _mediator.Send(new RunCompetitorScanCommand { OrganizationId = orgGuid.Value });
         }
 
-        return await BuildCompetitorWatchResponseAsync(orgGuid);
+        return await BuildCompetitorWatchResponseAsync(orgGuid.Value);
     }
 
     [HttpPost("competitor-watch/rescan")]
-    public async Task<IActionResult> RescanCompetitorWatch([FromQuery] string organizationId)
+    public async Task<IActionResult> RescanCompetitorWatch()
     {
-        if (!Guid.TryParse(organizationId, out var orgGuid))
-            return BadRequest("Invalid organizationId format.");
+        var orgGuid = await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
+        if (orgGuid is null) return Unauthorized();
 
         await _snapshotRepository.EnsureTableCreatedAsync();
 
-        var result = await _mediator.Send(new RunCompetitorScanCommand { OrganizationId = orgGuid });
+        var result = await _mediator.Send(new RunCompetitorScanCommand { OrganizationId = orgGuid.Value });
         if (!result.Success)
         {
             return BadRequest(new { message = result.Message });
         }
 
-        return await BuildCompetitorWatchResponseAsync(orgGuid);
+        return await BuildCompetitorWatchResponseAsync(orgGuid.Value);
     }
 
     private async Task<IActionResult> BuildCompetitorWatchResponseAsync(Guid orgGuid)
@@ -270,13 +278,10 @@ public class DashboardController : ControllerBase
 
     [HttpGet("geo-dashboard")]
     public async Task<IActionResult> GetGeoDashboard(
-        [FromQuery] string organizationId,
         [FromQuery] string range = "30D")
     {
-        if (string.IsNullOrEmpty(organizationId) || !Guid.TryParse(organizationId, out var orgGuid) || orgGuid == Guid.Empty)
-        {
-            return Ok(new { message = "Invalid or missing OrganizationId." });
-        }
+        var orgGuid = await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
+        if (orgGuid is null) return Unauthorized();
 
         // Validate range
         var validRanges = new HashSet<string> { "7D", "30D", "90D", "1Y" };
@@ -285,7 +290,7 @@ public class DashboardController : ControllerBase
         // Self-healing migration for missing columns
         try 
         {
-            await _visibilityRepository.GetHistoricalScansByOrgAsync(orgGuid);
+            await _visibilityRepository.GetHistoricalScansByOrgAsync(orgGuid.Value);
         }
         catch (Exception)
         {
@@ -302,13 +307,13 @@ public class DashboardController : ControllerBase
             catch { /* Ignore, next call will fail gracefully if it's a real issue */ }
         }
 
-        // Cache key = organizationId + range, 30-second TTL
-        var cacheKey = $"geo-dash:{orgGuid}:{range}";
+        // Cache key = authenticated organization + range, 30-second TTL
+        var cacheKey = $"geo-dash:{orgGuid.Value}:{range}";
 
         var result = await _cache.GetOrCreateAsync(cacheKey, async entry =>
         {
             entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(30);
-            return await _aggregator.BuildAsync(orgGuid, range);
+            return await _aggregator.BuildAsync(orgGuid.Value, range);
         });
 
         return Ok(result);
@@ -316,11 +321,10 @@ public class DashboardController : ControllerBase
 
     [HttpGet("visibility-radar")]
     public async Task<IActionResult> GetVisibilityRadar(
-        [FromQuery] string organizationId,
         [FromQuery] string range = "30D")
     {
-        if (!Guid.TryParse(organizationId, out var orgGuid))
-            return BadRequest("Invalid organizationId format.");
+        var orgGuid = await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
+        if (orgGuid is null) return Unauthorized();
 
         var validRanges = new HashSet<string> { "7D", "30D", "90D" };
         if (!validRanges.Contains(range)) range = "30D";
@@ -328,11 +332,11 @@ public class DashboardController : ControllerBase
 
         await _visibilitySnapshotRepository.EnsureTableCreatedAsync();
 
-        var latestScanDate = await _visibilitySnapshotRepository.GetLatestScanDateAsync(orgGuid);
+        var latestScanDate = await _visibilitySnapshotRepository.GetLatestScanDateAsync(orgGuid.Value);
         if (latestScanDate == null)
         {
-            await _mediator.Send(new RunVisibilityScanCommand { OrganizationId = orgGuid });
-            latestScanDate = await _visibilitySnapshotRepository.GetLatestScanDateAsync(orgGuid);
+            await _mediator.Send(new RunVisibilityScanCommand { OrganizationId = orgGuid.Value });
+            latestScanDate = await _visibilitySnapshotRepository.GetLatestScanDateAsync(orgGuid.Value);
         }
 
         if (latestScanDate == null)
@@ -340,11 +344,11 @@ public class DashboardController : ControllerBase
             return Ok(new { hasData = false });
         }
 
-        var latestSummary = await _visibilitySnapshotRepository.GetSummaryByScanDateAsync(orgGuid, latestScanDate.Value);
-        var latestPlatforms = await _visibilitySnapshotRepository.GetPlatformSnapshotsByScanDateAsync(orgGuid, latestScanDate.Value);
+        var latestSummary = await _visibilitySnapshotRepository.GetSummaryByScanDateAsync(orgGuid.Value, latestScanDate.Value);
+        var latestPlatforms = await _visibilitySnapshotRepository.GetPlatformSnapshotsByScanDateAsync(orgGuid.Value, latestScanDate.Value);
 
-        var summaryHistory = await _visibilitySnapshotRepository.GetRecentSummaryHistoryAsync(orgGuid, 20);
-        var platformHistory = await _visibilitySnapshotRepository.GetRecentPlatformHistoryAsync(orgGuid, 20);
+        var summaryHistory = await _visibilitySnapshotRepository.GetRecentSummaryHistoryAsync(orgGuid.Value, 20);
+        var platformHistory = await _visibilitySnapshotRepository.GetRecentPlatformHistoryAsync(orgGuid.Value, 20);
 
         var cutoff = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-lookbackDays);
         var summaryInRange = summaryHistory.Where(s => s.ScanDate >= cutoff).OrderBy(s => s.ScanDate).ToList();
@@ -399,11 +403,10 @@ public class DashboardController : ControllerBase
 
     [HttpGet("citation-intelligence")]
     public async Task<IActionResult> GetCitationIntelligence(
-        [FromQuery] string organizationId,
         [FromQuery] string range = "30D")
     {
-        if (!Guid.TryParse(organizationId, out var orgGuid))
-            return BadRequest("Invalid organizationId format.");
+        var orgGuid = await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
+        if (orgGuid is null) return Unauthorized();
 
         var validRanges = new HashSet<string> { "7D", "30D", "90D" };
         if (!validRanges.Contains(range)) range = "30D";
@@ -411,11 +414,11 @@ public class DashboardController : ControllerBase
 
         await _citationSnapshotRepository.EnsureTableCreatedAsync();
 
-        var latestScanDate = await _citationSnapshotRepository.GetLatestScanDateAsync(orgGuid);
+        var latestScanDate = await _citationSnapshotRepository.GetLatestScanDateAsync(orgGuid.Value);
         if (latestScanDate == null)
         {
-            await _mediator.Send(new RunCitationScanCommand { OrganizationId = orgGuid });
-            latestScanDate = await _citationSnapshotRepository.GetLatestScanDateAsync(orgGuid);
+            await _mediator.Send(new RunCitationScanCommand { OrganizationId = orgGuid.Value });
+            latestScanDate = await _citationSnapshotRepository.GetLatestScanDateAsync(orgGuid.Value);
         }
 
         if (latestScanDate == null)
@@ -423,10 +426,10 @@ public class DashboardController : ControllerBase
             return Ok(new { hasData = false });
         }
 
-        var latestSummary = await _citationSnapshotRepository.GetSummaryByScanDateAsync(orgGuid, latestScanDate.Value);
-        var latestSources = await _citationSnapshotRepository.GetSourceSnapshotsByScanDateAsync(orgGuid, latestScanDate.Value);
+        var latestSummary = await _citationSnapshotRepository.GetSummaryByScanDateAsync(orgGuid.Value, latestScanDate.Value);
+        var latestSources = await _citationSnapshotRepository.GetSourceSnapshotsByScanDateAsync(orgGuid.Value, latestScanDate.Value);
 
-        var summaryHistory = await _citationSnapshotRepository.GetRecentSummaryHistoryAsync(orgGuid, 20);
+        var summaryHistory = await _citationSnapshotRepository.GetRecentSummaryHistoryAsync(orgGuid.Value, 20);
         var cutoff = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-lookbackDays);
         var summaryInRange = summaryHistory.Where(s => s.ScanDate >= cutoff).OrderBy(s => s.ScanDate).ToList();
         if (summaryInRange.Count == 0 && summaryHistory.Count > 0) summaryInRange = new List<CitationScanSummary> { summaryHistory.Last() };
@@ -450,11 +453,11 @@ public class DashboardController : ControllerBase
 
         // Reuses the sibling Visibility scan's own weekly per-platform snapshots for the
         // platform-distribution section, rather than maintaining a duplicate table.
-        var visLatestDate = await _visibilitySnapshotRepository.GetLatestScanDateAsync(orgGuid);
+        var visLatestDate = await _visibilitySnapshotRepository.GetLatestScanDateAsync(orgGuid.Value);
         var visPlatforms = visLatestDate.HasValue
-            ? await _visibilitySnapshotRepository.GetPlatformSnapshotsByScanDateAsync(orgGuid, visLatestDate.Value)
+            ? await _visibilitySnapshotRepository.GetPlatformSnapshotsByScanDateAsync(orgGuid.Value, visLatestDate.Value)
             : new List<VisibilityPlatformSnapshot>();
-        var visPlatformHistory = await _visibilitySnapshotRepository.GetRecentPlatformHistoryAsync(orgGuid, 20);
+        var visPlatformHistory = await _visibilitySnapshotRepository.GetRecentPlatformHistoryAsync(orgGuid.Value, 20);
 
         var platforms = visPlatforms.Select(p =>
         {
@@ -525,11 +528,10 @@ public class DashboardController : ControllerBase
 
     [HttpGet("brand-pulse")]
     public async Task<IActionResult> GetBrandPulse(
-        [FromQuery] string organizationId,
         [FromQuery] string range = "30D")
     {
-        if (!Guid.TryParse(organizationId, out var orgGuid))
-            return BadRequest("Invalid organizationId format.");
+        var orgGuid = await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
+        if (orgGuid is null) return Unauthorized();
 
         var validRanges = new HashSet<string> { "7D", "30D", "90D" };
         if (!validRanges.Contains(range)) range = "30D";
@@ -537,11 +539,11 @@ public class DashboardController : ControllerBase
 
         await _brandPulseSnapshotRepository.EnsureTableCreatedAsync();
 
-        var latestScanDate = await _brandPulseSnapshotRepository.GetLatestScanDateAsync(orgGuid);
+        var latestScanDate = await _brandPulseSnapshotRepository.GetLatestScanDateAsync(orgGuid.Value);
         if (latestScanDate == null)
         {
-            await _mediator.Send(new RunBrandPulseScanCommand { OrganizationId = orgGuid });
-            latestScanDate = await _brandPulseSnapshotRepository.GetLatestScanDateAsync(orgGuid);
+            await _mediator.Send(new RunBrandPulseScanCommand { OrganizationId = orgGuid.Value });
+            latestScanDate = await _brandPulseSnapshotRepository.GetLatestScanDateAsync(orgGuid.Value);
         }
 
         if (latestScanDate == null)
@@ -549,13 +551,13 @@ public class DashboardController : ControllerBase
             return Ok(new { hasData = false });
         }
 
-        var latestSummary = await _brandPulseSnapshotRepository.GetSummaryByScanDateAsync(orgGuid, latestScanDate.Value);
+        var latestSummary = await _brandPulseSnapshotRepository.GetSummaryByScanDateAsync(orgGuid.Value, latestScanDate.Value);
         if (latestSummary == null)
         {
             return Ok(new { hasData = false });
         }
 
-        var history = await _brandPulseSnapshotRepository.GetRecentSummaryHistoryAsync(orgGuid, 20);
+        var history = await _brandPulseSnapshotRepository.GetRecentSummaryHistoryAsync(orgGuid.Value, 20);
         var cutoff = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-lookbackDays);
         var inRange = history.Where(s => s.ScanDate >= cutoff).OrderBy(s => s.ScanDate).ToList();
         if (inRange.Count == 0) inRange = new List<BrandPulseScanSummary> { latestSummary };
@@ -582,9 +584,9 @@ public class DashboardController : ControllerBase
         };
 
         // Real share-of-perception, reused directly from the sibling Competitor scan.
-        var competitorScanDate = await _snapshotRepository.GetLatestScanDateAsync(orgGuid);
+        var competitorScanDate = await _snapshotRepository.GetLatestScanDateAsync(orgGuid.Value);
         var competitorSnapshots = competitorScanDate.HasValue
-            ? await _snapshotRepository.GetSnapshotsByScanDateAsync(orgGuid, competitorScanDate.Value)
+            ? await _snapshotRepository.GetSnapshotsByScanDateAsync(orgGuid.Value, competitorScanDate.Value)
             : new List<CompetitorSnapshot>();
 
         var shareOfPerception = new List<object>();
@@ -647,45 +649,43 @@ public class DashboardController : ControllerBase
 
     [HttpGet("command-center")]
     public async Task<IActionResult> GetCommandCenter(
-        [FromQuery] string organizationId,
         [FromQuery] string range = "30D")
     {
-        if (!Guid.TryParse(organizationId, out var orgGuid))
-            return BadRequest("Invalid organizationId format.");
+        var orgGuid = await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
+        if (orgGuid is null) return Unauthorized();
 
         var validRanges = new HashSet<string> { "7D", "30D", "90D" };
         if (!validRanges.Contains(range)) range = "30D";
 
-        var result = await _commandCenterAggregator.BuildAsync(orgGuid, range);
+        var result = await _commandCenterAggregator.BuildAsync(orgGuid.Value, range);
         return Ok(result);
     }
 
     [HttpGet("opportunity-finder")]
     public async Task<IActionResult> GetOpportunityFinder(
-        [FromQuery] string organizationId,
         [FromQuery] string range = "30D")
     {
-        if (!Guid.TryParse(organizationId, out var orgGuid))
-            return BadRequest("Invalid organizationId format.");
+        var orgGuid = await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
+        if (orgGuid is null) return Unauthorized();
 
         var validRanges = new HashSet<string> { "7D", "30D", "90D" };
         if (!validRanges.Contains(range)) range = "30D";
 
-        var result = await _opportunityAggregator.BuildAsync(orgGuid, range);
+        var result = await _opportunityAggregator.BuildAsync(orgGuid.Value, range);
         return Ok(result);
     }
 
     [HttpPost("opportunity-finder/deep-scan")]
-    public async Task<IActionResult> RunOpportunityDeepScan([FromQuery] string organizationId)
+    public async Task<IActionResult> RunOpportunityDeepScan()
     {
-        if (!Guid.TryParse(organizationId, out var orgGuid))
-            return BadRequest("Invalid organizationId format.");
+        var orgGuid = await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
+        if (orgGuid is null) return Unauthorized();
 
         await _opportunitySnapshotRepository.EnsureTableCreatedAsync();
 
         // Authoritative server-side cooldown check — the frontend also disables the button,
         // but this is what actually prevents re-running before 7 days have passed.
-        var latestScanDate = await _opportunitySnapshotRepository.GetLatestScanDateAsync(orgGuid);
+        var latestScanDate = await _opportunitySnapshotRepository.GetLatestScanDateAsync(orgGuid.Value);
         if (latestScanDate != null)
         {
             var today = DateOnly.FromDateTime(DateTime.UtcNow);
@@ -697,13 +697,13 @@ public class DashboardController : ControllerBase
             }
         }
 
-        var result = await _mediator.Send(new RunOpportunityScanCommand { OrganizationId = orgGuid });
+        var result = await _mediator.Send(new RunOpportunityScanCommand { OrganizationId = orgGuid.Value });
         if (!result.Success)
         {
             return BadRequest(new { message = result.Message });
         }
 
-        var fresh = await _opportunityAggregator.BuildAsync(orgGuid, "30D");
+        var fresh = await _opportunityAggregator.BuildAsync(orgGuid.Value, "30D");
         return Ok(fresh);
     }
 }

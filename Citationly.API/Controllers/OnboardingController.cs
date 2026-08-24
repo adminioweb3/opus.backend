@@ -1,8 +1,8 @@
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Citationly.API.Services;
 using Citationly.Application.Features.Onboarding;
-using Citationly.Application.Interfaces;
 
 namespace Citationly.API.Controllers;
 
@@ -12,23 +12,26 @@ namespace Citationly.API.Controllers;
 public class OnboardingController : ControllerBase
 {
     private readonly IMediator _mediator;
+    private readonly ICurrentOrganizationAccessor _currentOrganizationAccessor;
 
-    private readonly IUserRepository _userRepository;
-
-    public OnboardingController(IMediator mediator, IUserRepository userRepository)
+    public OnboardingController(IMediator mediator, ICurrentOrganizationAccessor currentOrganizationAccessor)
     {
         _mediator = mediator;
-        _userRepository = userRepository;
+        _currentOrganizationAccessor = currentOrganizationAccessor;
     }
+
+    private Task<Guid?> GetCurrentOrganizationIdAsync()
+        => _currentOrganizationAccessor.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
 
     [HttpPost("analyze")]
     public async Task<IActionResult> Analyze([FromBody] AnalyzeOnboardingRequest request)
     {
-        var orgId = request.OrganizationId == Guid.Empty ? Guid.NewGuid() : request.OrganizationId;
+        var organizationId = await GetCurrentOrganizationIdAsync();
+        if (organizationId is null) return Unauthorized();
 
         var command = new AnalyzeOnboardingCommand
         {
-            OrganizationId = orgId,
+            OrganizationId = organizationId.Value,
             WebsiteUrl = request.WebsiteUrl ?? string.Empty,
             BusinessName = request.BusinessName ?? string.Empty,
             Industry = request.Industry ?? string.Empty,
@@ -45,12 +48,14 @@ public class OnboardingController : ControllerBase
     }
 
     [HttpGet("analyze")]
-    public async Task<IActionResult> GetAnalyze([FromQuery] Guid organizationId, [FromQuery] string? websiteUrl, [FromQuery] string? businessName, [FromQuery] string? industry, [FromQuery] string? targetAudience, [FromQuery] string? keywords)
+    public async Task<IActionResult> GetAnalyze([FromQuery] string? websiteUrl, [FromQuery] string? businessName, [FromQuery] string? industry, [FromQuery] string? targetAudience, [FromQuery] string? keywords)
     {
-        var orgId = organizationId == Guid.Empty ? Guid.NewGuid() : organizationId;
+        var organizationId = await GetCurrentOrganizationIdAsync();
+        if (organizationId is null) return Unauthorized();
+
         var command = new AnalyzeOnboardingCommand
         {
-            OrganizationId = orgId,
+            OrganizationId = organizationId.Value,
             WebsiteUrl = websiteUrl ?? string.Empty,
             BusinessName = businessName ?? string.Empty,
             Industry = industry ?? string.Empty,
@@ -62,14 +67,14 @@ public class OnboardingController : ControllerBase
     }
 
     [HttpPost("analyze-competitors")]
-    public async Task<IActionResult> AnalyzeCompetitors([FromBody] AnalyzeCompetitorsRequest request)
+    public async Task<IActionResult> AnalyzeCompetitors()
     {
-        if (request.OrganizationId == Guid.Empty)
-            return BadRequest("OrganizationId is required.");
+        var organizationId = await GetCurrentOrganizationIdAsync();
+        if (organizationId is null) return Unauthorized();
 
         var command = new AnalyzeCompetitorsCommand
         {
-            OrganizationId = request.OrganizationId
+            OrganizationId = organizationId.Value
         };
 
         var result = await _mediator.Send(command);
@@ -79,23 +84,25 @@ public class OnboardingController : ControllerBase
     }
 
     [HttpGet("analyze-competitors")]
-    public async Task<IActionResult> GetAnalyzeCompetitors([FromQuery] Guid organizationId)
+    public async Task<IActionResult> GetAnalyzeCompetitors()
     {
-        if (organizationId == Guid.Empty) return BadRequest("OrganizationId is required.");
-        var result = await _mediator.Send(new AnalyzeCompetitorsCommand { OrganizationId = organizationId });
+        var organizationId = await GetCurrentOrganizationIdAsync();
+        if (organizationId is null) return Unauthorized();
+
+        var result = await _mediator.Send(new AnalyzeCompetitorsCommand { OrganizationId = organizationId.Value });
         if (!result.Success) return BadRequest(result.Error);
         return Ok(result);
     }
 
     [HttpPost("analyze-prompts")]
-    public async Task<IActionResult> AnalyzePrompts([FromBody] AnalyzeAiSearchPromptsRequest request)
+    public async Task<IActionResult> AnalyzePrompts()
     {
-        if (request.OrganizationId == Guid.Empty)
-            return BadRequest("OrganizationId is required.");
+        var organizationId = await GetCurrentOrganizationIdAsync();
+        if (organizationId is null) return Unauthorized();
 
         var command = new AnalyzeAiSearchPromptsCommand
         {
-            OrganizationId = request.OrganizationId
+            OrganizationId = organizationId.Value
         };
 
         var result = await _mediator.Send(command);
@@ -105,23 +112,25 @@ public class OnboardingController : ControllerBase
     }
 
     [HttpGet("analyze-prompts")]
-    public async Task<IActionResult> GetAnalyzePrompts([FromQuery] Guid organizationId)
+    public async Task<IActionResult> GetAnalyzePrompts()
     {
-        if (organizationId == Guid.Empty) return BadRequest("OrganizationId is required.");
-        var result = await _mediator.Send(new AnalyzeAiSearchPromptsCommand { OrganizationId = organizationId });
+        var organizationId = await GetCurrentOrganizationIdAsync();
+        if (organizationId is null) return Unauthorized();
+
+        var result = await _mediator.Send(new AnalyzeAiSearchPromptsCommand { OrganizationId = organizationId.Value });
         if (!result.Success) return BadRequest(result.Error);
         return Ok(result);
     }
 
     [HttpPost("analyze-visibility")]
-    public async Task<IActionResult> AnalyzeVisibility([FromBody] AnalyzeVisibilityRequest request)
+    public async Task<IActionResult> AnalyzeVisibility()
     {
-        if (request.OrganizationId == Guid.Empty)
-            return BadRequest("OrganizationId is required.");
+        var organizationId = await GetCurrentOrganizationIdAsync();
+        if (organizationId is null) return Unauthorized();
 
         var command = new AnalyzeVisibilityCommand
         {
-            OrganizationId = request.OrganizationId
+            OrganizationId = organizationId.Value
         };
 
         var result = await _mediator.Send(command);
@@ -131,23 +140,25 @@ public class OnboardingController : ControllerBase
     }
 
     [HttpGet("analyze-visibility")]
-    public async Task<IActionResult> GetAnalyzeVisibility([FromQuery] Guid organizationId)
+    public async Task<IActionResult> GetAnalyzeVisibility()
     {
-        if (organizationId == Guid.Empty) return BadRequest("OrganizationId is required.");
-        var result = await _mediator.Send(new AnalyzeVisibilityCommand { OrganizationId = organizationId });
+        var organizationId = await GetCurrentOrganizationIdAsync();
+        if (organizationId is null) return Unauthorized();
+
+        var result = await _mediator.Send(new AnalyzeVisibilityCommand { OrganizationId = organizationId.Value });
         if (!result.Success) return BadRequest(result.Error);
         return Ok(result);
     }
 
     [HttpPost("analyze-platform-visibility")]
-    public async Task<IActionResult> AnalyzePlatformVisibility([FromBody] AnalyzePlatformVisibilityRequest request)
+    public async Task<IActionResult> AnalyzePlatformVisibility()
     {
-        if (request.OrganizationId == Guid.Empty)
-            return BadRequest("OrganizationId is required.");
+        var organizationId = await GetCurrentOrganizationIdAsync();
+        if (organizationId is null) return Unauthorized();
 
         var command = new AnalyzePlatformVisibilityCommand
         {
-            OrganizationId = request.OrganizationId
+            OrganizationId = organizationId.Value
         };
 
         var result = await _mediator.Send(command);
@@ -157,23 +168,25 @@ public class OnboardingController : ControllerBase
     }
 
     [HttpGet("analyze-platform-visibility")]
-    public async Task<IActionResult> GetAnalyzePlatformVisibility([FromQuery] Guid organizationId)
+    public async Task<IActionResult> GetAnalyzePlatformVisibility()
     {
-        if (organizationId == Guid.Empty) return BadRequest("OrganizationId is required.");
-        var result = await _mediator.Send(new AnalyzePlatformVisibilityCommand { OrganizationId = organizationId });
+        var organizationId = await GetCurrentOrganizationIdAsync();
+        if (organizationId is null) return Unauthorized();
+
+        var result = await _mediator.Send(new AnalyzePlatformVisibilityCommand { OrganizationId = organizationId.Value });
         if (!result.Success) return BadRequest(result.Error);
         return Ok(result);
     }
 
     [HttpPost("analyze-citations")]
-    public async Task<IActionResult> AnalyzeCitations([FromBody] AnalyzeCitationsRequest request)
+    public async Task<IActionResult> AnalyzeCitations()
     {
-        if (request.OrganizationId == Guid.Empty)
-            return BadRequest("OrganizationId is required.");
+        var organizationId = await GetCurrentOrganizationIdAsync();
+        if (organizationId is null) return Unauthorized();
 
         var command = new AnalyzeCitationsCommand
         {
-            OrganizationId = request.OrganizationId
+            OrganizationId = organizationId.Value
         };
 
         var result = await _mediator.Send(command);
@@ -183,23 +196,25 @@ public class OnboardingController : ControllerBase
     }
 
     [HttpGet("analyze-citations")]
-    public async Task<IActionResult> GetAnalyzeCitations([FromQuery] Guid organizationId)
+    public async Task<IActionResult> GetAnalyzeCitations()
     {
-        if (organizationId == Guid.Empty) return BadRequest("OrganizationId is required.");
-        var result = await _mediator.Send(new AnalyzeCitationsCommand { OrganizationId = organizationId });
+        var organizationId = await GetCurrentOrganizationIdAsync();
+        if (organizationId is null) return Unauthorized();
+
+        var result = await _mediator.Send(new AnalyzeCitationsCommand { OrganizationId = organizationId.Value });
         if (!result.Success) return BadRequest(result.Error);
         return Ok(result);
     }
 
     [HttpPost("analyze-personas")]
-    public async Task<IActionResult> AnalyzePersonas([FromBody] AnalyzePersonasRequest request)
+    public async Task<IActionResult> AnalyzePersonas()
     {
-        if (request.OrganizationId == Guid.Empty)
-            return BadRequest("OrganizationId is required.");
+        var organizationId = await GetCurrentOrganizationIdAsync();
+        if (organizationId is null) return Unauthorized();
 
         var command = new AnalyzePersonasCommand
         {
-            OrganizationId = request.OrganizationId
+            OrganizationId = organizationId.Value
         };
 
         var result = await _mediator.Send(command);
@@ -209,18 +224,23 @@ public class OnboardingController : ControllerBase
     }
 
     [HttpGet("analyze-personas")]
-    public async Task<IActionResult> GetAnalyzePersonas([FromQuery] Guid organizationId)
+    public async Task<IActionResult> GetAnalyzePersonas()
     {
-        if (organizationId == Guid.Empty) return BadRequest("OrganizationId is required.");
-        var result = await _mediator.Send(new AnalyzePersonasCommand { OrganizationId = organizationId });
+        var organizationId = await GetCurrentOrganizationIdAsync();
+        if (organizationId is null) return Unauthorized();
+
+        var result = await _mediator.Send(new AnalyzePersonasCommand { OrganizationId = organizationId.Value });
         if (!result.Success) return BadRequest(result.Error);
         return Ok(result);
     }
 
     [HttpPost("analyze-regions")]
-    public async Task<IActionResult> AnalyzeRegions([FromBody] AnalyzeRegionsRequest request)
+    public async Task<IActionResult> AnalyzeRegions()
     {
-        var command = new AnalyzeRegionsCommand { OrganizationId = request.OrganizationId };
+        var organizationId = await GetCurrentOrganizationIdAsync();
+        if (organizationId is null) return Unauthorized();
+
+        var command = new AnalyzeRegionsCommand { OrganizationId = organizationId.Value };
         var result = await _mediator.Send(command);
 
         if (!result.Success) return BadRequest(result.Error);
@@ -229,18 +249,23 @@ public class OnboardingController : ControllerBase
     }
 
     [HttpGet("analyze-regions")]
-    public async Task<IActionResult> GetAnalyzeRegions([FromQuery] Guid organizationId)
+    public async Task<IActionResult> GetAnalyzeRegions()
     {
-        if (organizationId == Guid.Empty) return BadRequest("OrganizationId is required.");
-        var result = await _mediator.Send(new AnalyzeRegionsCommand { OrganizationId = organizationId });
+        var organizationId = await GetCurrentOrganizationIdAsync();
+        if (organizationId is null) return Unauthorized();
+
+        var result = await _mediator.Send(new AnalyzeRegionsCommand { OrganizationId = organizationId.Value });
         if (!result.Success) return BadRequest(result.Error);
         return Ok(result);
     }
 
     [HttpPost("generate-recommendations")]
-    public async Task<IActionResult> GenerateRecommendations([FromBody] GenerateRecommendationsRequest request)
+    public async Task<IActionResult> GenerateRecommendations()
     {
-        var command = new GenerateRecommendationsCommand { OrganizationId = request.OrganizationId };
+        var organizationId = await GetCurrentOrganizationIdAsync();
+        if (organizationId is null) return Unauthorized();
+
+        var command = new GenerateRecommendationsCommand { OrganizationId = organizationId.Value };
         var result = await _mediator.Send(command);
 
         if (!result.Success) return BadRequest(result.Error);
@@ -249,18 +274,23 @@ public class OnboardingController : ControllerBase
     }
 
     [HttpGet("generate-recommendations")]
-    public async Task<IActionResult> GetGenerateRecommendations([FromQuery] Guid organizationId)
+    public async Task<IActionResult> GetGenerateRecommendations()
     {
-        if (organizationId == Guid.Empty) return BadRequest("OrganizationId is required.");
-        var result = await _mediator.Send(new GenerateRecommendationsCommand { OrganizationId = organizationId });
+        var organizationId = await GetCurrentOrganizationIdAsync();
+        if (organizationId is null) return Unauthorized();
+
+        var result = await _mediator.Send(new GenerateRecommendationsCommand { OrganizationId = organizationId.Value });
         if (!result.Success) return BadRequest(result.Error);
         return Ok(result);
     }
 
     [HttpPost("generate-executive-summary")]
-    public async Task<IActionResult> GenerateExecutiveSummary([FromBody] GenerateExecutiveSummaryRequest request)
+    public async Task<IActionResult> GenerateExecutiveSummary()
     {
-        var command = new GenerateExecutiveSummaryCommand { OrganizationId = request.OrganizationId };
+        var organizationId = await GetCurrentOrganizationIdAsync();
+        if (organizationId is null) return Unauthorized();
+
+        var command = new GenerateExecutiveSummaryCommand { OrganizationId = organizationId.Value };
         var result = await _mediator.Send(command);
 
         if (!result.Success) return BadRequest(result.Error);
@@ -269,10 +299,12 @@ public class OnboardingController : ControllerBase
     }
 
     [HttpGet("generate-executive-summary")]
-    public async Task<IActionResult> GetGenerateExecutiveSummary([FromQuery] Guid organizationId)
+    public async Task<IActionResult> GetGenerateExecutiveSummary()
     {
-        if (organizationId == Guid.Empty) return BadRequest("OrganizationId is required.");
-        var result = await _mediator.Send(new GenerateExecutiveSummaryCommand { OrganizationId = organizationId });
+        var organizationId = await GetCurrentOrganizationIdAsync();
+        if (organizationId is null) return Unauthorized();
+
+        var result = await _mediator.Send(new GenerateExecutiveSummaryCommand { OrganizationId = organizationId.Value });
         if (!result.Success) return BadRequest(result.Error);
         return Ok(result);
     }
@@ -281,15 +313,12 @@ public class OnboardingController : ControllerBase
     [HttpPost("complete")]
     public async Task<IActionResult> Complete([FromBody] CompleteOnboardingRequest request)
     {
-        var firebaseUid = User.FindFirst("user_id")?.Value ?? User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
-        if (string.IsNullOrEmpty(firebaseUid)) return Unauthorized();
-
-        var user = await _userRepository.GetUserByFirebaseUidAsync(firebaseUid);
-        if (user == null) return Unauthorized();
+        var organizationId = await GetCurrentOrganizationIdAsync();
+        if (organizationId is null) return Unauthorized();
 
         var command = new CompleteOnboardingCommand
         {
-            OrganizationId = user.Value.OrganizationId,
+            OrganizationId = organizationId.Value,
             WebsiteUrl = request.WebsiteUrl ?? string.Empty,
             BusinessName = request.BusinessName ?? string.Empty,
             VisibilityScore = request.VisibilityScore,
@@ -307,15 +336,12 @@ public class OnboardingController : ControllerBase
     [HttpGet("complete")]
     public async Task<IActionResult> GetComplete([FromQuery] string? websiteUrl, [FromQuery] string? businessName, [FromQuery] int visibilityScore, [FromQuery] int brandAuthority, [FromQuery] int contentStrength, [FromQuery] int citationScore)
     {
-        var firebaseUid = User.FindFirst("user_id")?.Value ?? User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
-        if (string.IsNullOrEmpty(firebaseUid)) return Unauthorized();
-
-        var user = await _userRepository.GetUserByFirebaseUidAsync(firebaseUid);
-        if (user == null) return Unauthorized();
+        var organizationId = await GetCurrentOrganizationIdAsync();
+        if (organizationId is null) return Unauthorized();
 
         var command = new CompleteOnboardingCommand
         {
-            OrganizationId = user.Value.OrganizationId,
+            OrganizationId = organizationId.Value,
             WebsiteUrl = websiteUrl ?? string.Empty,
             BusinessName = businessName ?? string.Empty,
             VisibilityScore = visibilityScore,
@@ -382,12 +408,12 @@ public class OnboardingController : ControllerBase
     }
 
     [HttpGet("competitors/unified")]
-    public async Task<IActionResult> GetUnifiedCompetitors([FromQuery] Guid organizationId)
+    public async Task<IActionResult> GetUnifiedCompetitors()
     {
-        if (organizationId == Guid.Empty)
-            return BadRequest("OrganizationId is required.");
+        var organizationId = await GetCurrentOrganizationIdAsync();
+        if (organizationId is null) return Unauthorized();
 
-        var query = new GetUnifiedCompetitorsQuery { OrganizationId = organizationId };
+        var query = new GetUnifiedCompetitorsQuery { OrganizationId = organizationId.Value };
         var result = await _mediator.Send(query);
         return Ok(result);
     }
@@ -408,7 +434,6 @@ public class DetectIndustryRequest
 
 public class AnalyzeOnboardingRequest
 {
-    public Guid OrganizationId { get; set; }
     public string? WebsiteUrl { get; set; }
     public string? BusinessName { get; set; }
     public string? Industry { get; set; }
@@ -427,49 +452,4 @@ public class CompleteOnboardingRequest
     public int BrandAuthority { get; set; }
     public int ContentStrength { get; set; }
     public int CitationScore { get; set; }
-}
-
-public class AnalyzeCompetitorsRequest
-{
-    public Guid OrganizationId { get; set; }
-}
-
-public class AnalyzeAiSearchPromptsRequest
-{
-    public Guid OrganizationId { get; set; }
-}
-
-public class AnalyzeVisibilityRequest
-{
-    public Guid OrganizationId { get; set; }
-}
-
-public class AnalyzePlatformVisibilityRequest
-{
-    public Guid OrganizationId { get; set; }
-}
-
-public class AnalyzeCitationsRequest
-{
-    public Guid OrganizationId { get; set; }
-}
-
-public class AnalyzePersonasRequest
-{
-    public Guid OrganizationId { get; set; }
-}
-
-public class AnalyzeRegionsRequest
-{
-    public Guid OrganizationId { get; set; }
-}
-
-public class GenerateRecommendationsRequest
-{
-    public Guid OrganizationId { get; set; }
-}
-
-public class GenerateExecutiveSummaryRequest
-{
-    public Guid OrganizationId { get; set; }
 }

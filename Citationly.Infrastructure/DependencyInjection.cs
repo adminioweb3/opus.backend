@@ -22,6 +22,7 @@ public static class DependencyInjection
         services.AddTransient<ITeamRepository, TeamRepository>();
         services.AddTransient<IWebsiteRepository, WebsiteRepository>();
         services.AddTransient<IIntegrationRepository, IntegrationRepository>();
+        services.AddTransient<IApiKeyRepository, ApiKeyRepository>();
         services.AddTransient<IKnowledgeBaseRepository, KnowledgeBaseRepository>();
         services.AddTransient<ISourceFolderRepository, SourceFolderRepository>();
         services.AddTransient<IContentDraftRepository, ContentDraftRepository>();
@@ -39,12 +40,14 @@ public static class DependencyInjection
         services.AddScoped<IOpportunitySnapshotRepository, OpportunitySnapshotRepository>();
         services.AddScoped<IAnalysisRepository, AnalysisRepository>();
         services.AddScoped<IAnalysisOrchestrator, Citationly.Application.Features.AnalysisEngine.AnalysisOrchestrator>();
-        services.AddScoped<IWebScraperService, WebScraperService>();
         services.AddScoped<IAiAnalysisService, WebsiteAiAnalysisService>();
         services.AddScoped<IMarkdownGeneratorService, MarkdownGeneratorService>();
         services.AddScoped<IScraperEngine, PlaywrightScraperEngine>();
         services.AddScoped<IScrapingJobService, ScrapingJobService>();
         services.AddScoped<IAiVisibilityEngineService, AiVisibilityEngineService>();
+        services.AddSingleton<Citationly.Application.Interfaces.IAiRequestContextAccessor, AiRequestContextAccessor>();
+        services.AddSingleton<Citationly.Application.Interfaces.IAiUsageLimiter, AiUsageLimiter>();
+        services.AddSingleton<Citationly.Application.Interfaces.IAiResilienceService, AiResilienceService>();
         
         // Company Knowledge Graph
         services.AddTransient<ICompanyRepository, CompanyRepository>();
@@ -61,8 +64,6 @@ public static class DependencyInjection
         // Application Services
         services.AddScoped<IOpenAiService, OpenAiService>();
         services.AddScoped<IEmbeddingService, OpenAiEmbeddingService>();
-        services.AddScoped<ISearchService, MockSearchService>();
-
         // Onboarding Pipeline Services
         services.AddScoped<Citationly.Application.Interfaces.Onboarding.IPageClassificationService, Citationly.Infrastructure.Services.Onboarding.PageClassificationService>();
         services.AddScoped<Citationly.Application.Interfaces.Onboarding.IPageRankingService, Citationly.Infrastructure.Services.Onboarding.PageRankingService>();
@@ -109,9 +110,6 @@ public static class DependencyInjection
         {
             client.Timeout = TimeSpan.FromMinutes(10);
         });
-        services.AddScoped<ISearchService, MockSearchService>();
-
-        services.AddHostedService<Citationly.Infrastructure.BackgroundJobs.RecurringScrapeService>();
         services.AddScoped<Citationly.Infrastructure.BackgroundJobs.GeoScanRecurringJob>();
         services.AddScoped<Citationly.Infrastructure.BackgroundJobs.CompetitorScanRecurringJob>();
         services.AddScoped<Citationly.Infrastructure.BackgroundJobs.VisibilityScanRecurringJob>();

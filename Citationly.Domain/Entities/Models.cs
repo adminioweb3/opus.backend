@@ -75,6 +75,18 @@ public class Integration
     public DateTime UpdatedAt { get; set; }
 }
 
+public class ApiKey
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string KeyPrefix { get; set; } = string.Empty;
+    public string KeyHash { get; set; } = string.Empty;
+    public string Last4 { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; }
+    public DateTime? RevokedAt { get; set; }
+}
+
 public class KnowledgeBase
 {
     public Guid Id { get; set; }

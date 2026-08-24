@@ -16,3 +16,10 @@ public interface IIntegrationRepository
     /// <summary>Server-side only: includes the real ApiKey. Scoped to organizationId for tenant safety.</summary>
     Task<Integration?> GetIntegrationByIdAsync(Guid id, Guid organizationId);
 }
+
+public interface IApiKeyRepository
+{
+    Task<IEnumerable<ApiKey>> GetApiKeysByOrgAsync(Guid organizationId);
+    Task<Guid> CreateApiKeyAsync(ApiKey apiKey);
+    Task<bool> RevokeApiKeyAsync(Guid id, Guid organizationId, DateTime revokedAtUtc);
+}

@@ -1,20 +1,21 @@
-using Dapper;
-using MediatR;
-using Microsoft.AspNetCore.Mvc;
-using Citationly.Application.Interfaces;
+using System.Collections.Generic;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
 using Citationly.Application.Features.Onboarding;
 using Citationly.Application.Features.PromptIntelligence.Services;
+using Citationly.Application.Interfaces;
 using Citationly.Infrastructure.Database;
+using Dapper;
 using FirebaseAdmin.Auth;
-using System.Collections.Generic;
-using System.Threading.Tasks;
+using MediatR;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.IdentityModel.Tokens;
 
 namespace Citationly.API.Controllers;
 
-// Deliberately NOT [Authorize] — this must work even against a database with zero Users rows
-// (a fresh reset, or before anyone has ever synced). Protected instead by a shared secret that
-// only you know, set via the Admin__ResetSecret environment variable on the server. Never
-// reachable without it, regardless of ASPNETCORE_ENVIRONMENT.
+[Authorize(AuthenticationSchemes = "AdminJwt", Roles = "Admin")]
 [ApiController]
 [Route("api/[controller]")]
 public class AdminController : ControllerBase
@@ -39,49 +40,93 @@ public class AdminController : ControllerBase
         _mediator = mediator;
     }
 
-    private bool IsAuthorized(string? providedSecret)
+    [AllowAnonymous]
+    [HttpPost("login")]
+    public IActionResult Login([FromBody] AdminLoginRequest request)
     {
-        var configuredSecret = _configuration["Admin:ResetSecret"];
-        // Fail closed: if no secret is configured on the server, these endpoints are unusable
-        // rather than silently open to anyone.
-        return !string.IsNullOrEmpty(configuredSecret) && providedSecret == configuredSecret;
+        var configuredUsername = _configuration["Admin:Username"];
+        var configuredPassword = _configuration["Admin:Password"];
+        var signingKey = _configuration["Admin:JwtSigningKey"];
+        var issuer = _configuration["Admin:JwtIssuer"] ?? "Citationly.Admin";
+        var audience = _configuration["Admin:JwtAudience"] ?? "Citationly.Admin.Panel";
+
+        if (string.IsNullOrWhiteSpace(configuredUsername) || string.IsNullOrWhiteSpace(configuredPassword) || string.IsNullOrWhiteSpace(signingKey))
+            return StatusCode(500, new { message = "Admin authentication is not configured on the server." });
+
+        if (!string.Equals(request.Username?.Trim(), configuredUsername.Trim(), StringComparison.OrdinalIgnoreCase) ||
+            request.Password != configuredPassword)
+        {
+            return Unauthorized(new { message = "Invalid admin credentials." });
+        }
+
+        var expiresAt = DateTime.UtcNow.AddHours(12);
+        var claims = new[]
+        {
+            new Claim(ClaimTypes.NameIdentifier, request.Username!.Trim()),
+            new Claim(ClaimTypes.Name, request.Username!.Trim()),
+            new Claim(ClaimTypes.Role, "Admin")
+        };
+
+        var credentials = new SigningCredentials(
+            new SymmetricSecurityKey(Encoding.UTF8.GetBytes(signingKey)),
+            SecurityAlgorithms.HmacSha256);
+
+        var token = new JwtSecurityToken(
+            issuer: issuer,
+            audience: audience,
+            claims: claims,
+            expires: expiresAt,
+            signingCredentials: credentials);
+
+        return Ok(new AdminLoginResponse
+        {
+            AccessToken = new JwtSecurityTokenHandler().WriteToken(token),
+            ExpiresAt = expiresAt,
+            Role = "Admin"
+        });
+    }
+
+    [Authorize(AuthenticationSchemes = "AdminJwt", Roles = "Admin")]
+    [HttpGet("session")]
+    public IActionResult Session()
+    {
+        return Ok(new
+        {
+            authenticated = User.Identity?.IsAuthenticated == true,
+            username = User.Identity?.Name,
+            role = User.FindFirstValue(ClaimTypes.Role)
+        });
     }
 
     // Wipes every row from every application table but leaves the schema (tables, columns,
     // functions) exactly as-is. Use this for "same shape, fresh data" testing resets.
     [HttpPost("database/clear")]
-    public async Task<IActionResult> ClearDatabase([FromHeader(Name = "X-Admin-Secret")] string? secret)
+    public async Task<IActionResult> ClearDatabase()
     {
-        if (!IsAuthorized(secret))
-            return Unauthorized(new { message = "Missing or invalid X-Admin-Secret header." });
-
         using var connection = _dbConnectionFactory.CreateConnection();
 
-        // Only the app's own schema — Hangfire keeps its tables in a separate "hangfire" schema,
+        // Only the app's own schema â€” Hangfire keeps its tables in a separate "hangfire" schema,
         // so its job/queue state is untouched by this.
         var tables = (await connection.QueryAsync<string>(
             "SELECT tablename FROM pg_tables WHERE schemaname = 'public'")).ToList();
 
         if (tables.Count == 0)
-            return Ok(new { message = "No tables found — nothing to clear." });
+            return Ok(new { message = "No tables found â€” nothing to clear." });
 
         var truncateSql = $"TRUNCATE TABLE {string.Join(", ", tables.Select(t => $"\"{t}\""))} RESTART IDENTITY CASCADE;";
         await connection.ExecuteAsync(truncateSql);
 
-        _logger.LogWarning("Database CLEARED via /api/Admin/database/clear — {Count} tables truncated: {Tables}", tables.Count, string.Join(", ", tables));
+        _logger.LogWarning("Database CLEARED via /api/Admin/database/clear â€” {Count} tables truncated: {Tables}", tables.Count, string.Join(", ", tables));
         return Ok(new { message = $"Cleared {tables.Count} tables. Schema unchanged.", tables });
     }
 
-    // Drops everything and recreates the schema from scratch — equivalent to a brand-new
+    // Drops everything and recreates the schema from scratch â€” equivalent to a brand-new
     // database. Runs init.sql (the canonical schema) followed by the same self-healing
     // migration Program.cs applies on every startup, so tables added after init.sql was last
     // updated (GEO dashboard tables, Content Studio, Team invites, etc.) still get created.
     [HttpPost("database/reset")]
-    public async Task<IActionResult> ResetDatabase([FromHeader(Name = "X-Admin-Secret")] string? secret)
+    public async Task<IActionResult> ResetDatabase()
     {
-        if (!IsAuthorized(secret))
-            return Unauthorized(new { message = "Missing or invalid X-Admin-Secret header." });
-
         var assembly = typeof(SelfHealingMigrations).Assembly;
         var resourceName = assembly.GetManifestResourceNames()
             .FirstOrDefault(n => n.EndsWith("init.sql", StringComparison.OrdinalIgnoreCase));
@@ -100,21 +145,18 @@ public class AdminController : ControllerBase
         await connection.ExecuteAsync(initSql);
         await connection.ExecuteAsync(SelfHealingMigrations.Sql);
 
-        _logger.LogWarning("Database RESET via /api/Admin/database/reset — full schema drop & recreate.");
-        return Ok(new { message = "Database reset — fresh schema created from init.sql, all data gone." });
+        _logger.LogWarning("Database RESET via /api/Admin/database/reset â€” full schema drop & recreate.");
+        return Ok(new { message = "Database reset â€” fresh schema created from init.sql, all data gone." });
     }
 
-    // Manually (re-)runs Answer Atlas's first-analysis batch for one org — the same job
+    // Manually (re-)runs Answer Atlas's first-analysis batch for one org â€” the same job
     // CompleteOnboardingCommand enqueues automatically for newly onboarding orgs. Exists so an
     // already-onboarded org (from before that hook existed) can be backfilled with real data on
     // demand, without needing that org's own user session/token. Awaited (not enqueued) so the
     // caller sees the real outcome immediately instead of firing blind.
     [HttpPost("prompt-intelligence/run-first-batch/{organizationId}")]
-    public async Task<IActionResult> RunFirstBatch(Guid organizationId, [FromHeader(Name = "X-Admin-Secret")] string? secret)
+    public async Task<IActionResult> RunFirstBatch(Guid organizationId)
     {
-        if (!IsAuthorized(secret))
-            return Unauthorized(new { message = "Missing or invalid X-Admin-Secret header." });
-
         await _firstRunService.RunFirstBatchAsync(organizationId);
 
         _logger.LogWarning("Prompt Intelligence first-run batch manually triggered via Admin API for org {OrganizationId}", organizationId);
@@ -122,14 +164,11 @@ public class AdminController : ControllerBase
     }
 
     // Manually forces an immediate Company Knowledge Graph refresh + competitor re-discovery for
-    // one org, bypassing the normal 30-day staleness window — for backfill/testing only. Runs
+    // one org, bypassing the normal 30-day staleness window â€” for backfill/testing only. Runs
     // the exact same AnalyzeCompetitorsCommand the /onboarding/analyze-competitors endpoint uses.
     [HttpPost("companies/refresh/{organizationId}")]
-    public async Task<IActionResult> RefreshCompany(Guid organizationId, [FromHeader(Name = "X-Admin-Secret")] string? secret)
+    public async Task<IActionResult> RefreshCompany(Guid organizationId)
     {
-        if (!IsAuthorized(secret))
-            return Unauthorized(new { message = "Missing or invalid X-Admin-Secret header." });
-
         var result = await _mediator.Send(new AnalyzeCompetitorsCommand { OrganizationId = organizationId });
 
         _logger.LogWarning("Company Knowledge Graph refresh manually triggered via Admin API for org {OrganizationId}", organizationId);
@@ -137,11 +176,8 @@ public class AdminController : ControllerBase
     }
 
     [HttpGet("users")]
-    public async Task<IActionResult> GetUsers([FromHeader(Name = "X-Admin-Secret")] string? secret)
+    public async Task<IActionResult> GetUsers()
     {
-        if (!IsAuthorized(secret))
-            return Unauthorized(new { message = "Missing or invalid X-Admin-Secret header." });
-
         using var connection = _dbConnectionFactory.CreateConnection();
         var sql = @"
             SELECT
@@ -163,11 +199,8 @@ public class AdminController : ControllerBase
     }
 
     [HttpGet("users/all")]
-    public async Task<IActionResult> GetAllUsersIncludingFirebase([FromHeader(Name = "X-Admin-Secret")] string? secret)
+    public async Task<IActionResult> GetAllUsersIncludingFirebase()
     {
-        if (!IsAuthorized(secret))
-            return Unauthorized(new { message = "Missing or invalid X-Admin-Secret header." });
-
         var allUsers = new List<AdminUserRow>();
 
         try
@@ -246,11 +279,8 @@ public class AdminController : ControllerBase
     }
 
     [HttpDelete("users/{id}")]
-    public async Task<IActionResult> DeleteUser(Guid id, [FromHeader(Name = "X-Admin-Secret")] string? secret)
+    public async Task<IActionResult> DeleteUser(Guid id)
     {
-        if (!IsAuthorized(secret))
-            return Unauthorized(new { message = "Missing or invalid X-Admin-Secret header." });
-
         using var connection = _dbConnectionFactory.CreateConnection();
 
         // Find the organization this user belongs to
@@ -324,4 +354,17 @@ file class AdminUserRow
     public string OrganizationName { get; set; } = string.Empty;
     public string PlanType { get; set; } = string.Empty;
     public DateTime OrganizationCreatedAt { get; set; }
+}
+
+public class AdminLoginRequest
+{
+    public string Username { get; set; } = string.Empty;
+    public string Password { get; set; } = string.Empty;
+}
+
+public class AdminLoginResponse
+{
+    public string AccessToken { get; set; } = string.Empty;
+    public DateTime ExpiresAt { get; set; }
+    public string Role { get; set; } = string.Empty;
 }

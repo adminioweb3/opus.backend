@@ -3,6 +3,8 @@ using Google.Apis.Auth.OAuth2;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.HttpOverrides;
+using System.IdentityModel.Tokens.Jwt;
+using System.Text;
 using Microsoft.IdentityModel.Tokens;
 using Scalar.AspNetCore;
 using Hangfire;
@@ -11,6 +13,7 @@ using Dapper;
 
 using Citationly.Application;
 using Citationly.Infrastructure;
+using Citationly.API.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -27,6 +30,7 @@ builder.Services.AddSwaggerGen();
 // Add Clean Architecture Layers
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure();
+builder.Services.AddScoped<ICurrentOrganizationAccessor, CurrentOrganizationAccessor>();
 
 // Configure Hangfire
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
@@ -60,13 +64,37 @@ builder.Services.AddCors(options =>
     });
 });
 
-// Configure Firebase Authentication
+// Configure Authentication
 var firebaseProjectId = builder.Configuration["Firebase:ProjectId"];
+var adminJwtIssuer = builder.Configuration["Admin:JwtIssuer"] ?? "Citationly.Admin";
+var adminJwtAudience = builder.Configuration["Admin:JwtAudience"] ?? "Citationly.Admin.Panel";
+var adminJwtSigningKey = builder.Configuration["Admin:JwtSigningKey"] ?? string.Empty;
+
+builder.Services.AddAuthentication()
+    .AddJwtBearer("AdminJwt", options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = adminJwtIssuer,
+            ValidateAudience = true,
+            ValidAudience = adminJwtAudience,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(adminJwtSigningKey)),
+            RoleClaimType = System.Security.Claims.ClaimTypes.Role,
+            NameClaimType = System.Security.Claims.ClaimTypes.Name
+        };
+    });
 
 if (!string.IsNullOrEmpty(firebaseProjectId))
 {
-    builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-        .AddJwtBearer(options =>
+    builder.Services.AddAuthentication(options =>
+        {
+            options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+            options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+        })
+        .AddJwtBearer(JwtBearerDefaults.AuthenticationScheme, options =>
         {
             options.Authority = $"https://securetoken.google.com/{firebaseProjectId}";
 
@@ -113,6 +141,7 @@ if (!string.IsNullOrEmpty(firebaseProjectId))
                 };
             }
         });
+
 }
 
 var app = builder.Build();

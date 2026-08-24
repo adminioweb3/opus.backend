@@ -302,6 +302,19 @@ CREATE TABLE IF NOT EXISTS Integrations (
     UNIQUE(OrganizationId, PlatformName)
 );
 
+-- API keys (server-generated workspace keys)
+CREATE TABLE IF NOT EXISTS ApiKeys (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+    Name VARCHAR(255) NOT NULL,
+    KeyPrefix VARCHAR(32) NOT NULL,
+    KeyHash VARCHAR(128) NOT NULL UNIQUE,
+    Last4 VARCHAR(4) NOT NULL,
+    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    RevokedAt TIMESTAMP WITH TIME ZONE
+);
+CREATE INDEX IF NOT EXISTS idx_apikeys_org_created ON ApiKeys (OrganizationId, CreatedAt DESC);
+
 -- Publishing: tracks the real deploy result of a ContentDraft against a connected CMS integration
 ALTER TABLE ContentDrafts ADD COLUMN IF NOT EXISTS PublishedUrl VARCHAR(2048);
 ALTER TABLE ContentDrafts ADD COLUMN IF NOT EXISTS PublishedAt TIMESTAMP WITH TIME ZONE;

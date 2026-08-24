@@ -13,7 +13,6 @@ public class VisibilityScoringService : IVisibilityScoringService
     public List<PlatformVisibility> CalculatePlatformScores(Guid organizationId, List<AiSearchPrompt> prompts)
     {
         var results = new List<PlatformVisibility>();
-        var random = new Random(); // Used for minor variance if metrics are identical
 
         // Base metrics from prompts
         double avgBrandStrength = prompts.Any() ? prompts.Average(p => p.BrandStrength) : 0;
@@ -45,11 +44,11 @@ public class VisibilityScoringService : IVisibilityScoringService
 
             // Normalize base to 0-100 scale (assuming strengths are 0-100)
             int score = (int)Math.Clamp(visibilityBase, 0, 100);
-            
-            // Adjust mention rate & coverage per platform slightly for realism
-            double variance = (random.NextDouble() * 10) - 5; // -5 to +5 variance
-            int mentionRate = (int)Math.Clamp(overallMentionRate + variance, 0, 100);
-            int promptCoverage = (int)Math.Clamp(overallPromptCoverage + variance, 0, 100);
+
+            // Keep the summary deterministic. If the underlying prompt data is identical,
+            // the output should be identical too.
+            int mentionRate = (int)Math.Clamp(overallMentionRate, 0, 100);
+            int promptCoverage = (int)Math.Clamp(overallPromptCoverage, 0, 100);
 
             // Determine average rank bucket based on visibility score
             string avgRank = score >= 80 ? "1–3" :
@@ -66,7 +65,7 @@ public class VisibilityScoringService : IVisibilityScoringService
                 AverageRank = avgRank,
                 MentionRate = mentionRate,
                 PromptCoverage = promptCoverage,
-                Confidence = 90, // High confidence since it's a deterministic formula
+                Confidence = prompts.Count == 0 ? 0 : (int)Math.Clamp(55 + (avgBrandStrength + avgContentStrength + avgCitationStrength) / 6.0, 55, 95),
                 IsEnriched = false,
                 StrengthsJson = "[]",
                 WeaknessesJson = "[]",

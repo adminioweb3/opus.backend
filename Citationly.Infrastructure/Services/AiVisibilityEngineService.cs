@@ -77,6 +77,12 @@ public class AiVisibilityEngineService : IAiVisibilityEngineService
         // Step 2: Run AI Prompts
         var industry = competitors.FirstOrDefault()?.Industry ?? "technology";
         var scores = await EvaluateVisibilityScoresAsync(domainName, industry, competitors);
+        if (scores == null)
+        {
+            var message = $"AI visibility scan incomplete for org {organizationId}; retry later.";
+            Console.WriteLine(message);
+            throw new InvalidOperationException(message);
+        }
 
         // Step 3: Save Historical Scans
         var scan = new HistoricalScan
@@ -120,7 +126,7 @@ public class AiVisibilityEngineService : IAiVisibilityEngineService
         Console.WriteLine("AI Visibility Analysis Completed.");
     }
 
-    private async Task<ScoreResult> EvaluateVisibilityScoresAsync(string domainName, string industry, List<Competitor> competitors)
+    private async Task<ScoreResult?> EvaluateVisibilityScoresAsync(string domainName, string industry, List<Competitor> competitors)
     {
         var competitorNames = string.Join(", ", competitors.Select(c => c.Name));
         var prompt = $@"
@@ -160,16 +166,10 @@ Format the JSON exactly like this:
         catch (Exception ex)
         {
             Console.WriteLine($"Visibility evaluation failed: {ex.Message}");
+            return null;
         }
 
-        var r = new Random();
-        return new ScoreResult
-        {
-            VisibilityScore = r.Next(30, 80),
-            CitationScore = r.Next(20, 70),
-            SentimentScore = r.Next(40, 90),
-            CompetitorScore = r.Next(50, 85)
-        };
+        return null;
     }
 
     private class ScoreResult
