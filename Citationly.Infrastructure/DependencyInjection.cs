@@ -52,6 +52,8 @@ public static class DependencyInjection
         // IDbConnectionFactory and holds no per-request state, so it can be safely injected into
         // the singleton AiUsageLimiter without becoming a captive dependency.
         services.AddSingleton<Citationly.Application.Interfaces.IEntitlementService, EntitlementService>();
+        services.AddScoped<Citationly.Application.Interfaces.IBillingRepository, Citationly.Infrastructure.Repositories.BillingRepository>();
+        services.AddScoped<Citationly.Application.Interfaces.IBillingService, StripeBillingService>();
         
         // Company Knowledge Graph
         services.AddTransient<ICompanyRepository, CompanyRepository>();
