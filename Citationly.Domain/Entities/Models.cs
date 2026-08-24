@@ -170,6 +170,14 @@ public class HistoricalScan
     public int AeoReadiness { get; set; }
     public int GeoReadiness { get; set; }
     public DateTime CreatedAt { get; set; }
+
+    /// <summary>Which scoring methodology produced this row - see roadmap Phase 3 A1.
+    /// "v1-ai-generated": every score was a single LLM call inventing all 8 numbers at once.
+    /// "v2-partial-real": VisibilityScore/CitationScore/SentimentScore/CompetitorScore are now
+    /// deterministic, evidence-based computations; HallucinationRisk/SeoHealth/AeoReadiness/
+    /// GeoReadiness/pillars/promptCoverage remain AI-estimated pending Phase 4/5's technical and
+    /// fact-accuracy infrastructure.</summary>
+    public string ScoringMethodVersion { get; set; } = "v1-ai-generated";
 }
 
 public class ShareOfVoice

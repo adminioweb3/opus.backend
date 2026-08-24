@@ -41,9 +41,9 @@ public class AiVisibilityRepository : IAiVisibilityRepository
     {
         using var connection = _dbConnectionFactory.CreateConnection();
         var sql = @"
-            INSERT INTO HistoricalScans (OrganizationId, ScanDate, VisibilityScore, CitationScore, SentimentScore, CompetitorScore, HallucinationRisk, SeoHealth, AeoReadiness, GeoReadiness)
-            VALUES (@OrganizationId, @ScanDate, @VisibilityScore, @CitationScore, @SentimentScore, @CompetitorScore, @HallucinationRisk, @SeoHealth, @AeoReadiness, @GeoReadiness)
-            ON CONFLICT (OrganizationId, ScanDate) DO UPDATE 
+            INSERT INTO HistoricalScans (OrganizationId, ScanDate, VisibilityScore, CitationScore, SentimentScore, CompetitorScore, HallucinationRisk, SeoHealth, AeoReadiness, GeoReadiness, ScoringMethodVersion)
+            VALUES (@OrganizationId, @ScanDate, @VisibilityScore, @CitationScore, @SentimentScore, @CompetitorScore, @HallucinationRisk, @SeoHealth, @AeoReadiness, @GeoReadiness, @ScoringMethodVersion)
+            ON CONFLICT (OrganizationId, ScanDate) DO UPDATE
             SET VisibilityScore = EXCLUDED.VisibilityScore,
                 CitationScore = EXCLUDED.CitationScore,
                 SentimentScore = EXCLUDED.SentimentScore,
@@ -51,7 +51,8 @@ public class AiVisibilityRepository : IAiVisibilityRepository
                 HallucinationRisk = EXCLUDED.HallucinationRisk,
                 SeoHealth = EXCLUDED.SeoHealth,
                 AeoReadiness = EXCLUDED.AeoReadiness,
-                GeoReadiness = EXCLUDED.GeoReadiness
+                GeoReadiness = EXCLUDED.GeoReadiness,
+                ScoringMethodVersion = EXCLUDED.ScoringMethodVersion
             RETURNING Id;";
         return await connection.QuerySingleAsync<Guid>(sql, scan);
     }

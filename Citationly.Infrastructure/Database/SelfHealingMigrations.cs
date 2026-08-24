@@ -32,6 +32,12 @@ public static class SelfHealingMigrations
         ALTER TABLE HistoricalScans ADD COLUMN IF NOT EXISTS AeoReadiness INT DEFAULT 0;
         ALTER TABLE HistoricalScans ADD COLUMN IF NOT EXISTS GeoReadiness INT DEFAULT 0;
 
+        -- Phase 3 A1: distinguishes rows produced by the old single-LLM-invents-everything scoring
+        -- pass (""v1-ai-generated"") from rows where Visibility/Citation/Sentiment/Competitor are
+        -- now real deterministic computations (""v2-partial-real""). Existing rows default to v1
+        -- since that's genuinely how they were produced - not a relabeling of old data as new.
+        ALTER TABLE HistoricalScans ADD COLUMN IF NOT EXISTS ScoringMethodVersion VARCHAR(20) NOT NULL DEFAULT 'v1-ai-generated';
+
         -- Evidence provenance (Phase 2 B1) - which real provider/model produced a stored
         -- response, its cost, and whether it was grounded in a live web search. Backfills as
         -- NULL for pre-existing rows (their provider was never recorded), so a NULL here is

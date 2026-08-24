@@ -582,6 +582,7 @@ CREATE TABLE IF NOT EXISTS HistoricalScans (
     AeoReadiness INT DEFAULT 0,
     GeoReadiness INT DEFAULT 0,
     CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    ScoringMethodVersion VARCHAR(20) NOT NULL DEFAULT 'v1-ai-generated',
     UNIQUE(OrganizationId, ScanDate)
 );
 
