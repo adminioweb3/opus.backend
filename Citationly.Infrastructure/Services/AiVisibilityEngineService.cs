@@ -69,7 +69,7 @@ public class AiVisibilityEngineService : IAiVisibilityEngineService
             var company = await _companyGraphService.EnsureCompanyAsync(
                 organizationId, profile.WebsiteUrl, profile.BusinessName, profile.RawProfileJson);
             var edges = await _discoveryService.DiscoverCompetitorsAsync(
-                company.Id, profile.BusinessName, profile.RawProfileJson, CancellationToken.None);
+                organizationId, company.Id, profile.BusinessName, profile.RawProfileJson, CancellationToken.None);
             await _companyCompetitorRepository.ReplaceCompetitorsForCompanyAsync(company.Id, edges);
             competitors = await _syncService.SyncOrgCompetitorsAsync(organizationId, company.Id);
         }

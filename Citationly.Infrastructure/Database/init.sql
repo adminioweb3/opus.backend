@@ -708,6 +708,7 @@ CREATE TABLE IF NOT EXISTS CompanyCompetitor (
     Weakness TEXT,
     CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    DiscoverySource VARCHAR(20) NOT NULL DEFAULT 'graph',
     CONSTRAINT chk_companycompetitor_not_self CHECK (CompanyId <> CompetitorCompanyId)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_companycompetitor_pair ON CompanyCompetitor (CompanyId, CompetitorCompanyId);

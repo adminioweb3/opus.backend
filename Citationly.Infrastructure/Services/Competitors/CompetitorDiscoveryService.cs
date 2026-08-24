@@ -67,21 +67,32 @@ public class CompetitorDiscoveryService : ICompetitorDiscoveryService
         return -1;
     }
 
+    /// <summary>Minimum times a name must appear in real AI responses before it's promoted to an
+    /// observed competitor - filters out one-off mentions that aren't a real pattern.</summary>
+    private const int MinObservedMentionCount = 2;
+
+    /// <summary>How far back to look for observed co-occurrence.</summary>
+    private const int ObservedLookbackDays = 90;
+
     private readonly ICompanySimilarityService _similarityService;
     private readonly IOpenAiService _openAiService;
     private readonly ICompanyRepository _companyRepository;
+    private readonly IPromptIntelligenceRepository _promptIntelligenceRepository;
 
     public CompetitorDiscoveryService(
         ICompanySimilarityService similarityService,
         IOpenAiService openAiService,
-        ICompanyRepository companyRepository)
+        ICompanyRepository companyRepository,
+        IPromptIntelligenceRepository promptIntelligenceRepository)
     {
         _similarityService = similarityService;
         _openAiService = openAiService;
         _companyRepository = companyRepository;
+        _promptIntelligenceRepository = promptIntelligenceRepository;
     }
 
     public async Task<List<CompanyCompetitor>> DiscoverCompetitorsAsync(
+        Guid organizationId,
         Guid companyId,
         string businessName,
         string rawProfileJson,
@@ -94,39 +105,138 @@ public class CompetitorDiscoveryService : ICompetitorDiscoveryService
         var graphEdges = candidates.Count > 0
             ? await RankGraphCandidatesAsync(companyId, businessName, rawProfileJson, candidates)
             : new List<CompanyCompetitor>();
+        foreach (var edge in graphEdges) edge.DiscoverySource = "graph";
 
+        List<CompanyCompetitor> combined;
         if (graphEdges.Count >= TopSelectionCount)
-            return graphEdges.Take(TopSelectionCount).ToList();
+        {
+            combined = graphEdges.Take(TopSelectionCount).ToList();
+        }
+        else
+        {
+            var shortfall = TopSelectionCount - graphEdges.Count;
+            Console.WriteLine($"[Discovery] Graph supplied {graphEdges.Count}/{TopSelectionCount}; generating {shortfall} to top up.");
 
-        var shortfall = TopSelectionCount - graphEdges.Count;
-        Console.WriteLine($"[Discovery] Graph supplied {graphEdges.Count}/{TopSelectionCount}; generating {shortfall} to top up.");
+            var usedIds = graphEdges.Select(e => e.CompetitorCompanyId).ToHashSet();
+            var excludeDomains = candidates
+                .Where(c => usedIds.Contains(c.Company.Id))
+                .Select(c => c.Company.NormalizedDomain)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        var usedIds = graphEdges.Select(e => e.CompetitorCompanyId).ToHashSet();
-        var excludeDomains = candidates
-            .Where(c => usedIds.Contains(c.Company.Id))
-            .Select(c => c.Company.NormalizedDomain)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            // Generated entries rank below every real match, so their synthetic similarity has to sit
+            // below the weakest real score too — otherwise the table shows a generated row at 80%
+            // ranked underneath a real row at 72%.
+            var startSimilarity = graphEdges.Count > 0
+                ? Math.Min(graphEdges.Min(e => e.Similarity) - SimilarityStep, GeneratedTopSimilarity)
+                : GeneratedTopSimilarity;
 
-        // Generated entries rank below every real match, so their synthetic similarity has to sit
-        // below the weakest real score too — otherwise the table shows a generated row at 80%
-        // ranked underneath a real row at 72%.
-        var startSimilarity = graphEdges.Count > 0
-            ? Math.Min(graphEdges.Min(e => e.Similarity) - SimilarityStep, GeneratedTopSimilarity)
-            : GeneratedTopSimilarity;
+            var generated = await GenerateCompetitorsAsync(
+                companyId,
+                businessName,
+                rawProfileJson,
+                count: shortfall,
+                startRank: graphEdges.Count + 1,
+                startSimilarity: startSimilarity,
+                excludeDomains: excludeDomains,
+                cancellationToken);
+            foreach (var edge in generated) edge.DiscoverySource = "generated";
 
-        var generated = await GenerateCompetitorsAsync(
-            companyId,
-            businessName,
-            rawProfileJson,
-            count: shortfall,
-            startRank: graphEdges.Count + 1,
-            startSimilarity: startSimilarity,
-            excludeDomains: excludeDomains,
-            cancellationToken);
+            combined = graphEdges.Concat(generated).ToList();
+            Console.WriteLine($"[Discovery] Returning {combined.Count} competitors ({graphEdges.Count} from graph, {generated.Count} generated).");
+        }
 
-        var combined = graphEdges.Concat(generated).ToList();
-        Console.WriteLine($"[Discovery] Returning {combined.Count} competitors ({graphEdges.Count} from graph, {generated.Count} generated).");
-        return combined;
+        return await PromoteObservedCompetitorsAsync(organizationId, companyId, businessName, combined, cancellationToken);
+    }
+
+    /// <summary>
+    /// Phase 3 C4: a company that repeatedly appears alongside the brand in real AI responses
+    /// (PromptMentions, populated from actual captured LLM output - not a guess) is stronger
+    /// evidence of real competition than either embedding similarity or an LLM's suggestion. This
+    /// only promotes names that already resolve to an existing Company Knowledge Graph node by
+    /// exact name match - it does not invent a company or guess a domain for a bare mention.
+    /// </summary>
+    private async Task<List<CompanyCompetitor>> PromoteObservedCompetitorsAsync(
+        Guid organizationId,
+        Guid companyId,
+        string businessName,
+        List<CompanyCompetitor> combined,
+        CancellationToken cancellationToken)
+    {
+        IEnumerable<CompetitorMentionSummaryRow> mentionRows;
+        try
+        {
+            mentionRows = await _promptIntelligenceRepository.GetCompetitorMentionSummaryDataAsync(
+                organizationId, DateTime.UtcNow.AddDays(-ObservedLookbackDays));
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Discovery] Observed-mention lookup failed, skipping promotion: {ex.Message}");
+            return combined;
+        }
+
+        var mentionCounts = mentionRows
+            .GroupBy(m => m.CompetitorName.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() >= MinObservedMentionCount
+                        && !string.Equals(g.Key, businessName, StringComparison.OrdinalIgnoreCase))
+            .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
+
+        if (mentionCounts.Count == 0) return combined;
+
+        var existingByCompanyId = combined.ToDictionary(e => e.CompetitorCompanyId);
+        var newlyObserved = new List<CompanyCompetitor>();
+
+        foreach (var (name, count) in mentionCounts.OrderByDescending(kv => kv.Value))
+        {
+            Company? matched;
+            try
+            {
+                matched = await _companyRepository.FindByNameAsync(name);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Discovery] FindByNameAsync failed for '{name}': {ex.Message}");
+                continue;
+            }
+
+            if (matched == null || matched.Id == companyId) continue;
+
+            var evidenceNote = $"Co-occurs with your brand in {count} real AI responses over the last {ObservedLookbackDays} days.";
+
+            if (existingByCompanyId.TryGetValue(matched.Id, out var existingEdge))
+            {
+                // Already surfaced via graph/generation - upgrade its badge and reason rather than
+                // duplicating the row.
+                existingEdge.DiscoverySource = "observed";
+                existingEdge.Reason = string.IsNullOrWhiteSpace(existingEdge.Reason)
+                    ? evidenceNote
+                    : $"{evidenceNote} {existingEdge.Reason}";
+            }
+            else
+            {
+                newlyObserved.Add(new CompanyCompetitor
+                {
+                    CompanyId = companyId,
+                    CompetitorCompanyId = matched.Id,
+                    Similarity = 0, // not a cosine-similarity match - the evidence here is observed co-occurrence, not embedding distance
+                    Confidence = Math.Min(100, count * 20), // derived from real mention frequency, not an AI guess
+                    Reason = evidenceNote,
+                    Strength = null,
+                    Weakness = null,
+                    DiscoverySource = "observed",
+                });
+            }
+        }
+
+        if (newlyObserved.Count == 0) return combined;
+
+        // Observed evidence outranks everything else - new observed entries go to the front, then
+        // the rest keep their relative order. Trim from the tail (weakest generated/graph entries)
+        // if this pushes the list past the cap, never trimming an observed entry.
+        var reordered = newlyObserved.Concat(combined).Take(TopSelectionCount).ToList();
+        for (int i = 0; i < reordered.Count; i++) reordered[i].Rank = i + 1;
+
+        Console.WriteLine($"[Discovery] Promoted {newlyObserved.Count} new observed competitor(s) from real AI-response co-occurrence.");
+        return reordered;
     }
 
     /// <summary>

@@ -247,6 +247,10 @@ public class CompanyCompetitor
     public string? Weakness { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
+
+    /// <summary>"observed" (co-occurs with the brand in real AI responses - PromptMentions),
+    /// "graph" (real cosine-similarity match), or "generated" (LLM-suggested, unverified).</summary>
+    public string DiscoverySource { get; set; } = "graph";
 }
 
 public class CompetitorSnapshot

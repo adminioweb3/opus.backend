@@ -30,6 +30,14 @@ public class CompanyRepository : ICompanyRepository
             new { NormalizedDomain = normalizedDomain });
     }
 
+    public async Task<Company?> FindByNameAsync(string name)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        return await connection.QueryFirstOrDefaultAsync<Company>(
+            "SELECT * FROM Company WHERE LOWER(TRIM(CompanyName)) = LOWER(TRIM(@Name)) LIMIT 1",
+            new { Name = name });
+    }
+
     public async Task<Company> UpsertAsync(Company company)
     {
         using var connection = _dbConnectionFactory.CreateConnection();

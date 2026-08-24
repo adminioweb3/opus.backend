@@ -30,8 +30,8 @@ public class CompanyCompetitorRepository : ICompanyCompetitorRepository
             foreach (var edge in edgeList)
             {
                 await connection.ExecuteAsync(@"
-                    INSERT INTO CompanyCompetitor (CompanyId, CompetitorCompanyId, Similarity, Confidence, Rank, Reason, Strength, Weakness, CreatedAt, UpdatedAt)
-                    VALUES (@CompanyId, @CompetitorCompanyId, @Similarity, @Confidence, @Rank, @Reason, @Strength, @Weakness, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+                    INSERT INTO CompanyCompetitor (CompanyId, CompetitorCompanyId, Similarity, Confidence, Rank, Reason, Strength, Weakness, DiscoverySource, CreatedAt, UpdatedAt)
+                    VALUES (@CompanyId, @CompetitorCompanyId, @Similarity, @Confidence, @Rank, @Reason, @Strength, @Weakness, @DiscoverySource, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
                     new
                     {
                         CompanyId = companyId,
@@ -41,7 +41,8 @@ public class CompanyCompetitorRepository : ICompanyCompetitorRepository
                         edge.Rank,
                         edge.Reason,
                         edge.Strength,
-                        edge.Weakness
+                        edge.Weakness,
+                        edge.DiscoverySource
                     }, transaction: transaction);
             }
 

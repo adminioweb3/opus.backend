@@ -75,7 +75,7 @@ public class AnalyzeCompetitorsCommandHandler : IRequestHandler<AnalyzeCompetito
             request.OrganizationId, profile.WebsiteUrl, profile.BusinessName, profile.RawProfileJson, cancellationToken);
 
         var edges = await _discoveryService.DiscoverCompetitorsAsync(
-            company.Id, profile.BusinessName, profile.RawProfileJson, cancellationToken);
+            request.OrganizationId, company.Id, profile.BusinessName, profile.RawProfileJson, cancellationToken);
 
         await _companyCompetitorRepository.ReplaceCompetitorsForCompanyAsync(company.Id, edges);
 

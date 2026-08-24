@@ -109,6 +109,13 @@ public static class SelfHealingMigrations
         CREATE UNIQUE INDEX IF NOT EXISTS idx_companycompetitor_pair ON CompanyCompetitor (CompanyId, CompetitorCompanyId);
         CREATE INDEX IF NOT EXISTS idx_companycompetitor_company_rank ON CompanyCompetitor (CompanyId, Rank);
 
+        -- Phase 3 C4: distinguishes how each competitor edge was found - ""observed"" (the
+        -- competitor actually co-occurs with the brand in real AI responses, per PromptMentions),
+        -- ""graph"" (real cosine-similarity match in the Company Knowledge Graph), or ""generated""
+        -- (LLM-suggested, unverified against any external source). Observed evidence is the
+        -- strongest signal available and should rank above the other two.
+        ALTER TABLE CompanyCompetitor ADD COLUMN IF NOT EXISTS DiscoverySource VARCHAR(20) NOT NULL DEFAULT 'graph';
+
         ALTER TABLE Websites ADD COLUMN IF NOT EXISTS DomainUrl VARCHAR(255) NOT NULL DEFAULT '';
         ALTER TABLE Websites ADD COLUMN IF NOT EXISTS PlatformName VARCHAR(100) NOT NULL DEFAULT 'Custom';
         ALTER TABLE Websites ADD COLUMN IF NOT EXISTS HealthScore INT NOT NULL DEFAULT 0;
@@ -558,6 +565,13 @@ public static class SelfHealingMigrations
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_companycompetitor_pair ON CompanyCompetitor (CompanyId, CompetitorCompanyId);
         CREATE INDEX IF NOT EXISTS idx_companycompetitor_company_rank ON CompanyCompetitor (CompanyId, Rank);
+
+        -- Phase 3 C4: distinguishes how each competitor edge was found - ""observed"" (the
+        -- competitor actually co-occurs with the brand in real AI responses, per PromptMentions),
+        -- ""graph"" (real cosine-similarity match in the Company Knowledge Graph), or ""generated""
+        -- (LLM-suggested, unverified against any external source). Observed evidence is the
+        -- strongest signal available and should rank above the other two.
+        ALTER TABLE CompanyCompetitor ADD COLUMN IF NOT EXISTS DiscoverySource VARCHAR(20) NOT NULL DEFAULT 'graph';
 
         ALTER TABLE Websites ADD COLUMN IF NOT EXISTS CompanyId UUID REFERENCES Company(Id) ON DELETE SET NULL;
         CREATE INDEX IF NOT EXISTS idx_websites_companyid ON Websites (CompanyId);
