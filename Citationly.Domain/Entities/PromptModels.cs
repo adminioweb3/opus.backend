@@ -103,7 +103,7 @@ public class PromptCitation
     public string Platform { get; set; } = string.Empty;
     public string Domain { get; set; } = string.Empty;
     public string Url { get; set; } = string.Empty;
-    public string Category { get; set; } = "Other"; // Owned, Social, Institution, Other
+    public string Category { get; set; } = "Unknown"; // see CitationExtractorService.CategoryFor for the full taxonomy
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
 

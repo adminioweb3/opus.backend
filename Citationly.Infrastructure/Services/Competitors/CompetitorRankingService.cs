@@ -2,6 +2,7 @@ using System.Text.Json;
 using Citationly.Application.Interfaces;
 using Citationly.Application.Interfaces.Competitors;
 using Citationly.Domain.Entities;
+using Citationly.Domain.Utils;
 
 namespace Citationly.Infrastructure.Services.Competitors;
 
@@ -11,7 +12,11 @@ namespace Citationly.Infrastructure.Services.Competitors;
 /// </summary>
 public class CompetitorRankingService : ICompetitorRankingService
 {
+    /// <summary>How far back to count real citations for the Citation category score.</summary>
+    private const int CitationLookbackDays = 90;
+
     private readonly IWebsiteRepository _websiteRepository;
+    private readonly IPromptIntelligenceRepository _promptIntelligenceRepository;
 
     // Configurable weights (sum = 1.0)
     private static readonly Dictionary<string, double> Weights = new()
@@ -28,9 +33,10 @@ public class CompetitorRankingService : ICompetitorRankingService
         ["BusinessCompleteness"] = 0.05
     };
 
-    public CompetitorRankingService(IWebsiteRepository websiteRepository)
+    public CompetitorRankingService(IWebsiteRepository websiteRepository, IPromptIntelligenceRepository promptIntelligenceRepository)
     {
         _websiteRepository = websiteRepository;
+        _promptIntelligenceRepository = promptIntelligenceRepository;
     }
 
     public async Task<CompetitorRankingResult> ComputeRankingsAsync(
@@ -38,6 +44,7 @@ public class CompetitorRankingService : ICompetitorRankingService
     {
         var competitors = (await _websiteRepository.GetCompetitorsAsync(organizationId)).ToList();
         var profile = await _websiteRepository.GetLatestWebsiteProfileAsync(organizationId);
+        var citationCountsByDomain = await GetCitationCountsByDomainAsync(organizationId);
 
         // Parse scores for all enriched competitors
         var scoredEntries = new List<ScoredCompany>();
@@ -45,28 +52,38 @@ public class CompetitorRankingService : ICompetitorRankingService
         foreach (var comp in competitors)
         {
             var scores = ExtractCategoryScores(comp.EnrichedJson ?? comp.RawJson);
-            var overall = ComputeWeightedScore(scores);
             scoredEntries.Add(new ScoredCompany
             {
                 Name = comp.Name,
                 IsUser = false,
                 CompetitorId = comp.Id,
+                Domain = DomainNormalizer.Normalize(comp.WebsiteUrl),
                 CategoryScores = scores,
-                OverallScore = overall
+                OverallScore = 0 // filled in after ApplyRealCitationScores below
             });
         }
 
         // Insert the user's own business
         var userScores = ExtractUserScores(profile?.RawProfileJson);
-        var userOverall = ComputeWeightedScore(userScores);
         var userEntry = new ScoredCompany
         {
             Name = profile?.BusinessName ?? "Your Business",
             IsUser = true,
+            Domain = DomainNormalizer.Normalize(profile?.WebsiteUrl ?? string.Empty),
             CategoryScores = userScores,
-            OverallScore = userOverall
+            OverallScore = 0
         };
         scoredEntries.Add(userEntry);
+
+        // Phase 3 C5: replaces the flat 50/40-neutral-default "Citation" score with a real
+        // measurement — how often each entity's own domain actually appears as a citation in the
+        // org's real captured AI responses (PromptCitations, via CitationExtractorService's
+        // Owned/Competitor domain matching), relative to whichever entity is cited the most.
+        // Falls back to the existing neutral default if the org has no citation history yet.
+        ApplyRealCitationScores(scoredEntries, citationCountsByDomain);
+
+        foreach (var entry in scoredEntries) entry.OverallScore = ComputeWeightedScore(entry.CategoryScores);
+        var userOverall = userEntry.OverallScore;
 
         // Sort by overall score descending
         var ranked = scoredEntries.OrderByDescending(s => s.OverallScore).ToList();
@@ -171,6 +188,39 @@ public class CompetitorRankingService : ICompetitorRankingService
         };
     }
 
+    private async Task<Dictionary<string, int>> GetCitationCountsByDomainAsync(Guid organizationId)
+    {
+        var since = DateTime.UtcNow.AddDays(-CitationLookbackDays);
+        IEnumerable<PromptCitationSummaryRow> rows;
+        try
+        {
+            rows = await _promptIntelligenceRepository.GetCitationSummaryDataAsync(organizationId, since);
+        }
+        catch
+        {
+            return new Dictionary<string, int>(); // no citation history yet / query failed — Citation category falls back to its neutral default
+        }
+
+        return rows
+            .GroupBy(r => DomainNormalizer.Normalize(r.Domain), StringComparer.OrdinalIgnoreCase)
+            .Where(g => !string.IsNullOrEmpty(g.Key))
+            .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static void ApplyRealCitationScores(List<ScoredCompany> entries, Dictionary<string, int> citationCountsByDomain)
+    {
+        if (citationCountsByDomain.Count == 0) return; // no real citation data yet — keep the neutral default already set
+
+        var counts = entries.ToDictionary(e => e, e => citationCountsByDomain.GetValueOrDefault(e.Domain, 0));
+        var maxCount = counts.Values.DefaultIfEmpty(0).Max();
+        if (maxCount == 0) return; // none of the tracked entities have any real citations yet
+
+        foreach (var entry in entries)
+        {
+            entry.CategoryScores["Citation"] = Math.Round(counts[entry] / (double)maxCount * 100, 1);
+        }
+    }
+
     private double ComputeWeightedScore(Dictionary<string, double> scores)
     {
         double total = 0;
@@ -183,8 +233,10 @@ public class CompetitorRankingService : ICompetitorRankingService
     // itself onboarded by some org) and the user's own business share the exact same onboarding
     // extraction schema (AnalyzeOnboardingCommand's {value, confidence}-wrapped JSON). SEO,
     // Authority, and TopicalAuthority have a real, grounded field in that schema — read them
-    // directly. Content/Trust/AIVisibility/Citation/GEO/Technology have no equivalent anywhere
-    // in that schema, so they keep an honest neutral default rather than an invented estimate.
+    // directly. Citation is overwritten afterward by ApplyRealCitationScores using real
+    // PromptCitations data when the org has any (Phase 3 C5) — the default set here only applies
+    // until then. Content/Trust/AIVisibility/GEO/Technology still have no real source anywhere,
+    // so they keep an honest neutral default rather than an invented estimate.
     private Dictionary<string, double> ExtractCategoryScores(string? json)
     {
         var scores = new Dictionary<string, double>
@@ -340,6 +392,7 @@ public class CompetitorRankingService : ICompetitorRankingService
         public string Name { get; set; } = string.Empty;
         public bool IsUser { get; set; }
         public Guid? CompetitorId { get; set; }
+        public string Domain { get; set; } = string.Empty;
         public Dictionary<string, double> CategoryScores { get; set; } = new();
         public double OverallScore { get; set; }
     }
