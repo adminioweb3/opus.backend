@@ -700,7 +700,7 @@ public class PromptIntelligenceController : ControllerBase
 
         var count = Math.Clamp(request.Count, 1, 20);
         var generatedTexts = await _topicPromptGenerator.GeneratePromptsAsync(
-            topic.Name, count, ct,
+            topicId, topic.Name, count, ct,
             brandName: profile?.BusinessName,
             brandWebsite: profile?.WebsiteUrl);
 
