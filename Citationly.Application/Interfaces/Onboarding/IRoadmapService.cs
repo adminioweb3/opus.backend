@@ -14,8 +14,9 @@ public interface IRoadmapService
     /// Deterministically generates a roadmap (assigning priorities, impact, timeframes, etc.)
     /// from a raw list of discovered recommendations and gap analysis.
     /// </summary>
-    RoadmapGenerationResult GenerateRoadmap(
+    Task<RoadmapGenerationResult> GenerateRoadmapAsync(
         Guid organizationId, 
         List<DiscoveryRecommendationDto> discoveredRecs, 
-        GapAnalysisResult gapAnalysis);
+        GapAnalysisResult gapAnalysis,
+        CancellationToken cancellationToken = default);
 }

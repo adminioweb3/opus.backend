@@ -22,6 +22,7 @@ public class ReportController : ControllerBase
     }
 
     [HttpGet]
+    [AuditAction("report.read", "DataExport", "Report")]
     public async Task<IActionResult> GetFullReport()
     {
         var organizationId = await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);

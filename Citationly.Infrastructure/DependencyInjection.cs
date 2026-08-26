@@ -2,10 +2,12 @@ using Microsoft.Extensions.DependencyInjection;
 using Citationly.Application.Interfaces;
 using Citationly.Application.Interfaces.Companies;
 using Citationly.Application.Interfaces.Competitors;
+using Citationly.Application.Interfaces.GeoAudit;
 using Citationly.Infrastructure.Data;
 using Citationly.Infrastructure.Repositories;
 using Citationly.Infrastructure.Services;
 using Citationly.Infrastructure.Services.Companies;
+using Citationly.Infrastructure.Services.GeoAudit;
 using Citationly.Infrastructure.Services.Scraping;
 
 namespace Citationly.Infrastructure;
@@ -23,6 +25,11 @@ public static class DependencyInjection
         services.AddTransient<IWebsiteRepository, WebsiteRepository>();
         services.AddTransient<IIntegrationRepository, IntegrationRepository>();
         services.AddTransient<IApiKeyRepository, ApiKeyRepository>();
+        services.AddTransient<IAlertRepository, AlertRepository>();
+        services.AddTransient<IAuditLogRepository, AuditLogRepository>();
+        services.AddTransient<IAgencyRepository, AgencyRepository>();
+        services.AddTransient<ISsoRepository, SsoRepository>();
+        services.AddTransient<IDataLifecycleRepository, DataLifecycleRepository>();
         services.AddTransient<IKnowledgeBaseRepository, KnowledgeBaseRepository>();
         services.AddTransient<ISourceFolderRepository, SourceFolderRepository>();
         services.AddTransient<IContentDraftRepository, ContentDraftRepository>();
@@ -116,8 +123,17 @@ public static class DependencyInjection
         services.AddScoped<Citationly.Application.Interfaces.Citations.ICitationEnrichmentService, Citationly.Infrastructure.Services.Citations.CitationEnrichmentService>();
         services.AddScoped<Citationly.Application.Interfaces.Citations.ICitationAnalyticsService, Citationly.Infrastructure.Services.Citations.CitationAnalyticsService>();
         services.AddScoped<Citationly.Application.Interfaces.Citations.ICitationBatchProcessor, Citationly.Infrastructure.Services.Citations.CitationBatchProcessor>();
+        services.AddScoped<IRecommendationImpactService, RecommendationImpactService>();
+        services.AddScoped<IBrandKnowledgeService, BrandKnowledgeService>();
+        services.AddScoped<ICrossEngineConsensusService, CrossEngineConsensusService>();
+        services.AddScoped<IAlertService, AlertService>();
+        services.AddScoped<IAuditLogService, AuditLogService>();
 
         services.AddScoped<Citationly.Application.Interfaces.GeoOptimizer.IGeoOptimizerService, Citationly.Infrastructure.Services.GeoOptimizer.GeoOptimizerService>();
+        services.AddHttpClient<IGeoTechnicalAuditService, GeoTechnicalAuditService>(client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(30);
+        });
         services.AddScoped<Citationly.Application.Interfaces.AnswerSimulator.IAnswerSimulatorService, Citationly.Infrastructure.Services.AnswerSimulator.AnswerSimulatorService>();
 
         services.AddHttpClient<ICmsIntegrationService, WordPressIntegrationService>();
@@ -132,6 +148,8 @@ public static class DependencyInjection
         services.AddScoped<Citationly.Infrastructure.BackgroundJobs.BrandPulseScanRecurringJob>();
         services.AddScoped<Citationly.Infrastructure.BackgroundJobs.CommandCenterInsightsRecurringJob>();
         services.AddScoped<Citationly.Infrastructure.BackgroundJobs.OpportunityScanRecurringJob>();
+        services.AddScoped<Citationly.Infrastructure.BackgroundJobs.RecommendationImpactRecurringJob>();
+        services.AddScoped<Citationly.Infrastructure.BackgroundJobs.AlertDeliveryRecurringJob>();
 
         return services;
     }

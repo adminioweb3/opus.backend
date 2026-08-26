@@ -1,6 +1,7 @@
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Citationly.API.Services;
 using Citationly.Application.Features.Team;
 using Citationly.Application.Interfaces;
 using System.Security.Claims;
@@ -42,6 +43,8 @@ public class TeamController : ControllerBase
     }
 
     [HttpPut("members/{userId}/role")]
+    [RequireOrgRole("Admin")]
+    [AuditAction("team.member.role_update", "Security", "User")]
     public async Task<IActionResult> UpdateRole(Guid userId, [FromBody] UpdateRoleRequest request)
     {
         var caller = await GetCallerAsync();
@@ -55,6 +58,8 @@ public class TeamController : ControllerBase
     }
 
     [HttpDelete("members/{userId}")]
+    [RequireOrgRole("Admin")]
+    [AuditAction("team.member.remove", "Security", "User")]
     public async Task<IActionResult> RemoveMember(Guid userId)
     {
         var caller = await GetCallerAsync();
@@ -78,6 +83,8 @@ public class TeamController : ControllerBase
     }
 
     [HttpPost("invites")]
+    [RequireOrgRole("Admin")]
+    [AuditAction("team.invite.create", "Security", "Invite")]
     public async Task<IActionResult> CreateInvite([FromBody] CreateInviteRequest request)
     {
         var caller = await GetCallerAsync();
@@ -105,6 +112,8 @@ public class TeamController : ControllerBase
     }
 
     [HttpDelete("invites/{inviteId}")]
+    [RequireOrgRole("Admin")]
+    [AuditAction("team.invite.revoke", "Security", "Invite")]
     public async Task<IActionResult> RevokeInvite(Guid inviteId)
     {
         var caller = await GetCallerAsync();

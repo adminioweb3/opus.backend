@@ -90,6 +90,7 @@ public sealed class AnthropicProvider : IAiProvider
                 }
             }
 
+            await _aiUsageLimiter.RecordEstimatedCostAsync(_aiContext.OrganizationId, cost, "provider:anthropic", ct);
             return new AiProviderResult(content, _model, promptTokens, completionTokens, cost, WasSearchGrounded: false);
         }, cancellationToken);
     }

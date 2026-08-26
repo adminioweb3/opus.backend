@@ -64,6 +64,132 @@ public class Recommendation
     public DateTime CreatedAt { get; set; }
 }
 
+public class Alert
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public string DedupKey { get; set; } = string.Empty;
+    public string Type { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+    public string Message { get; set; } = string.Empty;
+    public string Severity { get; set; } = "Info";
+    public string Source { get; set; } = string.Empty;
+    public string ActionUrl { get; set; } = string.Empty;
+    public string EvidenceJson { get; set; } = "{}";
+    public bool IsRead { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? DeliveredAt { get; set; }
+    public string DeliveryStatus { get; set; } = "Pending";
+}
+
+public class AlertThreshold
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public string AlertType { get; set; } = string.Empty;
+    public int ThresholdValue { get; set; }
+    public bool EmailEnabled { get; set; }
+    public bool WebhookEnabled { get; set; }
+    public string WebhookUrl { get; set; } = string.Empty;
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class AuditLog
+{
+    public Guid Id { get; set; }
+    public Guid? OrganizationId { get; set; }
+    public Guid? ActorUserId { get; set; }
+    public string ActorEmail { get; set; } = string.Empty;
+    public string ActorType { get; set; } = "User";
+    public string Action { get; set; } = string.Empty;
+    public string Category { get; set; } = string.Empty;
+    public string Outcome { get; set; } = "Success";
+    public string TargetType { get; set; } = string.Empty;
+    public string TargetId { get; set; } = string.Empty;
+    public string IpAddress { get; set; } = string.Empty;
+    public string UserAgent { get; set; } = string.Empty;
+    public string MetadataJson { get; set; } = "{}";
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class SsoConnection
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public string Provider { get; set; } = "OIDC";
+    public string Domain { get; set; } = string.Empty;
+    public string MetadataUrl { get; set; } = string.Empty;
+    public string EntityId { get; set; } = string.Empty;
+    public bool ScimEnabled { get; set; }
+    public string ScimTokenHash { get; set; } = string.Empty;
+    public bool IsEnabled { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class RetentionPolicy
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public int? RawPromptEvidenceDays { get; set; }
+    public int AuditLogDays { get; set; } = 365;
+    public int SnapshotDays { get; set; } = 1095;
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class DataDeletionRequest
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public Guid RequestedByUserId { get; set; }
+    public string Status { get; set; } = "Pending";
+    public string Scope { get; set; } = "Organization";
+    public string Reason { get; set; } = string.Empty;
+    public DateTime RequestedAt { get; set; } = DateTime.UtcNow;
+    public DateTime ScheduledFor { get; set; }
+    public DateTime? CancelledAt { get; set; }
+    public DateTime? CompletedAt { get; set; }
+}
+
+public class Agency
+{
+    public Guid Id { get; set; }
+    public Guid OwnerOrganizationId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class AgencyClient
+{
+    public Guid Id { get; set; }
+    public Guid AgencyId { get; set; }
+    public Guid ClientOrganizationId { get; set; }
+    public string ClientName { get; set; } = string.Empty;
+    public string Role { get; set; } = "Manager";
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class WhiteLabelSettings
+{
+    public Guid Id { get; set; }
+    public Guid AgencyId { get; set; }
+    public string BrandName { get; set; } = string.Empty;
+    public string LogoUrl { get; set; } = string.Empty;
+    public string PrimaryColor { get; set; } = "#4F46E5";
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class ReportShareLink
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public Guid? AgencyId { get; set; }
+    public string TokenHash { get; set; } = string.Empty;
+    public string ReportType { get; set; } = "Executive";
+    public DateTime ExpiresAt { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
 public class Integration
 {
     public Guid Id { get; set; }

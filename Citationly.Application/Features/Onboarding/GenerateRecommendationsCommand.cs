@@ -137,7 +137,7 @@ public class GenerateRecommendationsCommandHandler : IRequestHandler<GenerateRec
             }
 
             // 4. Roadmap Generation (Deterministic)
-            var roadmap = _roadmapService.GenerateRoadmap(request.OrganizationId, discoveredRecs, gapAnalysis);
+            var roadmap = await _roadmapService.GenerateRoadmapAsync(request.OrganizationId, discoveredRecs, gapAnalysis, cancellationToken);
 
             // 5. Save to DB
             await _websiteRepository.InsertGeoRecommendationsAsync(roadmap.Summary, roadmap.Recommendations);

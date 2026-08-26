@@ -42,6 +42,8 @@ public class ApiKeysController : ControllerBase
     }
 
     [HttpPost]
+    [RequireOrgRole("Admin")]
+    [AuditAction("api_key.create", "Security", "ApiKey")]
     public async Task<IActionResult> Generate([FromBody] GenerateApiKeyRequest request)
     {
         var orgId = await _currentOrg.GetOrganizationIdAsync(User);
@@ -87,6 +89,8 @@ public class ApiKeysController : ControllerBase
     }
 
     [HttpDelete("{id:guid}")]
+    [RequireOrgRole("Admin")]
+    [AuditAction("api_key.revoke", "Security", "ApiKey")]
     public async Task<IActionResult> Revoke(Guid id)
     {
         var orgId = await _currentOrg.GetOrganizationIdAsync(User);

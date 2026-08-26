@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using Citationly.Application.Interfaces;
 using Citationly.Domain.Entities;
+using Citationly.Domain.Utils;
 using Citationly.Application.Features.PromptIntelligence.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -20,6 +21,7 @@ public class PromptIntelligenceController : ControllerBase
     private readonly ITopicPromptGeneratorService _topicPromptGenerator;
     private readonly IPromptTopicSeedingService _seedingService;
     private readonly IEntitlementService _entitlements;
+    private readonly IRecommendationImpactService _recommendationImpactService;
     private readonly ILogger<PromptIntelligenceController> _logger;
 
     public PromptIntelligenceController(
@@ -31,6 +33,7 @@ public class PromptIntelligenceController : ControllerBase
         ITopicPromptGeneratorService topicPromptGenerator,
         IPromptTopicSeedingService seedingService,
         IEntitlementService entitlements,
+        IRecommendationImpactService recommendationImpactService,
         ILogger<PromptIntelligenceController> logger)
     {
         _repo = repo;
@@ -41,6 +44,7 @@ public class PromptIntelligenceController : ControllerBase
         _topicPromptGenerator = topicPromptGenerator;
         _seedingService = seedingService;
         _entitlements = entitlements;
+        _recommendationImpactService = recommendationImpactService;
         _logger = logger;
     }
 
@@ -92,6 +96,16 @@ public class PromptIntelligenceController : ControllerBase
         topic.OrganizationId = orgId.Value;
         topic.Id = await _repo.CreateTopicAsync(topic);
         return Ok(topic);
+    }
+
+    [HttpGet("taxonomy-graph")]
+    public async Task<IActionResult> GetTaxonomyGraph()
+    {
+        var orgId = await GetOrganizationIdAsync();
+        if (orgId == null) return Unauthorized();
+
+        var rows = await _repo.GetTaxonomyGraphAsync(orgId.Value);
+        return Ok(new { hasData = rows.Any(), nodes = rows });
     }
 
     [HttpGet("topics/{topicId}/questions")]
@@ -163,6 +177,7 @@ public class PromptIntelligenceController : ControllerBase
         var mentions = await _repo.GetMentionsAsync(analysisId);
         var responses = await _repo.GetResponsesAsync(analysisId);
         var recommendations = await _repo.GetRecommendationsAsync(analysisId);
+        var recommendationImplementations = await _repo.GetRecommendationImplementationsAsync(analysisId);
         var competitors = await _repo.GetCompetitorComparisonsAsync(analysisId);
 
         return Ok(new
@@ -171,8 +186,34 @@ public class PromptIntelligenceController : ControllerBase
             Mentions = mentions,
             Responses = responses,
             Recommendations = recommendations,
+            RecommendationImplementations = recommendationImplementations,
             CompetitorComparisons = competitors
         });
+    }
+
+    [HttpPost("recommendations/{recommendationId}/implemented")]
+    public async Task<IActionResult> MarkRecommendationImplemented(Guid recommendationId, [FromBody] MarkRecommendationImplementedRequest? request)
+    {
+        var orgId = await GetOrganizationIdAsync();
+        if (orgId == null) return Unauthorized();
+
+        var implementation = await _recommendationImpactService.MarkImplementedAsync(
+            orgId.Value,
+            recommendationId,
+            request?.MonitoringWindowDays ?? 14,
+            HttpContext.RequestAborted);
+
+        return implementation == null ? NotFound() : Ok(implementation);
+    }
+
+    [HttpPost("recommendations/impact/process-due")]
+    public async Task<IActionResult> ProcessDueRecommendationImpacts()
+    {
+        var orgId = await GetOrganizationIdAsync();
+        if (orgId == null) return Unauthorized();
+
+        var measured = await _recommendationImpactService.ProcessDueMeasurementsAsync(orgId.Value, HttpContext.RequestAborted);
+        return Ok(new { measured });
     }
 
     [HttpGet("analyze/stream/{questionId}")]
@@ -403,6 +444,20 @@ public class PromptIntelligenceController : ControllerBase
         return diff >= 0 ? $"+{diff:0.#}" : diff.ToString("0.#");
     }
 
+    private static string NormalizeCitationDomain(string value)
+    {
+        var normalized = DomainNormalizer.Normalize(value);
+        return string.IsNullOrWhiteSpace(normalized) ? value.Trim().ToLowerInvariant() : normalized;
+    }
+
+    private static bool DomainMatches(string candidate, string target)
+    {
+        if (string.IsNullOrWhiteSpace(candidate) || string.IsNullOrWhiteSpace(target)) return false;
+
+        return candidate.Equals(target, StringComparison.OrdinalIgnoreCase)
+            || candidate.EndsWith("." + target, StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>
     /// Platforms tab. Needs no new AI and no new table — PromptResponses/PromptMentions already
     /// carry a Platform field per row, so per-platform score/position/share-of-voice is a pure
@@ -582,35 +637,48 @@ public class PromptIntelligenceController : ControllerBase
         var orgId = await GetOrganizationIdAsync();
         if (orgId == null) return Unauthorized();
 
-        var (_, since) = ResolveRange(range);
-        var rows = (await _repo.GetCitationSummaryDataAsync(orgId.Value, since)).ToList();
+        var (days, since) = ResolveRange(range);
+        var now = DateTime.UtcNow;
+        var priorSince = now.AddDays(-days * 2);
+        var rows = (await _repo.GetCitationSummaryDataAsync(orgId.Value, priorSince)).ToList();
+        var currentRows = rows.Where(r => r.RunAt >= since).ToList();
+        var priorRows = rows.Where(r => r.RunAt < since).ToList();
 
-        if (rows.Count == 0)
+        if (currentRows.Count == 0)
         {
-            return Ok(new { hasData = false, topDomains = Array.Empty<object>(), categories = Array.Empty<object>(), topPages = Array.Empty<object>() });
+            return Ok(new
+            {
+                hasData = false,
+                topDomains = Array.Empty<object>(),
+                categories = Array.Empty<object>(),
+                topPages = Array.Empty<object>(),
+                winners = Array.Empty<object>(),
+                losers = Array.Empty<object>(),
+                gaps = Array.Empty<object>(),
+            });
         }
 
-        var total = rows.Count;
+        var total = currentRows.Count;
 
-        var topDomains = rows
-            .GroupBy(r => r.Domain)
+        var topDomains = currentRows
+            .GroupBy(r => NormalizeCitationDomain(r.Domain))
             .Select(g => new { domain = g.Key, category = g.First().Category, share = Math.Round((double)g.Count() / total * 100, 1) })
             .OrderByDescending(d => d.share)
             .Take(10)
             .ToList();
 
-        var categories = rows
+        var categories = currentRows
             .GroupBy(r => r.Category)
             .Select(g => new { category = g.Key, share = Math.Round((double)g.Count() / total * 100, 1) })
             .OrderByDescending(c => c.share)
             .ToList();
 
-        var topPages = rows
+        var topPages = currentRows
             .GroupBy(r => r.Url)
             .Select(g => new
             {
                 url = g.Key,
-                domain = g.First().Domain,
+                domain = NormalizeCitationDomain(g.First().Domain),
                 category = g.First().Category,
                 share = Math.Round((double)g.Count() / total * 100, 1),
                 firstSeen = g.Min(r => r.RunAt).ToString("yyyy-MM-dd"),
@@ -619,7 +687,97 @@ public class PromptIntelligenceController : ControllerBase
             .Take(15)
             .ToList();
 
-        return Ok(new { hasData = true, topDomains, categories, topPages });
+        var priorTotal = priorRows.Count;
+        var currentDomainCounts = currentRows.GroupBy(r => NormalizeCitationDomain(r.Domain)).ToDictionary(g => g.Key, g => g.Count());
+        var priorDomainCounts = priorRows.GroupBy(r => NormalizeCitationDomain(r.Domain)).ToDictionary(g => g.Key, g => g.Count());
+        var domainCategories = currentRows.Concat(priorRows)
+            .GroupBy(r => NormalizeCitationDomain(r.Domain))
+            .ToDictionary(g => g.Key, g => g.First().Category);
+
+        var movers = currentDomainCounts.Keys.Concat(priorDomainCounts.Keys)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(domain =>
+            {
+                var recentShare = Math.Round((double)currentDomainCounts.GetValueOrDefault(domain) / Math.Max(1, total) * 100, 1);
+                var olderShare = Math.Round((double)priorDomainCounts.GetValueOrDefault(domain) / Math.Max(1, priorTotal) * 100, 1);
+                var change = Math.Round(recentShare - olderShare, 1);
+                return new
+                {
+                    domain,
+                    category = domainCategories.GetValueOrDefault(domain, "Unknown"),
+                    share = recentShare,
+                    priorShare = olderShare,
+                    delta = Delta(recentShare, olderShare),
+                    change,
+                };
+            })
+            .ToList();
+
+        var winners = movers
+            .Where(m => m.change > 0)
+            .OrderByDescending(m => m.change)
+            .ThenByDescending(m => m.share)
+            .Take(5)
+            .Select(m => new { m.domain, m.category, m.share, m.priorShare, m.delta })
+            .ToList();
+
+        var losers = movers
+            .Where(m => m.change < 0)
+            .OrderBy(m => m.change)
+            .ThenByDescending(m => m.priorShare)
+            .Take(5)
+            .Select(m => new { m.domain, m.category, m.share, m.priorShare, m.delta })
+            .ToList();
+
+        var profile = await _websiteRepository.GetLatestWebsiteProfileAsync(orgId.Value);
+        var ownDomain = NormalizeCitationDomain(profile?.WebsiteUrl ?? string.Empty);
+        var competitorDomains = (await _websiteRepository.GetCompetitorsAsync(orgId.Value))
+            .Select(c => new { c.Name, Domain = NormalizeCitationDomain(c.WebsiteUrl) })
+            .Where(c => !string.IsNullOrWhiteSpace(c.Domain))
+            .GroupBy(c => c.Domain, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First().Name, StringComparer.OrdinalIgnoreCase);
+
+        var gapRows = currentRows
+            .GroupBy(r => r.AnalysisId)
+            .Where(g => !g.Any(r => DomainMatches(NormalizeCitationDomain(r.Domain), ownDomain)))
+            .SelectMany(g => g
+                .Select(r => new
+                {
+                    Row = r,
+                    Domain = NormalizeCitationDomain(r.Domain),
+                    Competitor = competitorDomains.FirstOrDefault(c => DomainMatches(NormalizeCitationDomain(r.Domain), c.Key))
+                })
+                .Where(x => !string.IsNullOrWhiteSpace(x.Competitor.Key)))
+            .ToList();
+
+        var gaps = gapRows
+            .GroupBy(x => new { Domain = x.Competitor.Key, Name = x.Competitor.Value })
+            .Select(g => new
+            {
+                competitor = g.Key.Name,
+                domain = g.Key.Domain,
+                category = g.First().Row.Category,
+                promptCount = g.Select(x => x.Row.AnalysisId).Distinct().Count(),
+                platforms = g.Select(x => x.Row.Platform).Distinct().OrderBy(p => p).ToList(),
+                examples = g
+                    .OrderByDescending(x => x.Row.RunAt)
+                    .GroupBy(x => x.Row.Url)
+                    .Take(3)
+                    .Select(x => new
+                    {
+                        url = x.Key,
+                        platform = x.First().Row.Platform,
+                        runAt = x.First().Row.RunAt.ToString("yyyy-MM-dd"),
+                    })
+                    .ToList(),
+                lastSeen = g.Max(x => x.Row.RunAt).ToString("yyyy-MM-dd"),
+            })
+            .OrderByDescending(g => g.promptCount)
+            .ThenByDescending(g => g.lastSeen)
+            .Take(10)
+            .ToList();
+
+        return Ok(new { hasData = true, topDomains, categories, topPages, winners, losers, gaps });
     }
 
     /// <summary>
@@ -743,6 +901,11 @@ public class UpdateQuestionRequest
 public class GeneratePromptsRequest
 {
     public int Count { get; set; } = 8;
+}
+
+public class MarkRecommendationImplementedRequest
+{
+    public int MonitoringWindowDays { get; set; } = 14;
 }
 
 file class RankEntity

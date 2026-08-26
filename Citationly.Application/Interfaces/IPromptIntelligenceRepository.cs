@@ -8,6 +8,7 @@ public interface IPromptIntelligenceRepository
     Task<IEnumerable<PromptTopic>> GetTopicsAsync(Guid organizationId);
     Task<PromptTopic?> GetTopicAsync(Guid topicId);
     Task<Guid> CreateTopicAsync(PromptTopic topic);
+    Task<IEnumerable<PromptTaxonomyGraphRow>> GetTaxonomyGraphAsync(Guid organizationId);
 
     Task<IEnumerable<PromptQuestion>> GetQuestionsByTopicAsync(Guid topicId);
     Task<PromptQuestion?> GetQuestionAsync(Guid questionId);
@@ -37,6 +38,12 @@ public interface IPromptIntelligenceRepository
     Task InsertMentionsAsync(IEnumerable<PromptMention> mentions);
     Task InsertVisibilityAsync(PromptVisibility visibility);
     Task InsertRecommendationsAsync(IEnumerable<PromptRecommendation> recommendations);
+    Task<RecommendationImplementation?> MarkRecommendationImplementedAsync(Guid organizationId, Guid recommendationId, int monitoringWindowDays);
+    Task<IEnumerable<RecommendationImplementation>> GetRecommendationImplementationsAsync(Guid analysisId);
+    Task<IEnumerable<RecommendationImplementation>> GetDueRecommendationImplementationsAsync(DateTime asOf, int limit, Guid? organizationId = null);
+    Task<PromptVisibility?> GetLatestFollowupVisibilityAsync(Guid questionId, DateTime notBefore);
+    Task CompleteRecommendationImpactAsync(Guid implementationId, Guid followupAnalysisId, int deltaVisibility, int deltaShareOfVoice, int deltaAveragePosition, int deltaCitationCount, string impactStatus, string evidenceJson);
+    Task<IEnumerable<RecommendationImpactHistoryRow>> GetRecommendationImpactHistoryAsync(Guid organizationId, string category, int minSamples);
     Task InsertCompetitorComparisonsAsync(IEnumerable<CompetitorComparison> comparisons);
     Task InsertCitationsAsync(IEnumerable<PromptCitation> citations);
     Task UpdateResponseSentimentAsync(Guid analysisId, string platform, string? sentiment, string? quote);
@@ -52,6 +59,14 @@ public interface IPromptIntelligenceRepository
     Task<PromptVisibility?> GetVisibilityAsync(Guid analysisId);
     Task<IEnumerable<PromptRecommendation>> GetRecommendationsAsync(Guid analysisId);
     Task<IEnumerable<CompetitorComparison>> GetCompetitorComparisonsAsync(Guid analysisId);
+    Task<IEnumerable<BrandKnowledgeSourceRow>> GetBrandKnowledgeSourceRowsAsync(Guid organizationId, DateTime since);
+    Task UpsertBrandClaimsAsync(IEnumerable<BrandClaim> claims);
+    Task<IEnumerable<BrandClaim>> GetBrandClaimsAsync(Guid organizationId, DateTime since);
+    Task UpsertBrandFactChecksAsync(IEnumerable<BrandFactCheck> factChecks);
+    Task<IEnumerable<BrandFactCheck>> GetBrandFactChecksAsync(Guid organizationId, DateTime since);
+    Task<IEnumerable<CrossEngineSourceRow>> GetCrossEngineSourceRowsAsync(Guid organizationId, DateTime since);
+    Task UpsertCrossEngineConsensusInsightsAsync(IEnumerable<CrossEngineConsensusInsight> insights);
+    Task<IEnumerable<CrossEngineConsensusInsight>> GetCrossEngineConsensusInsightsAsync(Guid organizationId, DateTime since);
 }
 
 public class PromptVisibilitySummaryRow
@@ -129,4 +144,50 @@ public class FanoutOverviewRow
     public string PromptText { get; set; } = string.Empty;
     public int FanoutCount { get; set; }
     public int AnalysisCount { get; set; }
+}
+
+public class PromptTaxonomyGraphRow
+{
+    public Guid TopicId { get; set; }
+    public string TopicName { get; set; } = string.Empty;
+    public Guid? SubtopicId { get; set; }
+    public string? SubtopicName { get; set; }
+    public Guid? IntentId { get; set; }
+    public string? IntentName { get; set; }
+    public Guid? PersonaId { get; set; }
+    public string? PersonaName { get; set; }
+    public Guid? FunnelStageId { get; set; }
+    public string? FunnelStageName { get; set; }
+    public Guid? ClusterId { get; set; }
+    public string? ClusterName { get; set; }
+    public int PromptCount { get; set; }
+}
+
+public class RecommendationImpactHistoryRow
+{
+    public string Category { get; set; } = string.Empty;
+    public int SampleCount { get; set; }
+    public decimal AverageVisibilityDelta { get; set; }
+    public decimal AverageCitationDelta { get; set; }
+}
+
+public class BrandKnowledgeSourceRow
+{
+    public Guid PromptAnalysisId { get; set; }
+    public Guid PromptResponseId { get; set; }
+    public Guid PromptQuestionId { get; set; }
+    public string Platform { get; set; } = string.Empty;
+    public string ResponseText { get; set; } = string.Empty;
+    public DateTime RunAt { get; set; }
+}
+
+public class CrossEngineSourceRow
+{
+    public Guid PromptAnalysisId { get; set; }
+    public Guid PromptQuestionId { get; set; }
+    public string PromptText { get; set; } = string.Empty;
+    public string Platform { get; set; } = string.Empty;
+    public string ProviderKey { get; set; } = string.Empty;
+    public string ResponseText { get; set; } = string.Empty;
+    public DateTime RunAt { get; set; }
 }

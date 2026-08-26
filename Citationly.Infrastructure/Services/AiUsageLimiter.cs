@@ -6,6 +6,7 @@ namespace Citationly.Infrastructure.Services;
 public sealed class AiUsageLimiter : IAiUsageLimiter
 {
     private const string DailyQuotaMetricKey = "ai_calls_per_day";
+    private const string DailySpendMetricKey = "ai_spend_micro_usd_per_day";
 
     // Fast, in-process burst guard - catches a runaway loop within the hour regardless of
     // plan. This is defense in depth, not the real limit: the actual per-tenant contractual
@@ -41,8 +42,26 @@ public sealed class AiUsageLimiter : IAiUsageLimiter
                     "Upgrade your plan or try again tomorrow.");
             }
 
+            var spendQuota = await _entitlements.CheckQuotaAsync(orgId, DailySpendMetricKey, cancellationToken);
+            if (!spendQuota.IsWithinLimit)
+            {
+                throw new InvalidOperationException(
+                    $"Daily AI spend limit reached for {operationName} ({FormatMicroUsd(spendQuota.CurrentUsage)}/{FormatMicroUsd(spendQuota.Limit)}). " +
+                    "Upgrade your plan or try again tomorrow.");
+            }
+
             await _entitlements.ConsumeUsageAsync(orgId, DailyQuotaMetricKey, cancellationToken: cancellationToken);
         }
+    }
+
+    public async Task RecordEstimatedCostAsync(Guid? organizationId, decimal? costUsd, string operationName, CancellationToken cancellationToken = default)
+    {
+        if (organizationId is not Guid orgId || costUsd is null || costUsd <= 0) return;
+
+        var microUsd = (long)Math.Ceiling(costUsd.Value * 1_000_000m);
+        if (microUsd <= 0) return;
+
+        await _entitlements.ConsumeUsageAsync(orgId, DailySpendMetricKey, microUsd, cancellationToken);
     }
 
     private async Task EnsureWithinLimitAsync(string key, int limit, string operationName, CancellationToken cancellationToken)
@@ -70,6 +89,11 @@ public sealed class AiUsageLimiter : IAiUsageLimiter
         {
             gate.Release();
         }
+    }
+
+    private static string FormatMicroUsd(long? microUsd)
+    {
+        return microUsd is null ? "unlimited" : $"${microUsd.Value / 1_000_000m:0.######}";
     }
 
     private sealed record UsageWindow(DateTimeOffset WindowStartUtc, int Count);

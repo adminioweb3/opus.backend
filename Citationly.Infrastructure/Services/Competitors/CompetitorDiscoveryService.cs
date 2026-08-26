@@ -218,7 +218,7 @@ public class CompetitorDiscoveryService : ICompetitorDiscoveryService
                     CompanyId = companyId,
                     CompetitorCompanyId = matched.Id,
                     Similarity = 0, // not a cosine-similarity match - the evidence here is observed co-occurrence, not embedding distance
-                    Confidence = Math.Min(100, count * 20), // derived from real mention frequency, not an AI guess
+                    Confidence = ConfidenceFromObservedMentions(count),
                     Reason = evidenceNote,
                     Strength = null,
                     Weakness = null,
@@ -279,7 +279,7 @@ public class CompetitorDiscoveryService : ICompetitorDiscoveryService
                     CompanyId = companyId,
                     CompetitorCompanyId = c.Company.Id,
                     Similarity = ToSimilarityScore(c.CosineSimilarity),
-                    Confidence = 0,
+                    Confidence = ConfidenceFromGraphSimilarity(c.CosineSimilarity),
                     Rank = i + 1,
                     Reason = null,
                     Strength = null,
@@ -296,7 +296,7 @@ public class CompetitorDiscoveryService : ICompetitorDiscoveryService
                 CompanyId = companyId,
                 CompetitorCompanyId = s.CompanyId,
                 Similarity = ToSimilarityScore(cosine),
-                Confidence = NormalizeConfidence(s.Confidence),
+                Confidence = ConfidenceFromGraphSimilarity(cosine),
                 Rank = i + 1,
                 Reason = s.Reason,
                 Strength = s.Strength,
@@ -484,23 +484,12 @@ Return a JSON object whose ""selections"" key holds the array, with companyId co
     {
         public Guid CompanyId { get; set; }
 
-        /// <summary>Read as double because the model answers on either scale — see NormalizeConfidence.</summary>
+        /// <summary>Accepted for backwards-compatible response parsing; not used as evidence confidence.</summary>
         public double Confidence { get; set; }
 
         public string? Reason { get; set; }
         public string? Strength { get; set; }
         public string? Weakness { get; set; }
-    }
-
-    /// <summary>
-    /// The model answers confidence on whichever scale it feels like: the generation prompt pins a
-    /// 60-90 range and gets 0-100 back, while the ranking prompt returned 0.95 for "very confident",
-    /// which landed in the UI as 1%. Anything at or below 1 is a fraction.
-    /// </summary>
-    private static int NormalizeConfidence(double raw)
-    {
-        var scaled = raw > 0 && raw <= 1.0 ? raw * 100 : raw;
-        return (int)Math.Round(Math.Clamp(scaled, 0, 100));
     }
 
     /// <summary>
@@ -641,7 +630,7 @@ Return a JSON object whose ""competitors"" key holds the array:
                     CompanyId = companyId,
                     CompetitorCompanyId = upserted.Id,
                     Similarity = Math.Max(startSimilarity - (edges.Count * SimilarityStep), 0m),
-                    Confidence = Math.Clamp(competitor.Confidence, 60, 100),
+                    Confidence = ConfidenceFromGeneratedCandidate(competitor),
                     Rank = startRank + edges.Count,
                     Reason = competitor.Reason,
                     Strength = competitor.Strength,
@@ -667,5 +656,36 @@ Return a JSON object whose ""competitors"" key holds the array:
         public string? Weakness { get; set; }
         public int Confidence { get; set; }
         public string? Scale { get; set; }
+    }
+
+    private static int ConfidenceFromObservedMentions(int mentionCount)
+    {
+        if (mentionCount <= 0) return 0;
+
+        // Confidence v1: repeated real co-occurrence is the strongest signal available here.
+        // Two mentions starts as moderate confidence; about ten mentions approaches saturation.
+        var evidenceScore = 45 + (55 * (1 - Math.Exp(-mentionCount / 4.0)));
+        return (int)Math.Round(Math.Clamp(evidenceScore, 45, 100));
+    }
+
+    private static int ConfidenceFromGraphSimilarity(double cosineSimilarity)
+    {
+        if (cosineSimilarity < MinCosineSimilarity) return 0;
+
+        // Confidence v1: graph candidates are backed by real embeddings, so use their distance from
+        // the acceptance threshold instead of the model's self-reported confidence.
+        var normalizedAboveThreshold = (cosineSimilarity - MinCosineSimilarity) / (1.0 - MinCosineSimilarity);
+        var evidenceScore = 55 + (35 * normalizedAboveThreshold);
+        return (int)Math.Round(Math.Clamp(evidenceScore, 55, 90));
+    }
+
+    private static int ConfidenceFromGeneratedCandidate(ColdStartCompetitor competitor)
+    {
+        // Generated candidates have the weakest evidence: a real-looking domain and scale tag help,
+        // but this should never look as certain as observed co-occurrence or graph similarity.
+        var hasWebsite = !string.IsNullOrWhiteSpace(competitor.Website) ? 10 : 0;
+        var hasScale = ScaleTierIndex(competitor.Scale) >= 0 ? 10 : 0;
+        var hasReason = !string.IsNullOrWhiteSpace(competitor.Reason) ? 5 : 0;
+        return 35 + hasWebsite + hasScale + hasReason;
     }
 }

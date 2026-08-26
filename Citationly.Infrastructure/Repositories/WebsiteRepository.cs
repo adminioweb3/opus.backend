@@ -214,6 +214,60 @@ public class WebsiteRepository : IWebsiteRepository
     public async Task<IEnumerable<Competitor>> GetCompetitorsAsync(Guid organizationId)
     {
         using var connection = _dbConnectionFactory.CreateConnection();
+        var graphTablesExist = await connection.ExecuteScalarAsync<bool>(@"
+            SELECT
+                EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'websites')
+                AND EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'company')
+                AND EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'companycompetitor')");
+
+        if (graphTablesExist)
+        {
+            var graphRows = (await connection.QueryAsync<Competitor>(@"
+                WITH org_company AS (
+                    SELECT CompanyId
+                    FROM Websites
+                    WHERE OrganizationId = @OrganizationId AND CompanyId IS NOT NULL
+                    ORDER BY CreatedAt DESC
+                    LIMIT 1
+                )
+                SELECT
+                    cc.Id AS Id,
+                    @OrganizationId AS OrganizationId,
+                    c.CompanyName AS Name,
+                    c.Website AS WebsiteUrl,
+                    COALESCE(c.Industry, '') AS Industry,
+                    cc.Reason AS Description,
+                    'Direct' AS Category,
+                    NULL AS Logo,
+                    NULL AS Country,
+                    0 AS Authority,
+                    0 AS Popularity,
+                    cc.Rank AS Rank,
+                    ROUND(cc.Similarity)::int AS SimilarityScore,
+                    jsonb_build_object(
+                        'source', 'CompanyCompetitor',
+                        'discoverySource', cc.DiscoverySource,
+                        'similarity', cc.Similarity,
+                        'confidence', cc.Confidence,
+                        'reason', cc.Reason,
+                        'strength', cc.Strength,
+                        'weakness', cc.Weakness
+                    )::text AS RawJson,
+                    'Completed' AS EnrichmentStatus,
+                    c.BusinessProfileJson::text AS EnrichedJson,
+                    c.LastAnalyzedAt AS EnrichedAt,
+                    'Direct' AS CompetitorType,
+                    cc.Confidence AS Confidence,
+                    cc.CreatedAt AS CreatedAt
+                FROM org_company oc
+                JOIN CompanyCompetitor cc ON cc.CompanyId = oc.CompanyId
+                JOIN Company c ON c.Id = cc.CompetitorCompanyId
+                ORDER BY cc.Rank, cc.Similarity DESC",
+                new { OrganizationId = organizationId })).ToList();
+
+            if (graphRows.Count > 0) return graphRows;
+        }
+
         var exists = await connection.ExecuteScalarAsync<bool>(
             "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'competitors')"
         );
@@ -227,6 +281,34 @@ public class WebsiteRepository : IWebsiteRepository
     public async Task<int> GetCompetitorCountAsync(Guid organizationId)
     {
         using var connection = _dbConnectionFactory.CreateConnection();
+        var graphTablesExist = await connection.ExecuteScalarAsync<bool>(@"
+            SELECT
+                EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'websites')
+                AND EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'companycompetitor')");
+
+        if (graphTablesExist)
+        {
+            var graphCount = await connection.ExecuteScalarAsync<int>(@"
+                WITH org_company AS (
+                    SELECT CompanyId
+                    FROM Websites
+                    WHERE OrganizationId = @OrganizationId AND CompanyId IS NOT NULL
+                    ORDER BY CreatedAt DESC
+                    LIMIT 1
+                )
+                SELECT COUNT(1)
+                FROM org_company oc
+                JOIN CompanyCompetitor cc ON cc.CompanyId = oc.CompanyId",
+                new { OrganizationId = organizationId });
+
+            if (graphCount > 0) return graphCount;
+        }
+
+        var exists = await connection.ExecuteScalarAsync<bool>(
+            "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'competitors')"
+        );
+        if (!exists) return 0;
+
         return await connection.ExecuteScalarAsync<int>(
             "SELECT COUNT(1) FROM Competitors WHERE OrganizationId = @OrganizationId",
             new { OrganizationId = organizationId });

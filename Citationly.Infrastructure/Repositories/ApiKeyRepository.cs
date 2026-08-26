@@ -38,6 +38,19 @@ public class ApiKeyRepository : IApiKeyRepository
             apiKey);
     }
 
+    public async Task<ApiKey?> GetActiveApiKeyByHashAsync(string keyHash)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        return await connection.QueryFirstOrDefaultAsync<ApiKey>(
+            """
+            SELECT Id, OrganizationId, Name, KeyPrefix, KeyHash, Last4, CreatedAt, RevokedAt
+            FROM ApiKeys
+            WHERE KeyHash = @KeyHash AND RevokedAt IS NULL
+            LIMIT 1
+            """,
+            new { KeyHash = keyHash });
+    }
+
     public async Task<bool> RevokeApiKeyAsync(Guid id, Guid organizationId, DateTime revokedAtUtc)
     {
         using var connection = _dbConnectionFactory.CreateConnection();

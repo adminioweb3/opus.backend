@@ -94,6 +94,7 @@ public sealed class PerplexityProvider : IAiProvider
                 }
             }
 
+            await _aiUsageLimiter.RecordEstimatedCostAsync(_aiContext.OrganizationId, cost, "provider:perplexity", ct);
             return new AiProviderResult(content, _model, promptTokens, completionTokens, cost, WasSearchGrounded: true);
         }, cancellationToken);
     }

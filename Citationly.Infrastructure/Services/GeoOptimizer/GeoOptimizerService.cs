@@ -1,8 +1,11 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using Citationly.Application.Features.GeoOptimizer;
 using Citationly.Application.Interfaces;
+using Citationly.Application.Interfaces.GeoAudit;
 using Citationly.Application.Interfaces.GeoOptimizer;
 
 namespace Citationly.Infrastructure.Services.GeoOptimizer;
@@ -11,21 +14,32 @@ public class GeoOptimizerService : IGeoOptimizerService
 {
     private readonly IOpenAiService _openAiService;
     private readonly IScraperEngine _scraperEngine;
+    private readonly IGeoTechnicalAuditService _geoTechnicalAuditService;
 
-    public GeoOptimizerService(IOpenAiService openAiService, IScraperEngine scraperEngine)
+    public GeoOptimizerService(
+        IOpenAiService openAiService,
+        IScraperEngine scraperEngine,
+        IGeoTechnicalAuditService geoTechnicalAuditService)
     {
         _openAiService = openAiService;
         _scraperEngine = scraperEngine;
+        _geoTechnicalAuditService = geoTechnicalAuditService;
     }
 
     public async Task<GeoOptimizationResponse> AnalyzeAsync(GeoOptimizationRequest request)
     {
         var textToAnalyze = request.Content;
+        GeoTechnicalAuditResult? technicalAudit = null;
 
         if (string.IsNullOrWhiteSpace(textToAnalyze) && !string.IsNullOrWhiteSpace(request.Url))
         {
             var scrapedPage = await _scraperEngine.ScrapeSinglePageAsync(request.Url, Guid.NewGuid());
             textToAnalyze = scrapedPage?.Content ?? scrapedPage?.MarkdownContent;
+            technicalAudit = await _geoTechnicalAuditService.AuditAsync(request.Url);
+        }
+        else if (!string.IsNullOrWhiteSpace(request.Url))
+        {
+            technicalAudit = await _geoTechnicalAuditService.AuditAsync(request.Url);
         }
 
         if (string.IsNullOrWhiteSpace(textToAnalyze))
@@ -42,6 +56,7 @@ public class GeoOptimizerService : IGeoOptimizerService
         var systemPrompt = $@"You are an expert in Generative Engine Optimization (GEO) and AI Search Optimization.
 Your task is to analyze the provided content against the target keyword: '{request.TargetKeyword}' and the target AI engine(s): '{request.Engine}'.
 Evaluate how likely AI engines are to cite this page. Provide exact fixes ranked by impact, competitor gap analysis, prompt coverage, and citation gap analysis.
+When deterministic technical audit evidence is provided, treat it as ground truth. Do not invent robots.txt, sitemap, schema, SSR, heading, FAQ, or metadata findings that contradict the audit.
 
 Return ONLY a valid JSON object matching the following structure:
 {{
@@ -79,7 +94,20 @@ Return exactly 5 SubMetrics with those exact labels, in that order. Return 3-6 F
 Return 5-6 PromptCoverage items covering distinct realistic buyer questions/search queries around the target keyword (not just the exact keyword itself), each judged against what the content actually covers.
 Return exactly 5 CitationGap items, one each for: statistics with sources, expert/author attribution, original data or quotes, outbound authority links, and backlink/citation signals — scored based on what's actually present in the content.";
 
-        var userPrompt = $"Analyze the following content:\n\n{textToAnalyze}";
+        var deterministicEvidence = technicalAudit == null
+            ? "No deterministic URL audit was available; score the pasted content only."
+            : JsonSerializer.Serialize(new
+            {
+                technicalAudit.Url,
+                technicalAudit.OverallScore,
+                technicalAudit.SeoHealthScore,
+                technicalAudit.AeoReadinessScore,
+                technicalAudit.PillarScores,
+                technicalAudit.Checks,
+                technicalAudit.EvidenceNotes
+            });
+
+        var userPrompt = $"Deterministic technical audit evidence:\n{deterministicEvidence}\n\nAnalyze the following content:\n\n{textToAnalyze}";
 
         var jsonResponse = await _openAiService.GenerateContentAsync(userPrompt, systemPrompt, requireJson: true);
 
@@ -87,7 +115,9 @@ Return exactly 5 CitationGap items, one each for: statistics with sources, exper
         {
             var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
             var result = JsonSerializer.Deserialize<GeoOptimizationResponse>(jsonResponse, options);
-            return result ?? new GeoOptimizationResponse();
+            result ??= new GeoOptimizationResponse();
+            ApplyDeterministicAudit(result, technicalAudit);
+            return result;
         }
         catch (Exception ex)
         {
@@ -135,6 +165,118 @@ Return ONLY valid JSON. Do not wrap it in markdown code blocks like ```json ... 
         return new SchemaGenerationResponse
         {
             JsonLd = jsonResponse.Trim()
+        };
+    }
+
+    private static void ApplyDeterministicAudit(GeoOptimizationResponse response, GeoTechnicalAuditResult? audit)
+    {
+        if (audit == null)
+        {
+            response.ScoreSource = string.IsNullOrWhiteSpace(response.ScoreSource)
+                ? "llm_content_analysis"
+                : response.ScoreSource;
+            response.DeterministicScore = response.Score;
+            return;
+        }
+
+        response.Score = audit.OverallScore;
+        response.DeterministicScore = audit.OverallScore;
+        response.ScoreSource = "deterministic_technical_audit_v1";
+        response.Verdict = audit.OverallScore >= 75 ? "Excellent" : "Needs work";
+        response.StatusText = $"Deterministic GEO audit: SEO {audit.SeoHealthScore}, AEO {audit.AeoReadinessScore}";
+        response.TechnicalChecks = audit.Checks
+            .Select(check => new GeoTechnicalCheckDto
+            {
+                Key = check.Key,
+                Label = check.Label,
+                Score = check.Score,
+                Passed = check.Passed,
+                Evidence = check.Evidence
+            })
+            .ToList();
+        response.EvidenceNotes = audit.EvidenceNotes.ToList();
+
+        response.SubMetrics = new List<GeoSubMetric>
+        {
+            new() { Label = "Answer structure", Score = audit.PillarScores.GetValueOrDefault("answerReadiness") },
+            new() { Label = "Prompt coverage", Score = Average(audit.PillarScores.GetValueOrDefault("entityClarity"), audit.PillarScores.GetValueOrDefault("freshness")) },
+            new() { Label = "Citation authority", Score = audit.PillarScores.GetValueOrDefault("authoritySignals") },
+            new() { Label = "Extractability", Score = audit.PillarScores.GetValueOrDefault("extractability") },
+            new() { Label = "Freshness signals", Score = audit.PillarScores.GetValueOrDefault("freshness") }
+        };
+
+        var deterministicFixes = audit.Checks
+            .Where(check => check.Score < 70)
+            .OrderBy(check => check.Score)
+            .Take(4)
+            .Select(ToRecommendation)
+            .ToList();
+
+        response.FixRecommendations = deterministicFixes
+            .Concat(response.FixRecommendations.Where(aiFix =>
+                !deterministicFixes.Any(detFix => string.Equals(detFix.Title, aiFix.Title, StringComparison.OrdinalIgnoreCase))))
+            .Take(6)
+            .ToList();
+    }
+
+    private static int Average(params int[] scores)
+    {
+        return scores.Length == 0 ? 0 : (int)Math.Round(scores.Average());
+    }
+
+    private static GeoFixRecommendation ToRecommendation(GeoTechnicalCheck check)
+    {
+        var (title, icon, description) = check.Key switch
+        {
+            "robots_ai_access" => (
+                "Allow AI crawler access where appropriate",
+                "ti-code",
+                $"{check.Evidence}. Review robots.txt so approved AI crawlers can reach citation-worthy public pages."),
+            "sitemap" => (
+                "Publish a valid XML sitemap",
+                "ti-link",
+                $"{check.Evidence}. Add or repair sitemap.xml so AI/search crawlers can discover canonical content."),
+            "structured_data" => (
+                "Add page-level structured data",
+                "ti-code",
+                $"{check.Evidence}. Add Article, Product, FAQPage, or Organization JSON-LD that matches the page intent."),
+            "faq_schema" => (
+                "Add extractable FAQ answers",
+                "ti-quote",
+                $"{check.Evidence}. Include concise question/answer blocks and FAQPage schema for buyer questions."),
+            "heading_structure" => (
+                "Fix heading hierarchy",
+                "ti-list-numbers",
+                $"{check.Evidence}. Use one descriptive H1 and clear H2 sections that map to user questions."),
+            "metadata" => (
+                "Improve title and meta description",
+                "ti-tag",
+                $"{check.Evidence}. Write concise metadata that names the entity, topic, and page promise."),
+            "ssr_content" => (
+                "Expose crawlable server-rendered content",
+                "ti-file-text",
+                $"{check.Evidence}. Ensure the initial HTML contains meaningful body copy, not only a JavaScript shell."),
+            "freshness" => (
+                "Add visible freshness signals",
+                "ti-calendar",
+                $"{check.Evidence}. Add published/updated dates for topics where recency affects AI trust."),
+            "authority_signals" => (
+                "Cite authoritative supporting sources",
+                "ti-link",
+                $"{check.Evidence}. Add reputable outbound citations, source notes, or proof points AI systems can quote."),
+            _ => (
+                $"Improve {check.Label}",
+                "ti-alert-triangle",
+                $"{check.Evidence}. Address this deterministic audit gap before relying on AI-written recommendations.")
+        };
+
+        return new GeoFixRecommendation
+        {
+            Title = title,
+            Impact = check.Score < 40 ? "High" : "Medium",
+            Icon = icon,
+            Description = description,
+            Delta = $"+{Math.Max(4, (100 - check.Score) / 5)} GEO score"
         };
     }
 }

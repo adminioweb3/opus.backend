@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using Citationly.API.Services;
 using Citationly.Application.Features.Onboarding;
 using Citationly.Application.Features.PromptIntelligence.Services;
 using Citationly.Application.Interfaces;
@@ -42,6 +43,7 @@ public class AdminController : ControllerBase
 
     [AllowAnonymous]
     [HttpPost("login")]
+    [AuditAction("admin.login", "Authentication", "AdminSession")]
     public IActionResult Login([FromBody] AdminLoginRequest request)
     {
         var configuredUsername = _configuration["Admin:Username"];
@@ -101,6 +103,7 @@ public class AdminController : ControllerBase
     // Wipes every row from every application table but leaves the schema (tables, columns,
     // functions) exactly as-is. Use this for "same shape, fresh data" testing resets.
     [HttpPost("database/clear")]
+    [AuditAction("admin.database.clear", "Destructive", "Database")]
     public async Task<IActionResult> ClearDatabase()
     {
         using var connection = _dbConnectionFactory.CreateConnection();
@@ -125,6 +128,7 @@ public class AdminController : ControllerBase
     // migration Program.cs applies on every startup, so tables added after init.sql was last
     // updated (GEO dashboard tables, Content Studio, Team invites, etc.) still get created.
     [HttpPost("database/reset")]
+    [AuditAction("admin.database.reset", "Destructive", "Database")]
     public async Task<IActionResult> ResetDatabase()
     {
         var assembly = typeof(SelfHealingMigrations).Assembly;
@@ -155,6 +159,7 @@ public class AdminController : ControllerBase
     // demand, without needing that org's own user session/token. Awaited (not enqueued) so the
     // caller sees the real outcome immediately instead of firing blind.
     [HttpPost("prompt-intelligence/run-first-batch/{organizationId}")]
+    [AuditAction("admin.prompt_intelligence.run_first_batch", "AdminAction", "Organization")]
     public async Task<IActionResult> RunFirstBatch(Guid organizationId)
     {
         await _firstRunService.RunFirstBatchAsync(organizationId);
@@ -167,6 +172,7 @@ public class AdminController : ControllerBase
     // one org, bypassing the normal 30-day staleness window â€” for backfill/testing only. Runs
     // the exact same AnalyzeCompetitorsCommand the /onboarding/analyze-competitors endpoint uses.
     [HttpPost("companies/refresh/{organizationId}")]
+    [AuditAction("admin.companies.refresh", "AdminAction", "Organization")]
     public async Task<IActionResult> RefreshCompany(Guid organizationId)
     {
         var result = await _mediator.Send(new AnalyzeCompetitorsCommand { OrganizationId = organizationId });
@@ -279,6 +285,7 @@ public class AdminController : ControllerBase
     }
 
     [HttpDelete("users/{id}")]
+    [AuditAction("admin.user.delete", "Destructive", "User")]
     public async Task<IActionResult> DeleteUser(Guid id)
     {
         using var connection = _dbConnectionFactory.CreateConnection();

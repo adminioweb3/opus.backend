@@ -26,6 +26,60 @@ public class AiVisibilityRepository : IAiVisibilityRepository
     public async Task<List<Competitor>> GetCompetitorsByOrgAsync(Guid organizationId)
     {
         using var connection = _dbConnectionFactory.CreateConnection();
+        var graphTablesExist = await connection.ExecuteScalarAsync<bool>(@"
+            SELECT
+                EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'websites')
+                AND EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'company')
+                AND EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'companycompetitor')");
+
+        if (graphTablesExist)
+        {
+            var graphResults = (await connection.QueryAsync<Competitor>(@"
+                WITH org_company AS (
+                    SELECT CompanyId
+                    FROM Websites
+                    WHERE OrganizationId = @OrganizationId AND CompanyId IS NOT NULL
+                    ORDER BY CreatedAt DESC
+                    LIMIT 1
+                )
+                SELECT
+                    cc.Id AS Id,
+                    @OrganizationId AS OrganizationId,
+                    c.CompanyName AS Name,
+                    c.Website AS WebsiteUrl,
+                    COALESCE(c.Industry, '') AS Industry,
+                    cc.Reason AS Description,
+                    'Direct' AS Category,
+                    NULL AS Logo,
+                    NULL AS Country,
+                    0 AS Authority,
+                    0 AS Popularity,
+                    cc.Rank AS Rank,
+                    ROUND(cc.Similarity)::int AS SimilarityScore,
+                    jsonb_build_object(
+                        'source', 'CompanyCompetitor',
+                        'discoverySource', cc.DiscoverySource,
+                        'similarity', cc.Similarity,
+                        'confidence', cc.Confidence,
+                        'reason', cc.Reason,
+                        'strength', cc.Strength,
+                        'weakness', cc.Weakness
+                    )::text AS RawJson,
+                    'Completed' AS EnrichmentStatus,
+                    c.BusinessProfileJson::text AS EnrichedJson,
+                    c.LastAnalyzedAt AS EnrichedAt,
+                    'Direct' AS CompetitorType,
+                    cc.Confidence AS Confidence,
+                    cc.CreatedAt AS CreatedAt
+                FROM org_company oc
+                JOIN CompanyCompetitor cc ON cc.CompanyId = oc.CompanyId
+                JOIN Company c ON c.Id = cc.CompetitorCompanyId
+                ORDER BY cc.Rank, cc.Similarity DESC",
+                new { OrganizationId = organizationId })).ToList();
+
+            if (graphResults.Count > 0) return graphResults;
+        }
+
         var sql = "SELECT * FROM Competitors WHERE OrganizationId = @OrganizationId ORDER BY Authority DESC;";
         var results = await connection.QueryAsync<Competitor>(sql, new { OrganizationId = organizationId });
         return results.ToList();

@@ -33,4 +33,12 @@ public class UserRepository : IUserRepository
         
         return result;
     }
+
+    public async Task<IEnumerable<string>> GetOrganizationUserEmailsAsync(Guid organizationId)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        return await connection.QueryAsync<string>(
+            "SELECT Email FROM Users WHERE OrganizationId = @OrganizationId",
+            new { OrganizationId = organizationId });
+    }
 }

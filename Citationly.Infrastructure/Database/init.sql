@@ -315,6 +315,139 @@ CREATE TABLE IF NOT EXISTS ApiKeys (
 );
 CREATE INDEX IF NOT EXISTS idx_apikeys_org_created ON ApiKeys (OrganizationId, CreatedAt DESC);
 
+CREATE TABLE IF NOT EXISTS Alerts (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+    DedupKey VARCHAR(255) NOT NULL,
+    Type VARCHAR(100) NOT NULL DEFAULT '',
+    Title VARCHAR(255) NOT NULL DEFAULT '',
+    Message TEXT NOT NULL DEFAULT '',
+    Severity VARCHAR(50) NOT NULL DEFAULT 'Info',
+    Source VARCHAR(100) NOT NULL DEFAULT '',
+    ActionUrl TEXT NOT NULL DEFAULT '',
+    EvidenceJson JSONB NOT NULL DEFAULT '{}'::jsonb,
+    IsRead BOOLEAN NOT NULL DEFAULT FALSE,
+    CreatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    DeliveredAt TIMESTAMP WITH TIME ZONE NULL,
+    DeliveryStatus VARCHAR(50) NOT NULL DEFAULT 'Pending',
+    UNIQUE (OrganizationId, DedupKey)
+);
+CREATE INDEX IF NOT EXISTS idx_alerts_org_created ON Alerts (OrganizationId, CreatedAt DESC);
+CREATE INDEX IF NOT EXISTS idx_alerts_delivery ON Alerts (DeliveryStatus, CreatedAt);
+
+CREATE TABLE IF NOT EXISTS AlertThresholds (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+    AlertType VARCHAR(100) NOT NULL,
+    ThresholdValue INT NOT NULL DEFAULT 5,
+    EmailEnabled BOOLEAN NOT NULL DEFAULT TRUE,
+    WebhookEnabled BOOLEAN NOT NULL DEFAULT FALSE,
+    WebhookUrl TEXT NOT NULL DEFAULT '',
+    UpdatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (OrganizationId, AlertType)
+);
+
+CREATE TABLE IF NOT EXISTS AuditLogs (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID NULL REFERENCES Organizations(Id) ON DELETE SET NULL,
+    ActorUserId UUID NULL REFERENCES Users(Id) ON DELETE SET NULL,
+    ActorEmail VARCHAR(255) NOT NULL DEFAULT '',
+    ActorType VARCHAR(50) NOT NULL DEFAULT 'User',
+    Action VARCHAR(150) NOT NULL,
+    Category VARCHAR(100) NOT NULL DEFAULT '',
+    Outcome VARCHAR(50) NOT NULL DEFAULT 'Success',
+    TargetType VARCHAR(100) NOT NULL DEFAULT '',
+    TargetId VARCHAR(255) NOT NULL DEFAULT '',
+    IpAddress VARCHAR(128) NOT NULL DEFAULT '',
+    UserAgent TEXT NOT NULL DEFAULT '',
+    MetadataJson JSONB NOT NULL DEFAULT '{}'::jsonb,
+    CreatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_auditlogs_org_created ON AuditLogs (OrganizationId, CreatedAt DESC);
+CREATE INDEX IF NOT EXISTS idx_auditlogs_action_created ON AuditLogs (Action, CreatedAt DESC);
+
+CREATE TABLE IF NOT EXISTS SsoConnections (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,
+    Provider VARCHAR(50) NOT NULL DEFAULT 'OIDC',
+    Domain VARCHAR(255) NOT NULL DEFAULT '',
+    MetadataUrl TEXT NOT NULL DEFAULT '',
+    EntityId TEXT NOT NULL DEFAULT '',
+    ScimEnabled BOOLEAN NOT NULL DEFAULT FALSE,
+    ScimTokenHash VARCHAR(255) NOT NULL DEFAULT '',
+    IsEnabled BOOLEAN NOT NULL DEFAULT FALSE,
+    CreatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (OrganizationId, Provider, Domain)
+);
+CREATE INDEX IF NOT EXISTS idx_ssoconnections_scimtoken ON SsoConnections (ScimTokenHash) WHERE ScimTokenHash <> '';
+
+CREATE TABLE IF NOT EXISTS RetentionPolicies (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,
+    RawPromptEvidenceDays INT NULL,
+    AuditLogDays INT NOT NULL DEFAULT 365,
+    SnapshotDays INT NOT NULL DEFAULT 1095,
+    UpdatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (OrganizationId)
+);
+
+CREATE TABLE IF NOT EXISTS DataDeletionRequests (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,
+    RequestedByUserId UUID NOT NULL REFERENCES Users(Id) ON DELETE RESTRICT,
+    Status VARCHAR(50) NOT NULL DEFAULT 'Pending',
+    Scope VARCHAR(50) NOT NULL DEFAULT 'Organization',
+    Reason TEXT NOT NULL DEFAULT '',
+    RequestedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ScheduledFor TIMESTAMP WITH TIME ZONE NOT NULL,
+    CancelledAt TIMESTAMP WITH TIME ZONE NULL,
+    CompletedAt TIMESTAMP WITH TIME ZONE NULL
+);
+CREATE INDEX IF NOT EXISTS idx_datadeletionrequests_org ON DataDeletionRequests (OrganizationId, RequestedAt DESC);
+CREATE INDEX IF NOT EXISTS idx_datadeletionrequests_due ON DataDeletionRequests (Status, ScheduledFor);
+
+CREATE TABLE IF NOT EXISTS Agencies (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OwnerOrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,
+    Name VARCHAR(255) NOT NULL DEFAULT '',
+    CreatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (OwnerOrganizationId)
+);
+
+CREATE TABLE IF NOT EXISTS AgencyClients (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    AgencyId UUID NOT NULL REFERENCES Agencies(Id) ON DELETE CASCADE,
+    ClientOrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,
+    ClientName VARCHAR(255) NOT NULL DEFAULT '',
+    Role VARCHAR(50) NOT NULL DEFAULT 'Manager',
+    CreatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (AgencyId, ClientOrganizationId)
+);
+CREATE INDEX IF NOT EXISTS idx_agencyclients_client ON AgencyClients (ClientOrganizationId);
+
+CREATE TABLE IF NOT EXISTS WhiteLabelSettings (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    AgencyId UUID NOT NULL REFERENCES Agencies(Id) ON DELETE CASCADE,
+    BrandName VARCHAR(255) NOT NULL DEFAULT '',
+    LogoUrl TEXT NOT NULL DEFAULT '',
+    PrimaryColor VARCHAR(32) NOT NULL DEFAULT '#4F46E5',
+    UpdatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (AgencyId)
+);
+
+CREATE TABLE IF NOT EXISTS ReportShareLinks (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,
+    AgencyId UUID NULL REFERENCES Agencies(Id) ON DELETE SET NULL,
+    TokenHash VARCHAR(255) NOT NULL,
+    ReportType VARCHAR(100) NOT NULL DEFAULT 'Executive',
+    ExpiresAt TIMESTAMP WITH TIME ZONE NOT NULL,
+    CreatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (TokenHash)
+);
+CREATE INDEX IF NOT EXISTS idx_reportsharelinks_org ON ReportShareLinks (OrganizationId, CreatedAt DESC);
+
 -- Publishing: tracks the real deploy result of a ContentDraft against a connected CMS integration
 ALTER TABLE ContentDrafts ADD COLUMN IF NOT EXISTS PublishedUrl VARCHAR(2048);
 ALTER TABLE ContentDrafts ADD COLUMN IF NOT EXISTS PublishedAt TIMESTAMP WITH TIME ZONE;
@@ -475,15 +608,65 @@ CREATE TABLE IF NOT EXISTS PromptTopics (
     CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS PromptSubtopics (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    PromptTopicId UUID REFERENCES PromptTopics(Id) ON DELETE CASCADE,
+    Name VARCHAR(255) NOT NULL,
+    Description TEXT NOT NULL DEFAULT '',
+    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_promptsubtopics_topic_lower_name ON PromptSubtopics (PromptTopicId, LOWER(Name));
+
+CREATE TABLE IF NOT EXISTS PromptIntents (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+    Name VARCHAR(100) NOT NULL,
+    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_promptintents_org_lower_name ON PromptIntents (OrganizationId, LOWER(Name));
+
+CREATE TABLE IF NOT EXISTS PromptPersonas (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+    Name VARCHAR(255) NOT NULL,
+    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_promptpersonas_org_lower_name ON PromptPersonas (OrganizationId, LOWER(Name));
+
+CREATE TABLE IF NOT EXISTS PromptFunnelStages (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+    Name VARCHAR(100) NOT NULL,
+    SortOrder INT NOT NULL DEFAULT 0,
+    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_promptfunnelstages_org_lower_name ON PromptFunnelStages (OrganizationId, LOWER(Name));
+
+CREATE TABLE IF NOT EXISTS PromptClusters (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    PromptSubtopicId UUID REFERENCES PromptSubtopics(Id) ON DELETE CASCADE,
+    IntentId UUID REFERENCES PromptIntents(Id) ON DELETE SET NULL,
+    PersonaId UUID REFERENCES PromptPersonas(Id) ON DELETE SET NULL,
+    FunnelStageId UUID REFERENCES PromptFunnelStages(Id) ON DELETE SET NULL,
+    Name VARCHAR(255) NOT NULL,
+    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_promptclusters_subtopic ON PromptClusters (PromptSubtopicId);
+
 CREATE TABLE IF NOT EXISTS PromptQuestions (
     Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     PromptTopicId UUID REFERENCES PromptTopics(Id) ON DELETE CASCADE,
+    PromptClusterId UUID REFERENCES PromptClusters(Id) ON DELETE SET NULL,
+    IntentId UUID REFERENCES PromptIntents(Id) ON DELETE SET NULL,
+    PersonaId UUID REFERENCES PromptPersonas(Id) ON DELETE SET NULL,
+    FunnelStageId UUID REFERENCES PromptFunnelStages(Id) ON DELETE SET NULL,
     PromptText TEXT NOT NULL,
     IsActive BOOLEAN NOT NULL DEFAULT TRUE,
     Region VARCHAR(100) NOT NULL DEFAULT 'Global',
     Persona VARCHAR(255),
     CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_promptquestions_cluster ON PromptQuestions (PromptClusterId);
 
 CREATE TABLE IF NOT EXISTS PromptAnalysis (
     Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -542,6 +725,32 @@ CREATE TABLE IF NOT EXISTS PromptRecommendations (
     EstimatedVisibilityGain INT NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS RecommendationImplementations (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+    PromptRecommendationId UUID REFERENCES PromptRecommendations(Id) ON DELETE CASCADE,
+    PromptAnalysisId UUID REFERENCES PromptAnalysis(Id) ON DELETE CASCADE,
+    PromptQuestionId UUID REFERENCES PromptQuestions(Id) ON DELETE CASCADE,
+    MarkedImplementedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    MonitoringWindowDays INT NOT NULL DEFAULT 14,
+    BaselineVisibilityScore INT NOT NULL DEFAULT 0,
+    BaselineShareOfVoice INT NOT NULL DEFAULT 0,
+    BaselineAveragePosition INT NOT NULL DEFAULT 0,
+    BaselineCitationCount INT NOT NULL DEFAULT 0,
+    MeasurementDueAt TIMESTAMP WITH TIME ZONE NOT NULL,
+    MeasuredAt TIMESTAMP WITH TIME ZONE NULL,
+    FollowupAnalysisId UUID REFERENCES PromptAnalysis(Id) ON DELETE SET NULL,
+    DeltaVisibilityScore INT NULL,
+    DeltaShareOfVoice INT NULL,
+    DeltaAveragePosition INT NULL,
+    DeltaCitationCount INT NULL,
+    ImpactStatus VARCHAR(50) NOT NULL DEFAULT 'Pending',
+    EvidenceJson JSONB NOT NULL DEFAULT '{}'::jsonb,
+    UNIQUE (PromptRecommendationId)
+);
+CREATE INDEX IF NOT EXISTS idx_recommendationimplementations_due ON RecommendationImplementations (MeasurementDueAt, ImpactStatus);
+CREATE INDEX IF NOT EXISTS idx_recommendationimplementations_org ON RecommendationImplementations (OrganizationId, MarkedImplementedAt DESC);
+
 CREATE TABLE IF NOT EXISTS CompetitorComparisons (
     Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     PromptAnalysisId UUID REFERENCES PromptAnalysis(Id) ON DELETE CASCADE,
@@ -560,6 +769,46 @@ CREATE TABLE IF NOT EXISTS PromptCitations (
     Category VARCHAR(50) NOT NULL DEFAULT 'Other',
     CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS BrandClaims (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+    PromptAnalysisId UUID REFERENCES PromptAnalysis(Id) ON DELETE CASCADE,
+    PromptResponseId UUID REFERENCES PromptResponses(Id) ON DELETE CASCADE,
+    PromptQuestionId UUID REFERENCES PromptQuestions(Id) ON DELETE CASCADE,
+    Platform VARCHAR(100) NOT NULL DEFAULT '',
+    ClaimType VARCHAR(100) NOT NULL DEFAULT '',
+    ClaimText TEXT NOT NULL DEFAULT '',
+    EvidenceQuote TEXT NOT NULL DEFAULT '',
+    ObservedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (PromptResponseId, ClaimType, ClaimText)
+);
+CREATE INDEX IF NOT EXISTS idx_brandclaims_org_observed ON BrandClaims (OrganizationId, ObservedAt DESC);
+
+CREATE TABLE IF NOT EXISTS BrandFactChecks (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+    BrandClaimId UUID REFERENCES BrandClaims(Id) ON DELETE CASCADE,
+    VerificationStatus VARCHAR(50) NOT NULL DEFAULT 'Unverified',
+    VerifiedFact TEXT NOT NULL DEFAULT '',
+    Explanation TEXT NOT NULL DEFAULT '',
+    CheckedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (BrandClaimId)
+);
+CREATE INDEX IF NOT EXISTS idx_brandfactchecks_org_checked ON BrandFactChecks (OrganizationId, CheckedAt DESC);
+
+CREATE TABLE IF NOT EXISTS CrossEngineConsensusInsights (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+    PromptAnalysisId UUID REFERENCES PromptAnalysis(Id) ON DELETE CASCADE,
+    InsightType VARCHAR(100) NOT NULL DEFAULT '',
+    Summary TEXT NOT NULL DEFAULT '',
+    PlatformsJson JSONB NOT NULL DEFAULT '[]'::jsonb,
+    EvidenceJson JSONB NOT NULL DEFAULT '[]'::jsonb,
+    CreatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (PromptAnalysisId, InsightType, Summary)
+);
+CREATE INDEX IF NOT EXISTS idx_consensusinsights_org_created ON CrossEngineConsensusInsights (OrganizationId, CreatedAt DESC);
 
 CREATE TABLE IF NOT EXISTS PromptFanouts (
     Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -692,6 +941,45 @@ CREATE TABLE IF NOT EXISTS Company (
     CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS UsageCounters (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,
+    MetricKey VARCHAR(100) NOT NULL,
+    PeriodStart TIMESTAMP WITH TIME ZONE NOT NULL,
+    PeriodEnd TIMESTAMP WITH TIME ZONE NOT NULL,
+    Count BIGINT NOT NULL DEFAULT 0,
+    UpdatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (OrganizationId, MetricKey, PeriodStart)
+);
+CREATE INDEX IF NOT EXISTS idx_usagecounters_org_metric ON UsageCounters (OrganizationId, MetricKey, PeriodStart DESC);
+
+CREATE TABLE IF NOT EXISTS PlanLimits (
+    PlanKey VARCHAR(100) NOT NULL,
+    FeatureKey VARCHAR(100) NOT NULL,
+    LimitValue BIGINT,
+    PRIMARY KEY (PlanKey, FeatureKey)
+);
+INSERT INTO PlanLimits (PlanKey, FeatureKey, LimitValue) VALUES
+    ('Trial', 'ai_calls_per_day', 50),
+    ('Trial', 'ai_spend_micro_usd_per_day', 100000),
+    ('Trial', 'recurring_scan_interval_days', 7),
+    ('Trial', 'public_api_calls_per_day', 100),
+    ('Trial', 'regions_summary', 0),
+    ('Trial', 'personas_summary', 0),
+    ('Pro', 'ai_calls_per_day', 1000),
+    ('Pro', 'ai_spend_micro_usd_per_day', 5000000),
+    ('Pro', 'recurring_scan_interval_days', 1),
+    ('Pro', 'public_api_calls_per_day', 5000),
+    ('Pro', 'regions_summary', 0),
+    ('Pro', 'personas_summary', 0),
+    ('Enterprise', 'ai_calls_per_day', NULL),
+    ('Enterprise', 'ai_spend_micro_usd_per_day', NULL),
+    ('Enterprise', 'recurring_scan_interval_days', 1),
+    ('Enterprise', 'public_api_calls_per_day', NULL),
+    ('Enterprise', 'regions_summary', 1),
+    ('Enterprise', 'personas_summary', 1)
+ON CONFLICT (PlanKey, FeatureKey) DO NOTHING;
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_company_normalizeddomain ON Company (NormalizedDomain);
 CREATE INDEX IF NOT EXISTS idx_company_industry ON Company (Industry);
 

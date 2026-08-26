@@ -58,6 +58,8 @@ public class BillingController : ControllerBase
     }
 
     [HttpPost("checkout-session")]
+    [RequireOrgRole("Admin")]
+    [AuditAction("billing.checkout_session.create", "Billing", "Subscription")]
     public async Task<IActionResult> CreateCheckoutSession([FromBody] CreateCheckoutSessionRequest request)
     {
         var orgId = await _currentOrg.GetOrganizationIdAsync(User);
@@ -80,6 +82,8 @@ public class BillingController : ControllerBase
     }
 
     [HttpPost("portal-session")]
+    [RequireOrgRole("Admin")]
+    [AuditAction("billing.portal_session.create", "Billing", "Subscription")]
     public async Task<IActionResult> CreatePortalSession([FromBody] CreatePortalSessionRequest request)
     {
         var orgId = await _currentOrg.GetOrganizationIdAsync(User);
@@ -104,6 +108,7 @@ public class BillingController : ControllerBase
     // Stripe calls this directly - no user JWT, verified instead by the webhook signature.
     [HttpPost("webhook")]
     [AllowAnonymous]
+    [AuditAction("billing.webhook.received", "Billing", "StripeWebhook")]
     public async Task<IActionResult> Webhook()
     {
         if (!_billingService.IsConfigured)

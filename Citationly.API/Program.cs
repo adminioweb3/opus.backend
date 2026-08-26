@@ -17,6 +17,12 @@ using Citationly.API.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Keep local/hosted startup independent of Windows Event Log permissions. In restricted
+// environments, the default EventLog provider can crash the host before the API is reachable.
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
+builder.Logging.AddDebug();
+
 // Add services to the container
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
@@ -144,6 +150,11 @@ if (!string.IsNullOrEmpty(firebaseProjectId))
 
 }
 
+builder.Services.AddAuthentication()
+    .AddScheme<Microsoft.AspNetCore.Authentication.AuthenticationSchemeOptions, ApiKeyAuthenticationHandler>(
+        ApiKeyAuthenticationHandler.SchemeName,
+        options => { });
+
 var app = builder.Build();
 
 // Self-healing migration: adds trial-subscription columns to Organizations (for orgs created
@@ -268,10 +279,21 @@ using (var scope = app.Services.CreateScope())
         "opportunity-scan-7-day-check",
         job => job.RunAsync(),
         "0 2 * * *");
+
+    recurringJobManager.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.RecommendationImpactRecurringJob>(
+        "recommendation-impact-due-check",
+        job => job.RunAsync(),
+        "20 2 * * *");
+
+    recurringJobManager.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.AlertDeliveryRecurringJob>(
+        "alert-delivery-check",
+        job => job.RunAsync(),
+        "*/15 * * * *");
 }
 
 app.UseHttpsRedirection();
 app.UseCors("AllowFrontend");
+app.UseMiddleware<RequestTelemetryMiddleware>();
 
 app.UseAuthentication();
 app.UseAuthorization();

@@ -15,7 +15,11 @@ public class GeoOptimizationResponse
     public int Score { get; set; }
     public string Verdict { get; set; } = string.Empty;
     public string StatusText { get; set; } = string.Empty;
+    public int DeterministicScore { get; set; }
+    public string ScoreSource { get; set; } = string.Empty;
     public List<GeoSubMetric> SubMetrics { get; set; } = new();
+    public List<GeoTechnicalCheckDto> TechnicalChecks { get; set; } = new();
+    public List<string> EvidenceNotes { get; set; } = new();
     public List<GeoFixRecommendation> FixRecommendations { get; set; } = new();
     public List<GeoCompetitorGap> CompetitorGap { get; set; } = new();
     public List<GeoPromptCoverageItem> PromptCoverage { get; set; } = new();
@@ -26,6 +30,15 @@ public class GeoSubMetric
 {
     public string Label { get; set; } = string.Empty;
     public int Score { get; set; } // 0-100
+}
+
+public class GeoTechnicalCheckDto
+{
+    public string Key { get; set; } = string.Empty;
+    public string Label { get; set; } = string.Empty;
+    public int Score { get; set; } // 0-100
+    public bool Passed { get; set; }
+    public string Evidence { get; set; } = string.Empty;
 }
 
 public class GeoFixRecommendation

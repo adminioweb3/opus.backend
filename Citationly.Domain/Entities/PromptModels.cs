@@ -9,10 +9,59 @@ public class PromptTopic
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
 
+public class PromptSubtopic
+{
+    public Guid Id { get; set; }
+    public Guid PromptTopicId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string Description { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class PromptIntent
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class PromptPersona
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class PromptFunnelStage
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public int SortOrder { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class PromptCluster
+{
+    public Guid Id { get; set; }
+    public Guid PromptSubtopicId { get; set; }
+    public Guid? IntentId { get; set; }
+    public Guid? PersonaId { get; set; }
+    public Guid? FunnelStageId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
 public class PromptQuestion
 {
     public Guid Id { get; set; }
     public Guid PromptTopicId { get; set; }
+    public Guid? PromptClusterId { get; set; }
+    public Guid? IntentId { get; set; }
+    public Guid? PersonaId { get; set; }
+    public Guid? FunnelStageId { get; set; }
     public string PromptText { get; set; } = string.Empty;
     public bool IsActive { get; set; } = true;
     public string Region { get; set; } = "Global";
@@ -86,6 +135,30 @@ public class PromptRecommendation
     public int EstimatedVisibilityGain { get; set; }
 }
 
+public class RecommendationImplementation
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public Guid PromptRecommendationId { get; set; }
+    public Guid PromptAnalysisId { get; set; }
+    public Guid PromptQuestionId { get; set; }
+    public DateTime MarkedImplementedAt { get; set; } = DateTime.UtcNow;
+    public int MonitoringWindowDays { get; set; } = 14;
+    public int BaselineVisibilityScore { get; set; }
+    public int BaselineShareOfVoice { get; set; }
+    public int BaselineAveragePosition { get; set; }
+    public int BaselineCitationCount { get; set; }
+    public DateTime MeasurementDueAt { get; set; }
+    public DateTime? MeasuredAt { get; set; }
+    public Guid? FollowupAnalysisId { get; set; }
+    public int? DeltaVisibilityScore { get; set; }
+    public int? DeltaShareOfVoice { get; set; }
+    public int? DeltaAveragePosition { get; set; }
+    public int? DeltaCitationCount { get; set; }
+    public string ImpactStatus { get; set; } = "Pending";
+    public string EvidenceJson { get; set; } = "{}";
+}
+
 public class CompetitorComparison
 {
     public Guid Id { get; set; }
@@ -104,6 +177,43 @@ public class PromptCitation
     public string Domain { get; set; } = string.Empty;
     public string Url { get; set; } = string.Empty;
     public string Category { get; set; } = "Unknown"; // see CitationExtractorService.CategoryFor for the full taxonomy
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class BrandClaim
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public Guid PromptAnalysisId { get; set; }
+    public Guid PromptResponseId { get; set; }
+    public Guid PromptQuestionId { get; set; }
+    public string Platform { get; set; } = string.Empty;
+    public string ClaimType { get; set; } = string.Empty;
+    public string ClaimText { get; set; } = string.Empty;
+    public string EvidenceQuote { get; set; } = string.Empty;
+    public DateTime ObservedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class BrandFactCheck
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public Guid BrandClaimId { get; set; }
+    public string VerificationStatus { get; set; } = "Unverified";
+    public string VerifiedFact { get; set; } = string.Empty;
+    public string Explanation { get; set; } = string.Empty;
+    public DateTime CheckedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class CrossEngineConsensusInsight
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public Guid PromptAnalysisId { get; set; }
+    public string InsightType { get; set; } = string.Empty;
+    public string Summary { get; set; } = string.Empty;
+    public string PlatformsJson { get; set; } = "[]";
+    public string EvidenceJson { get; set; } = "[]";
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
 

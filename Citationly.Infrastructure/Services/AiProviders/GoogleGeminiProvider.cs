@@ -103,6 +103,7 @@ public sealed class GoogleGeminiProvider : IAiProvider
                 }
             }
 
+            await _aiUsageLimiter.RecordEstimatedCostAsync(_aiContext.OrganizationId, cost, "provider:google", ct);
             return new AiProviderResult(content, _model, promptTokens, completionTokens, cost, WasSearchGrounded: _enableSearchGrounding);
         }, cancellationToken);
     }

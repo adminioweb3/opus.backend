@@ -19,6 +19,8 @@ public class CommandCenterAggregator
     private readonly ICitationScanSnapshotRepository _citationSnapshotRepo;
     private readonly IBrandPulseSnapshotRepository _brandPulseSnapshotRepo;
     private readonly ICommandCenterInsightRepository _insightRepo;
+    private readonly IAlertService _alertService;
+    private readonly IAlertRepository _alertRepository;
     private readonly IMediator _mediator;
 
     public CommandCenterAggregator(
@@ -28,6 +30,8 @@ public class CommandCenterAggregator
         ICitationScanSnapshotRepository citationSnapshotRepo,
         IBrandPulseSnapshotRepository brandPulseSnapshotRepo,
         ICommandCenterInsightRepository insightRepo,
+        IAlertService alertService,
+        IAlertRepository alertRepository,
         IMediator mediator)
     {
         _visibilityRepo = visibilityRepo;
@@ -36,6 +40,8 @@ public class CommandCenterAggregator
         _citationSnapshotRepo = citationSnapshotRepo;
         _brandPulseSnapshotRepo = brandPulseSnapshotRepo;
         _insightRepo = insightRepo;
+        _alertService = alertService;
+        _alertRepository = alertRepository;
         _mediator = mediator;
     }
 
@@ -129,26 +135,11 @@ public class CommandCenterAggregator
         }
 
         // ── Alert center: real deltas + Brand Pulse's own already-judged alerts ──
-        var alerts = new List<object>();
-        void AddRegressionAlert(string label, int current, int? previous)
-        {
-            if (previous.HasValue && current < previous.Value)
-            {
-                alerts.Add(new { title = $"{label} dropped", message = $"{label} fell from {previous.Value} to {current}.", severity = "High" });
-            }
-        }
-        AddRegressionAlert("Visibility score", latestScan.VisibilityScore, previousScan?.VisibilityScore);
-        AddRegressionAlert("Citation score", latestScan.CitationScore, previousScan?.CitationScore);
-        AddRegressionAlert("SEO health", latestScan.SeoHealth, previousScan?.SeoHealth);
-        AddRegressionAlert("GEO readiness", latestScan.GeoReadiness, previousScan?.GeoReadiness);
-        foreach (var c in competitorSnapshots.Where(c => !c.IsYou && c.Threat == "high").Take(2))
-        {
-            alerts.Add(new { title = $"{c.Name} is a high threat", message = $"Rank #{c.Rank}, share of voice {c.ShareOfVoice}%.", severity = "High" });
-        }
-        foreach (var p in visPlatforms.Where(p => p.Status == "Weak").Take(2))
-        {
-            alerts.Add(new { title = $"{p.Platform} visibility is weak", message = $"Score {p.Score}/100.", severity = "Medium" });
-        }
+        await _alertService.GenerateCommandCenterAlertsAsync(organizationId);
+        var alerts = (await _alertRepository.GetAlertsAsync(organizationId, limit: 8))
+            .Select(a => new { id = a.Id, title = a.Title, message = a.Message, severity = a.Severity, source = a.Source, actionUrl = a.ActionUrl, isRead = a.IsRead, createdAt = a.CreatedAt, deliveryStatus = a.DeliveryStatus })
+            .Cast<object>()
+            .ToList();
         if (bpSummary != null)
         {
             try
@@ -161,7 +152,7 @@ public class CommandCenterAggregator
                         var title = a.TryGetProperty("title", out var tv) ? tv.GetString() ?? "" : "";
                         var message = a.TryGetProperty("message", out var mv) ? mv.GetString() ?? "" : "";
                         var type = a.TryGetProperty("type", out var typeEl) ? typeEl.GetString() ?? "warning" : "warning";
-                        if (!string.IsNullOrWhiteSpace(title))
+                        if (!string.IsNullOrWhiteSpace(title) && alerts.Count < 8)
                             alerts.Add(new { title, message, severity = type == "risk" ? "High" : type == "win" ? "Good" : "Medium" });
                     }
                 }

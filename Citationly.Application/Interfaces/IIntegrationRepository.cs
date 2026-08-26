@@ -20,6 +20,7 @@ public interface IIntegrationRepository
 public interface IApiKeyRepository
 {
     Task<IEnumerable<ApiKey>> GetApiKeysByOrgAsync(Guid organizationId);
+    Task<ApiKey?> GetActiveApiKeyByHashAsync(string keyHash);
     Task<Guid> CreateApiKeyAsync(ApiKey apiKey);
     Task<bool> RevokeApiKeyAsync(Guid id, Guid organizationId, DateTime revokedAtUtc);
 }

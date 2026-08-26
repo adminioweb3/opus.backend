@@ -3,6 +3,7 @@ using System.Text.Json;
 using MediatR;
 using Citationly.Application.Interfaces;
 using Citationly.Application.Interfaces.Competitors;
+using Citationly.Application.Interfaces.GeoAudit;
 using Citationly.Domain.Entities;
 
 namespace Citationly.Application.Features.Metrics;
@@ -37,19 +38,22 @@ public class RunScanCommandHandler : IRequestHandler<RunScanCommand, RunScanResu
     private readonly IOpenAiService _openAiService;
     private readonly IPromptIntelligenceRepository _promptIntelligenceRepo;
     private readonly ICompetitorRankingService _competitorRankingService;
+    private readonly IGeoTechnicalAuditService _geoTechnicalAuditService;
 
     public RunScanCommandHandler(
         IAiVisibilityRepository aiVisibilityRepo,
         IWebsiteRepository websiteRepository,
         IOpenAiService openAiService,
         IPromptIntelligenceRepository promptIntelligenceRepo,
-        ICompetitorRankingService competitorRankingService)
+        ICompetitorRankingService competitorRankingService,
+        IGeoTechnicalAuditService geoTechnicalAuditService)
     {
         _aiVisibilityRepo = aiVisibilityRepo;
         _websiteRepository = websiteRepository;
         _openAiService = openAiService;
         _promptIntelligenceRepo = promptIntelligenceRepo;
         _competitorRankingService = competitorRankingService;
+        _geoTechnicalAuditService = geoTechnicalAuditService;
     }
 
     public async Task<RunScanResult> Handle(RunScanCommand request, CancellationToken cancellationToken)
@@ -82,6 +86,9 @@ public class RunScanCommandHandler : IRequestHandler<RunScanCommand, RunScanResu
         var realCitationScore = await ComputeRealCitationScoreAsync(orgId, since);
         var realSentimentScore = await ComputeRealSentimentScoreAsync(orgId, since);
         var realCompetitorScore = await ComputeRealCompetitorScoreAsync(orgId, cancellationToken);
+        var geoAudit = profile == null
+            ? null
+            : await _geoTechnicalAuditService.AuditAsync(profile.WebsiteUrl, cancellationToken);
 
         var (systemPrompt, userPrompt) = BuildPrompt(profile, executiveSummary, personaSummary, regionSummary, competitors, previousScan);
         var raw = await _openAiService.GenerateContentAsync(userPrompt, systemPrompt, requireJson: true);
@@ -98,10 +105,10 @@ public class RunScanCommandHandler : IRequestHandler<RunScanCommand, RunScanResu
             SentimentScore = realSentimentScore,
             CompetitorScore = realCompetitorScore,
             HallucinationRisk = analysis.HallucinationRisk,
-            SeoHealth = analysis.SeoHealth,
-            AeoReadiness = analysis.AeoReadiness,
-            GeoReadiness = analysis.GeoReadiness,
-            ScoringMethodVersion = "v2-partial-real",
+            SeoHealth = geoAudit?.SeoHealthScore ?? analysis.SeoHealth,
+            AeoReadiness = geoAudit?.AeoReadinessScore ?? analysis.AeoReadiness,
+            GeoReadiness = geoAudit?.OverallScore ?? analysis.GeoReadiness,
+            ScoringMethodVersion = geoAudit == null ? "v2-partial-real" : "v3-geo-audit",
         };
         await _aiVisibilityRepo.InsertHistoricalScanAsync(scan);
 
@@ -116,7 +123,8 @@ public class RunScanCommandHandler : IRequestHandler<RunScanCommand, RunScanResu
         foreach (var key in PillarKeys)
         {
             var (label, description) = PillarInfo[key];
-            var score = analysis.Pillars.TryGetValue(key, out var pScore) ? pScore : 50;
+            var score = geoAudit?.PillarScores.GetValueOrDefault(key)
+                ?? (analysis.Pillars.TryGetValue(key, out var pScore) ? pScore : 50);
             await _aiVisibilityRepo.InsertGeoPillarAsync(new GeoPillar
             {
                 OrganizationId = orgId,

@@ -1,14 +1,28 @@
 using Citationly.Application.Interfaces.Onboarding;
+using Citationly.Application.Interfaces;
 using Citationly.Domain.Entities;
 
 namespace Citationly.Infrastructure.Services.Onboarding;
 
 public class RoadmapService : IRoadmapService
 {
-    public RoadmapGenerationResult GenerateRoadmap(Guid organizationId, List<DiscoveryRecommendationDto> discoveredRecs, GapAnalysisResult gapAnalysis)
+    private readonly IPromptIntelligenceRepository _promptRepository;
+
+    public RoadmapService(IPromptIntelligenceRepository promptRepository)
+    {
+        _promptRepository = promptRepository;
+    }
+
+    public async Task<RoadmapGenerationResult> GenerateRoadmapAsync(
+        Guid organizationId,
+        List<DiscoveryRecommendationDto> discoveredRecs,
+        GapAnalysisResult gapAnalysis,
+        CancellationToken cancellationToken = default)
     {
         var result = new RoadmapGenerationResult();
         result.Summary.OrganizationId = organizationId;
+        var learnedImpact = (await _promptRepository.GetRecommendationImpactHistoryAsync(organizationId, string.Empty, minSamples: 3))
+            .ToDictionary(row => row.Category.ToLowerInvariant(), row => row);
         
         int criticalCount = 0;
         int highCount = 0;
@@ -31,6 +45,7 @@ public class RoadmapService : IRoadmapService
 
             // Deterministic Assignment Logic
             AssignMetrics(rec, gapAnalysis);
+            ApplyLearnedImpact(rec, learnedImpact);
 
             if (rec.Priority == "Critical") criticalCount++;
             if (rec.Priority == "High") highCount++;
@@ -70,6 +85,25 @@ public class RoadmapService : IRoadmapService
             .ToList();
 
         return result;
+    }
+
+    private static void ApplyLearnedImpact(GeoRecommendation rec, Dictionary<string, RecommendationImpactHistoryRow> learnedImpact)
+    {
+        if (!learnedImpact.TryGetValue(rec.Category.ToLowerInvariant(), out var row))
+        {
+            return;
+        }
+
+        rec.EstimatedImpact = row.AverageVisibilityDelta switch
+        {
+            >= 15 => "Very High (learned)",
+            >= 8 => "High (learned)",
+            >= 3 => "Medium (learned)",
+            > -3 => "Low (learned)",
+            _ => "Negative (learned)"
+        };
+
+        rec.ExpectedOutcome = $"{rec.ExpectedOutcome} Learned from {row.SampleCount} measured implementation(s): average visibility delta {row.AverageVisibilityDelta:0.0}, citation delta {row.AverageCitationDelta:0.0}.";
     }
 
     private void AssignMetrics(GeoRecommendation rec, GapAnalysisResult gapAnalysis)
