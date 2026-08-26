@@ -21,7 +21,6 @@ services:
     environment:
       - ConnectionStrings__DefaultConnection=Host=db;Database=citationly_db;Username=postgres;Password=postgres
       - ASPNETCORE_ENVIRONMENT=Development
-      - Admin__ResetSecret=citationly-reset-purple-tiger-9247
     env_file:
       - .env
     depends_on:

@@ -14,8 +14,7 @@ import {
 } from '@/components/ui/card'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 
-const ADMIN_USERNAME = 'admin'
-const ADMIN_PASSWORD = 'pass@123'
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8088'
 
 export default function LoginPage({ onLogin }) {
   const [username, setUsername] = useState('')
@@ -28,15 +27,29 @@ export default function LoginPage({ onLogin }) {
     setError('')
     setLoading(true)
 
-    setTimeout(() => {
-      if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
-        localStorage.setItem('admin_token', 'admin-session-' + Date.now())
-        onLogin()
-      } else {
-        setError('Invalid username or password')
-      }
-      setLoading(false)
-    }, 500)
+    fetch(`${API_BASE}/api/Admin/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ username, password }),
+    })
+      .then(async (response) => {
+        const data = await response.json().catch(() => ({}))
+        if (!response.ok) {
+          throw new Error(data.message || 'Invalid username or password')
+        }
+        if (!data.accessToken) {
+          throw new Error('Server did not return an admin session token')
+        }
+        onLogin(data.accessToken)
+      })
+      .catch((err) => {
+        setError(err.message || 'Unable to sign in')
+      })
+      .finally(() => {
+        setLoading(false)
+      })
   }
 
   return (
@@ -73,7 +86,7 @@ export default function LoginPage({ onLogin }) {
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
+                placeholder="Enter password"
                 disabled={loading}
               />
             </div>
@@ -93,11 +106,7 @@ export default function LoginPage({ onLogin }) {
         <CardFooter>
           <div className="w-full p-3 bg-muted rounded-lg">
             <p className="text-xs text-muted-foreground text-center">
-              <span className="font-semibold">Demo Credentials:</span>
-              <br />
-              Username: <code className="text-foreground">admin</code>
-              <br />
-              Password: <code className="text-foreground">pass@123</code>
+              The backend verifies the credentials and returns a short-lived admin session token.
             </p>
           </div>
         </CardFooter>

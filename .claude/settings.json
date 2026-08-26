@@ -50,5 +50,27 @@
       "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('comps returned:', len\\(d.get\\('comps',[]\\)\\)\\)\")",
       "Bash(curl -s \"http://localhost:8088/api/Dashboard/competitor-watch?organizationId=00fc9dd5-7851-4427-9529-163c1de49552\" -H \"Authorization: Bearer demo-token\" -o /tmp/cw.json -w \"http=%{http_code}\\\\n\")"
     ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/Atharv/.local/bin/graphify.EXE hook-guard search"
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/Atharv/.local/bin/graphify.EXE hook-guard read"
+          }
+        ]
+      }
+    ]
   }
 }

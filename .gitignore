@@ -1,1 +1,5 @@
 .env
+/.claude
+/graphify-out
+/.tmp-route-check
+/tempdb

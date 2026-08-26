@@ -21,7 +21,6 @@ import {
 } from '@/components/ui/table'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8088'
-const ADMIN_SECRET = import.meta.env.VITE_ADMIN_SECRET || 'admin-secret-key-12345'
 
 export default function Dashboard({ onLogout }) {
   const [users, setUsers] = useState([])
@@ -35,13 +34,24 @@ export default function Dashboard({ onLogout }) {
     fetchUsers()
   }, [])
 
+  const getAuthHeaders = () => {
+    const token = localStorage.getItem('admin_token')
+    return token ? { Authorization: `Bearer ${token}` } : {}
+  }
+
   const fetchUsers = async () => {
     try {
       setLoading(true)
       setError('')
       const response = await fetch(`${API_BASE}/api/Admin/users/all`, {
-        headers: { 'X-Admin-Secret': ADMIN_SECRET }
+        headers: getAuthHeaders(),
       })
+
+      if (response.status === 401) {
+        onLogout()
+        return
+      }
+
       if (!response.ok) throw new Error('Failed to fetch users')
       const data = await response.json()
       setUsers(Array.isArray(data) ? data : [])
@@ -64,8 +74,13 @@ export default function Dashboard({ onLogout }) {
 
       const response = await fetch(`${API_BASE}/api/Admin/users/${userId}`, {
         method: 'DELETE',
-        headers: { 'X-Admin-Secret': ADMIN_SECRET }
+        headers: getAuthHeaders(),
       })
+
+      if (response.status === 401) {
+        onLogout()
+        return
+      }
 
       if (!response.ok) throw new Error('Failed to delete user')
 
@@ -82,7 +97,6 @@ export default function Dashboard({ onLogout }) {
 
   return (
     <div className="min-h-screen bg-muted/30">
-      {/* Header */}
       <header className="bg-card shadow-sm border-b">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
           <div className="flex items-center gap-2">
@@ -96,16 +110,13 @@ export default function Dashboard({ onLogout }) {
         </div>
       </header>
 
-      {/* Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-4">
-        {/* Success Message */}
         {deleteSuccess && (
           <Alert variant="success">
             <AlertDescription>{deleteSuccess}</AlertDescription>
           </Alert>
         )}
 
-        {/* Error Message */}
         {error && (
           <Alert variant="destructive">
             <AlertCircle className="w-4 h-4" />
@@ -120,7 +131,6 @@ export default function Dashboard({ onLogout }) {
           </Alert>
         )}
 
-        {/* Users Card */}
         <Card className="py-0 gap-0 overflow-hidden">
           <CardHeader className="border-b py-4">
             <CardTitle>Users ({users.length})</CardTitle>
@@ -198,7 +208,6 @@ export default function Dashboard({ onLogout }) {
           </CardContent>
         </Card>
 
-        {/* Info Card */}
         <Alert>
           <AlertDescription>
             <strong>Note:</strong> Deleting a user will remove them and all associated data including organizations, websites, competitors, reports, and prompts. When the user re-onboards, they will start with a fresh account.
