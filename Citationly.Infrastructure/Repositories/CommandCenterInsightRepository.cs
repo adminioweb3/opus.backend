@@ -13,19 +13,9 @@ public class CommandCenterInsightRepository : ICommandCenterInsightRepository
         _dbConnectionFactory = dbConnectionFactory;
     }
 
-    public async Task EnsureTableCreatedAsync()
+    public Task EnsureTableCreatedAsync()
     {
-        using var connection = _dbConnectionFactory.CreateConnection();
-        await connection.ExecuteAsync(@"
-            CREATE TABLE IF NOT EXISTS CommandCenterInsightSnapshots (
-                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                OrganizationId UUID NOT NULL,
-                ScanDate DATE NOT NULL,
-                InsightsJson JSONB NOT NULL DEFAULT '[]'::jsonb,
-                CreatedAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE INDEX IF NOT EXISTS idx_commandcenterinsightsnapshots_org_scandate ON CommandCenterInsightSnapshots (OrganizationId, ScanDate);
-        ");
+        return Task.CompletedTask;
     }
 
     public async Task DeleteByScanDateAsync(Guid organizationId, DateOnly scanDate)

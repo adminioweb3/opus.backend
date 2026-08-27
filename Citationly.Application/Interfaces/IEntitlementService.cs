@@ -24,8 +24,12 @@ public interface IEntitlementService
     /// <summary>Checks a metered quota (e.g. "ai_calls_per_day") without consuming it.</summary>
     Task<UsageQuotaStatus> CheckQuotaAsync(Guid organizationId, string metricKey, CancellationToken cancellationToken = default);
 
-    /// <summary>Records usage against a metered quota. Call after CheckQuotaAsync confirms
-    /// the action is allowed - this does not itself enforce the limit.</summary>
+    /// <summary>Atomically records usage only when doing so stays within the configured plan limit.</summary>
+    Task<UsageQuotaStatus> TryConsumeUsageAsync(Guid organizationId, string metricKey, long amount = 1, CancellationToken cancellationToken = default);
+
+    /// <summary>Records usage against a metered quota without enforcing the limit. Prefer
+    /// TryConsumeUsageAsync for request admission and use this only for follow-up metering such
+    /// as estimated provider cost reconciliation.</summary>
     Task ConsumeUsageAsync(Guid organizationId, string metricKey, long amount = 1, CancellationToken cancellationToken = default);
 }
 

@@ -21,7 +21,7 @@ public class RunCommandCenterInsightsCommandHandler : IRequestHandler<RunCommand
     private readonly ICitationScanSnapshotRepository _citationSnapshotRepo;
     private readonly IBrandPulseSnapshotRepository _brandPulseSnapshotRepo;
     private readonly ICommandCenterInsightRepository _snapshotRepo;
-    private readonly IOpenAiService _openAiService;
+    private readonly IAiCompletionService _aiCompletionService;
 
     public RunCommandCenterInsightsCommandHandler(
         IWebsiteRepository websiteRepository,
@@ -31,7 +31,7 @@ public class RunCommandCenterInsightsCommandHandler : IRequestHandler<RunCommand
         ICitationScanSnapshotRepository citationSnapshotRepo,
         IBrandPulseSnapshotRepository brandPulseSnapshotRepo,
         ICommandCenterInsightRepository snapshotRepo,
-        IOpenAiService openAiService)
+        IAiCompletionService aiCompletionService)
     {
         _websiteRepository = websiteRepository;
         _visibilityRepo = visibilityRepo;
@@ -40,7 +40,7 @@ public class RunCommandCenterInsightsCommandHandler : IRequestHandler<RunCommand
         _citationSnapshotRepo = citationSnapshotRepo;
         _brandPulseSnapshotRepo = brandPulseSnapshotRepo;
         _snapshotRepo = snapshotRepo;
-        _openAiService = openAiService;
+        _aiCompletionService = aiCompletionService;
     }
 
     public async Task<RunCommandCenterInsightsResult> Handle(RunCommandCenterInsightsCommand request, CancellationToken cancellationToken)
@@ -97,16 +97,26 @@ public class RunCommandCenterInsightsCommandHandler : IRequestHandler<RunCommand
         var insights = new List<string>();
         try
         {
-            var raw = await _openAiService.GenerateContentAsync(sb.ToString(), systemPrompt, requireJson: true);
-            using var doc = JsonDocument.Parse(raw);
-            if (doc.RootElement.TryGetProperty("insights", out var arr) && arr.ValueKind == JsonValueKind.Array)
+            var completion = await _aiCompletionService.CompleteAsync(
+                orgId,
+                "command_center.insights",
+                sb.ToString(),
+                systemPrompt,
+                requireJson: true,
+                preferredProviderKey: "openai",
+                cancellationToken);
+            if (completion.Success)
             {
-                foreach (var item in arr.EnumerateArray())
+                using var doc = JsonDocument.Parse(completion.Content);
+                if (doc.RootElement.TryGetProperty("insights", out var arr) && arr.ValueKind == JsonValueKind.Array)
                 {
-                    if (item.ValueKind == JsonValueKind.String)
+                    foreach (var item in arr.EnumerateArray())
                     {
-                        var text = item.GetString();
-                        if (!string.IsNullOrWhiteSpace(text)) insights.Add(text);
+                        if (item.ValueKind == JsonValueKind.String)
+                        {
+                            var text = item.GetString();
+                            if (!string.IsNullOrWhiteSpace(text)) insights.Add(text);
+                        }
                     }
                 }
             }

@@ -15,18 +15,18 @@ public record DeployRecommendationResult(bool Success, string Message, string? D
 
 public class DeployRecommendationCommandHandler : IRequestHandler<DeployRecommendationCommand, DeployRecommendationResult>
 {
-    private readonly IOpenAiService _openAiService;
+    private readonly IAiCompletionService _aiCompletionService;
     private readonly IWebsiteRepository _websiteRepository;
     private readonly IIntegrationRepository _integrationRepository;
     private readonly IEnumerable<ICmsIntegrationService> _cmsServices;
 
     public DeployRecommendationCommandHandler(
-        IOpenAiService openAiService,
+        IAiCompletionService aiCompletionService,
         IWebsiteRepository websiteRepository,
         IIntegrationRepository integrationRepository,
         IEnumerable<ICmsIntegrationService> cmsServices)
     {
-        _openAiService = openAiService;
+        _aiCompletionService = aiCompletionService;
         _websiteRepository = websiteRepository;
         _integrationRepository = integrationRepository;
         _cmsServices = cmsServices;
@@ -53,11 +53,22 @@ public class DeployRecommendationCommandHandler : IRequestHandler<DeployRecommen
         }
 
         var prompt = $"Create a blog post addressing this SEO recommendation: Title: {recommendation.Title}, Description: {recommendation.Description}";
-        var generatedContent = await _openAiService.GenerateContentAsync(prompt);
+        var completion = await _aiCompletionService.CompleteAsync(
+            request.OrganizationId,
+            "deployment.recommendation_content",
+            prompt,
+            "You are an expert SEO content writer. Return only the publishable content body in Markdown.",
+            requireJson: false,
+            preferredProviderKey: "openai",
+            cancellationToken);
+        if (!completion.Success)
+        {
+            return new DeployRecommendationResult(false, completion.ErrorMessage ?? "Recommendation content generation failed.", null);
+        }
 
         try
         {
-            var deployedUrl = await cmsService.DeployContentAsync(integration, recommendation.Title, generatedContent, request.Status);
+            var deployedUrl = await cmsService.DeployContentAsync(integration, recommendation.Title, completion.Content, request.Status);
 
             await _websiteRepository.UpdateRecommendationStatusAsync(recommendation.Id, "Deployed", deployedUrl);
 

@@ -4,11 +4,14 @@ using Citationly.Application.Interfaces;
 using Dapper;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
+using Npgsql;
 
 namespace Citationly.API.Controllers;
 
 [ApiController]
 [AllowAnonymous]
+[EnableRateLimiting("GeneralAuth")]
 [Route("scim/v2")]
 public class ScimController : ControllerBase
 {
@@ -105,27 +108,66 @@ public class ScimController : ControllerBase
         if (string.IsNullOrWhiteSpace(email)) return BadRequest(new { detail = "userName/email is required." });
 
         using var connection = _dbConnectionFactory.CreateConnection();
-        var id = await connection.ExecuteScalarAsync<Guid>(
+        var displayName = request.DisplayName ?? request.Name?.Formatted ?? email;
+        var role = NormalizeRole(request.Role);
+
+        var existingInOrganization = await connection.QueryFirstOrDefaultAsync<ScimUserRow>(
             """
-            INSERT INTO Users (OrganizationId, FirebaseUid, Email, DisplayName, Role)
-            VALUES (@OrganizationId, @FirebaseUid, @Email, @DisplayName, @Role)
-            ON CONFLICT (Email) DO UPDATE SET
-                DisplayName = EXCLUDED.DisplayName,
-                Role = EXCLUDED.Role
-            RETURNING Id
+            SELECT Id, Email, DisplayName, Role, CreatedAt
+            FROM Users
+            WHERE OrganizationId = @OrganizationId AND LOWER(Email) = LOWER(@Email)
             """,
-            new
+            new { sso.Connection!.OrganizationId, Email = email });
+
+        Guid id;
+        if (existingInOrganization != null)
+        {
+            id = existingInOrganization.Id;
+            await connection.ExecuteAsync(
+                """
+                UPDATE Users
+                SET DisplayName = @DisplayName, Role = @Role
+                WHERE Id = @Id AND OrganizationId = @OrganizationId
+                """,
+                new { Id = id, sso.Connection.OrganizationId, DisplayName = displayName, Role = role });
+        }
+        else
+        {
+            var existingEmailOwner = await connection.ExecuteScalarAsync<Guid?>(
+                "SELECT OrganizationId FROM Users WHERE LOWER(Email) = LOWER(@Email) LIMIT 1",
+                new { Email = email });
+
+            if (existingEmailOwner.HasValue && existingEmailOwner.Value != sso.Connection.OrganizationId)
             {
-                sso.Connection!.OrganizationId,
-                FirebaseUid = $"scim:{sso.Connection.OrganizationId}:{email}",
-                Email = email,
-                DisplayName = request.DisplayName ?? request.Name?.Formatted ?? email,
-                Role = NormalizeRole(request.Role)
-            });
+                return Conflict(new { detail = "A user with this email already exists outside this SCIM organization." });
+            }
+
+            try
+            {
+                id = await connection.ExecuteScalarAsync<Guid>(
+                    """
+                    INSERT INTO Users (OrganizationId, FirebaseUid, Email, DisplayName, Role)
+                    VALUES (@OrganizationId, @FirebaseUid, @Email, @DisplayName, @Role)
+                    RETURNING Id
+                    """,
+                    new
+                    {
+                        sso.Connection.OrganizationId,
+                        FirebaseUid = $"scim:{sso.Connection.OrganizationId}:{email}",
+                        Email = email,
+                        DisplayName = displayName,
+                        Role = role
+                    });
+            }
+            catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation)
+            {
+                return Conflict(new { detail = "A user with this email already exists outside this SCIM organization." });
+            }
+        }
 
         await _auditLogService.RecordAsync("scim.user.upsert", "Security", "Success", sso.Connection.OrganizationId, targetType: "User", targetId: id.ToString(), actorType: "ScimClient", ipAddress: HttpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty, userAgent: Request.Headers.UserAgent.ToString(), cancellationToken: HttpContext.RequestAborted);
 
-        return Created($"/scim/v2/Users/{id}", ToScimUser(new ScimUserRow { Id = id, Email = email, DisplayName = request.DisplayName ?? email, Role = NormalizeRole(request.Role), CreatedAt = DateTime.UtcNow }));
+        return Created($"/scim/v2/Users/{id}", ToScimUser(new ScimUserRow { Id = id, Email = email, DisplayName = displayName, Role = role, CreatedAt = DateTime.UtcNow }));
     }
 
     [HttpPatch("Users/{id:guid}")]

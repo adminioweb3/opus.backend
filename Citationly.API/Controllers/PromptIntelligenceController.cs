@@ -1,4 +1,4 @@
-using System.Security.Claims;
+using Citationly.API.Services;
 using Citationly.Application.Interfaces;
 using Citationly.Domain.Entities;
 using Citationly.Domain.Utils;
@@ -14,7 +14,7 @@ namespace Citationly.API.Controllers;
 public class PromptIntelligenceController : ControllerBase
 {
     private readonly IPromptIntelligenceRepository _repo;
-    private readonly IUserRepository _userRepository;
+    private readonly ICurrentOrganizationAccessor _currentOrganization;
     private readonly IWebsiteRepository _websiteRepository;
     private readonly IPromptExecutionService _executionService;
     private readonly IQueryFanoutService _fanoutService;
@@ -26,7 +26,7 @@ public class PromptIntelligenceController : ControllerBase
 
     public PromptIntelligenceController(
         IPromptIntelligenceRepository repo,
-        IUserRepository userRepository,
+        ICurrentOrganizationAccessor currentOrganization,
         IWebsiteRepository websiteRepository,
         IPromptExecutionService executionService,
         IQueryFanoutService fanoutService,
@@ -37,7 +37,7 @@ public class PromptIntelligenceController : ControllerBase
         ILogger<PromptIntelligenceController> logger)
     {
         _repo = repo;
-        _userRepository = userRepository;
+        _currentOrganization = currentOrganization;
         _websiteRepository = websiteRepository;
         _executionService = executionService;
         _fanoutService = fanoutService;
@@ -50,11 +50,7 @@ public class PromptIntelligenceController : ControllerBase
 
     private async Task<Guid?> GetOrganizationIdAsync()
     {
-        var firebaseUid = User.FindFirst("user_id")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-        if (string.IsNullOrEmpty(firebaseUid)) return null;
-
-        var user = await _userRepository.GetUserByFirebaseUidAsync(firebaseUid);
-        return user?.OrganizationId;
+        return await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
     }
 
     /// <summary>
@@ -831,7 +827,7 @@ public class PromptIntelligenceController : ControllerBase
         var question = await _repo.GetQuestionAsync(questionId);
         if (question == null) return NotFound();
 
-        var fanouts = await _fanoutService.GenerateFanoutsAsync(questionId, question.PromptText, ct);
+        var fanouts = await _fanoutService.GenerateFanoutsAsync(orgId.Value, questionId, question.PromptText, ct);
         if (fanouts.Count == 0)
         {
             return StatusCode(502, new { error = "Fanout generation failed — the AI service didn't return usable results. Try again." });
@@ -858,7 +854,7 @@ public class PromptIntelligenceController : ControllerBase
 
         var count = Math.Clamp(request.Count, 1, 20);
         var generatedTexts = await _topicPromptGenerator.GeneratePromptsAsync(
-            topicId, topic.Name, count, ct,
+            orgId.Value, topicId, topic.Name, count, ct,
             brandName: profile?.BusinessName,
             brandWebsite: profile?.WebsiteUrl);
 

@@ -21,7 +21,7 @@ public class OpenAiClientService
         IAiResilienceService aiResilience)
     {
         _httpClientFactory = httpClientFactory;
-        _apiKey = configuration["OpenAI:ApiKey"] ?? string.Empty;
+        _apiKey = ResolveConfiguredSecret(configuration["OpenAI:ApiKey"]) ?? string.Empty;
         _aiContext = aiContext;
         _aiUsageLimiter = aiUsageLimiter;
         _aiResilience = aiResilience;
@@ -44,12 +44,12 @@ public class OpenAiClientService
 
     private async Task<string> CallOpenRouterAsync(object messages, string model, int maxTokens, CancellationToken ct, bool isIntent = false)
     {
-        if (string.IsNullOrEmpty(_apiKey) || _apiKey == "YOUR_OPENAI_API_KEY")
+        if (string.IsNullOrEmpty(_apiKey))
         {
             if (isIntent)
                 return "{\"intent\":\"General Chat\",\"requiredTools\":[]}";
 
-            return "This is a mock AI response. Please configure your OpenAI API Key in `appsettings.json` to enable real AI generation.";
+            throw new InvalidOperationException("OpenAI is not configured; assistant responses cannot be generated.");
         }
 
         await _aiUsageLimiter.EnsureWithinLimitsAsync(_aiContext.OrganizationId, isIntent ? "assistant.intent" : "assistant.chat", ct);
@@ -88,5 +88,12 @@ public class OpenAiClientService
                 .GetProperty("content")
                 .GetString() ?? string.Empty;
         }, ct);
+    }
+
+    private static string? ResolveConfiguredSecret(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        if (value == "YOUR_OPENAI_API_KEY") return null;
+        return value.StartsWith("${", StringComparison.Ordinal) ? null : value;
     }
 }

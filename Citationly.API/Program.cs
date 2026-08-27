@@ -9,7 +9,8 @@ using Microsoft.IdentityModel.Tokens;
 using Scalar.AspNetCore;
 using Hangfire;
 using Hangfire.PostgreSql;
-using Dapper;
+using Microsoft.AspNetCore.RateLimiting;
+using System.Threading.RateLimiting;
 
 using Citationly.Application;
 using Citationly.Infrastructure;
@@ -28,6 +29,40 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddHttpClient();
 builder.Services.AddMemoryCache();
+
+// Security Services
+builder.Services.AddAntiforgery(options =>
+{
+    options.HeaderName = "X-CSRF-TOKEN";
+    options.Cookie.Name = "CSRF-TOKEN";
+    options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+});
+
+builder.Services.AddRateLimiter(options =>
+{
+    options.AddFixedWindowLimiter("GeneralAuth", opt =>
+    {
+        opt.Window = TimeSpan.FromMinutes(1);
+        opt.PermitLimit = 10;
+        opt.QueueLimit = 0;
+    });
+
+    options.AddFixedWindowLimiter("AdminLogin", opt =>
+    {
+        opt.Window = TimeSpan.FromMinutes(15);
+        opt.PermitLimit = 5;
+        opt.QueueLimit = 0;
+    });
+    
+    options.AddFixedWindowLimiter("AnonymousAI", opt =>
+    {
+        opt.Window = TimeSpan.FromHours(1);
+        opt.PermitLimit = 3;
+        opt.QueueLimit = 0;
+    });
+    
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+});
 
 // OpenAPI & Swagger
 builder.Services.AddOpenApi();
@@ -54,16 +89,12 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>
     {
-        policy.WithOrigins(
-            "https://citationly.ai",
-            "https://www.citationly.ai",
-            "http://localhost:3000",
-            "http://localhost:3010",
-            "http://localhost:5173",
-            "http://localhost:5174",
-            "http://localhost:5175",
-            "http://localhost:5176"
-        )
+        var isDev = builder.Environment.IsDevelopment();
+        var allowedOrigins = isDev
+            ? new[] { "https://citationly.ai", "https://www.citationly.ai", "http://localhost:3000", "http://localhost:3010", "http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://localhost:5176" }
+            : new[] { "https://citationly.ai", "https://www.citationly.ai" };
+
+        policy.WithOrigins(allowedOrigins)
         .AllowAnyHeader()
         .AllowAnyMethod()
         .AllowCredentials();
@@ -75,6 +106,7 @@ var firebaseProjectId = builder.Configuration["Firebase:ProjectId"];
 var adminJwtIssuer = builder.Configuration["Admin:JwtIssuer"] ?? "Citationly.Admin";
 var adminJwtAudience = builder.Configuration["Admin:JwtAudience"] ?? "Citationly.Admin.Panel";
 var adminJwtSigningKey = builder.Configuration["Admin:JwtSigningKey"] ?? string.Empty;
+ProductionConfigurationValidator.Validate(builder.Configuration, builder.Environment.EnvironmentName);
 
 builder.Services.AddAuthentication()
     .AddJwtBearer("AdminJwt", options =>
@@ -116,7 +148,7 @@ if (!string.IsNullOrEmpty(firebaseProjectId))
             // The "demo-token" bypass below is only wired up in Development — it's a hardcoded
             // skeleton key (any bearer "demo-token" authenticates as demo-user-id) and must never
             // be reachable outside local/dev environments.
-            if (builder.Environment.IsDevelopment())
+            if (builder.Environment.IsDevelopment() && builder.Configuration.GetValue<bool>("DevAuth:EnableDemoToken"))
             {
                 options.Events = new JwtBearerEvents
                 {
@@ -156,6 +188,7 @@ builder.Services.AddAuthentication()
         options => { });
 
 var app = builder.Build();
+var runMigrationsOnly = args.Contains("--migrate-database", StringComparer.OrdinalIgnoreCase);
 
 // Self-healing migration: adds trial-subscription columns to Organizations (for orgs created
 // before this feature existed), backfills Websites.DomainUrl on databases created before that
@@ -173,11 +206,15 @@ var app = builder.Build();
 //
 // NOTE: init.sql itself opens with `DROP TABLE ... CASCADE` for a from-scratch dev reset — never
 // run that file's full contents here, only ever hand-pick idempotent CREATE/ALTER statements.
-using (var migrationScope = app.Services.CreateScope())
+var runMigrationsOnStartup = app.Configuration.GetValue<bool?>("Database:RunMigrationsOnStartup") ?? !app.Environment.IsProduction();
+if (runMigrationsOnly || runMigrationsOnStartup)
 {
-    var dbConnectionFactory = migrationScope.ServiceProvider.GetRequiredService<Citationly.Application.Interfaces.IDbConnectionFactory>();
-    using var migrationConnection = dbConnectionFactory.CreateConnection();
-    await migrationConnection.ExecuteAsync(Citationly.Infrastructure.Database.SelfHealingMigrations.Sql);
+    await RunDatabaseMigrationsAsync(app.Services, app.Lifetime.ApplicationStopping);
+}
+
+if (runMigrationsOnly)
+{
+    return;
 }
 
 // Trust forwarded headers from Nginx
@@ -214,15 +251,19 @@ app.UseExceptionHandler(errorApp =>
     });
 });
 
-// API docs — available in every environment (explicitly requested), not just Development.
-app.MapOpenApi();
-app.MapScalarApiReference();
-app.UseSwagger();
-app.UseSwaggerUI(c =>
+// API docs are development-only by default. Expose them in production only with an explicit config flag.
+var exposeApiDocs = app.Environment.IsDevelopment() || app.Configuration.GetValue<bool>("OpenApi:ExposeInProduction");
+if (exposeApiDocs)
 {
-    c.SwaggerEndpoint("/swagger/v1/swagger.json", "Citationly API v1");
-    c.RoutePrefix = "swagger";
-});
+    app.MapOpenApi();
+    app.MapScalarApiReference();
+    app.UseSwagger();
+    app.UseSwaggerUI(c =>
+    {
+        c.SwaggerEndpoint("/swagger/v1/swagger.json", "Citationly API v1");
+        c.RoutePrefix = "swagger";
+    });
+}
 
 // Hangfire's dashboard can trigger/delete background jobs — keep it development-only rather
 // than exposing job control to anyone who can reach the production URL.
@@ -295,6 +336,7 @@ app.UseHttpsRedirection();
 app.UseCors("AllowFrontend");
 app.UseMiddleware<RequestTelemetryMiddleware>();
 
+app.UseRateLimiter(); // Must be before authentication
 app.UseAuthentication();
 app.UseAuthorization();
 
@@ -302,3 +344,10 @@ app.MapControllers();
 app.MapGet("/", () => "Citationly API is running");
 
 app.Run();
+
+static async Task RunDatabaseMigrationsAsync(IServiceProvider services, CancellationToken cancellationToken)
+{
+    using var migrationScope = services.CreateScope();
+    var migrationRunner = migrationScope.ServiceProvider.GetRequiredService<Citationly.Infrastructure.Database.DatabaseMigrationRunner>();
+    await migrationRunner.RunPendingAsync(cancellationToken);
+}

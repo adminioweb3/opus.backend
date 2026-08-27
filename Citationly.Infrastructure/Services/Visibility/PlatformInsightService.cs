@@ -8,12 +8,12 @@ namespace Citationly.Infrastructure.Services.Visibility;
 
 public class PlatformInsightService : IPlatformInsightService
 {
-    private readonly IOpenAiService _openAiService;
+    private readonly IAiCompletionService _aiCompletionService;
     private readonly IWebsiteRepository _websiteRepository;
 
-    public PlatformInsightService(IOpenAiService openAiService, IWebsiteRepository websiteRepository)
+    public PlatformInsightService(IAiCompletionService aiCompletionService, IWebsiteRepository websiteRepository)
     {
-        _openAiService = openAiService;
+        _aiCompletionService = aiCompletionService;
         _websiteRepository = websiteRepository;
     }
 
@@ -67,13 +67,16 @@ Return exactly this schema:
 }}
 ";
 
-        var responseContent = await _openAiService.GenerateContentAsync(
-            prompt: userPrompt,
-            systemPrompt: systemPrompt,
+        var completion = await _aiCompletionService.CompleteAsync(
+            profile.OrganizationId,
+            "visibility.platform_insight",
+            userPrompt,
+            systemPrompt,
             requireJson: true,
-            model: "gpt-4o-mini");
+            preferredProviderKey: "openai");
+        if (!completion.Success) return;
 
-        responseContent = responseContent.Trim();
+        var responseContent = completion.Content.Trim();
         if (responseContent.StartsWith("```json"))
         {
             responseContent = responseContent.Substring(7);

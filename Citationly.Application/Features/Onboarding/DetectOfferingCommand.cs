@@ -6,6 +6,7 @@ namespace Citationly.Application.Features.Onboarding;
 
 public class DetectOfferingCommand : IRequest<DetectOfferingResult>
 {
+    public Guid? OrganizationId { get; set; }
     public string WebsiteUrl { get; set; } = string.Empty;
     public string BusinessName { get; set; } = string.Empty;
 }
@@ -18,11 +19,11 @@ public class DetectOfferingResult
 
 public class DetectOfferingCommandHandler : IRequestHandler<DetectOfferingCommand, DetectOfferingResult>
 {
-    private readonly IOpenAiService _openAiService;
+    private readonly IAiCompletionService _aiCompletionService;
 
-    public DetectOfferingCommandHandler(IOpenAiService openAiService)
+    public DetectOfferingCommandHandler(IAiCompletionService aiCompletionService)
     {
-        _openAiService = openAiService;
+        _aiCompletionService = aiCompletionService;
     }
 
     public async Task<DetectOfferingResult> Handle(DetectOfferingCommand request, CancellationToken cancellationToken)
@@ -44,13 +45,20 @@ Return this exact JSON format, no markdown:
 
 Confidence is 0-100. Be precise based on the business name and domain.";
 
-            var response = await _openAiService.GenerateContentAsync(
-                prompt: userPrompt,
-                systemPrompt: "You identify the single primary offering of a business in one line.",
+            var completion = await _aiCompletionService.CompleteAsync(
+                request.OrganizationId,
+                "onboarding.detect_offering",
+                userPrompt,
+                "You identify the single primary offering of a business in one line.",
                 requireJson: true,
-                model: "gpt-4o-mini");
+                preferredProviderKey: "openai",
+                cancellationToken);
+            if (!completion.Success)
+            {
+                return new DetectOfferingResult { Offering = "", Confidence = 0 };
+            }
 
-            response = response.Trim();
+            var response = completion.Content.Trim();
             if (response.StartsWith("```json")) response = response.Substring(7);
             if (response.StartsWith("```")) response = response.Substring(3);
             if (response.EndsWith("```")) response = response.Substring(0, response.Length - 3);

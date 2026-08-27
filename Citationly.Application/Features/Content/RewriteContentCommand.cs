@@ -14,12 +14,12 @@ public class RewriteContentCommand : IRequest<ContentDraft?>
 public class RewriteContentCommandHandler : IRequestHandler<RewriteContentCommand, ContentDraft?>
 {
     private readonly IContentDraftRepository _repository;
-    private readonly IOpenAiService _openAiService;
+    private readonly IAiCompletionService _aiCompletionService;
 
-    public RewriteContentCommandHandler(IContentDraftRepository repository, IOpenAiService openAiService)
+    public RewriteContentCommandHandler(IContentDraftRepository repository, IAiCompletionService aiCompletionService)
     {
         _repository = repository;
-        _openAiService = openAiService;
+        _aiCompletionService = aiCompletionService;
     }
 
     public async Task<ContentDraft?> Handle(RewriteContentCommand request, CancellationToken cancellationToken)
@@ -33,7 +33,20 @@ public class RewriteContentCommandHandler : IRequestHandler<RewriteContentComman
 
         var prompt = $"INSTRUCTION: {request.Instruction}\n\nCONTENT TO REWRITE:\n{draft.Content}";
 
-        var rewritten = await _openAiService.GenerateContentAsync(prompt, systemPrompt);
+        var completion = await _aiCompletionService.CompleteAsync(
+            request.OrganizationId,
+            "content.rewrite",
+            prompt,
+            systemPrompt,
+            requireJson: false,
+            preferredProviderKey: "openai",
+            cancellationToken);
+        if (!completion.Success)
+        {
+            throw new InvalidOperationException(completion.ErrorMessage ?? "Content rewrite failed.");
+        }
+
+        var rewritten = completion.Content;
 
         draft.Content = rewritten;
         draft.WordCount = rewritten.Split(new[] { ' ', '\n', '\r', '\t' }, StringSplitOptions.RemoveEmptyEntries).Length;

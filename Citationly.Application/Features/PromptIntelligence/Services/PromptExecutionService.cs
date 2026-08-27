@@ -78,15 +78,16 @@ public class PromptExecutionService : IPromptExecutionService
         // Run LLMs
         var responses = (await _llmRunner.RunPromptAcrossModelsAsync(analysisId, question.PromptText, ct, personaSystemPrompt)).ToList();
         
-        if (responses.All(r => r.ResponseText.StartsWith("[Error]")))
+        await _repo.InsertResponsesAsync(responses);
+
+        var successfulResponses = responses.Where(r => !r.IsError).ToList();
+        if (successfulResponses.Count == 0)
         {
-            var errMsg = responses.First().ResponseText;
+            var errMsg = responses.FirstOrDefault()?.ErrorMessage ?? "All AI providers failed.";
             await _repo.UpdateAnalysisStatusAsync(analysisId, "Failed", errMsg);
             yield return $"{{\"error\": \"Analysis failed: {errMsg.Replace("\"", "'").Replace("\n", " ")}\"}}";
             yield break;
         }
-
-        await _repo.InsertResponsesAsync(responses);
 
         yield return "{\"step\": \"Extracting Mentions & Citations...\", \"progress\": 50}";
 
@@ -94,10 +95,10 @@ public class PromptExecutionService : IPromptExecutionService
         var trackedCompetitors = await _websiteRepo.GetCompetitorsAsync(organizationId);
         var competitors = trackedCompetitors.Select(c => c.Name).Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
         var competitorDomains = trackedCompetitors.Select(c => c.WebsiteUrl).Where(u => !string.IsNullOrWhiteSpace(u)).ToList();
-        var (visibility, mentions, compComparisons) = _calculator.CalculateVisibilityMetrics(analysisId, responses, brandName, competitors);
+        var (visibility, mentions, compComparisons) = _calculator.CalculateVisibilityMetrics(analysisId, successfulResponses, brandName, competitors);
 
         // Real citation extraction from the actual captured response text
-        var citations = responses.SelectMany(r => _citationExtractor.ExtractCitations(analysisId, r.Platform, r.ResponseText, ownDomain, competitorDomains)).ToList();
+        var citations = successfulResponses.SelectMany(r => _citationExtractor.ExtractCitations(analysisId, r.Platform, r.ResponseText, ownDomain, competitorDomains)).ToList();
         
         // Use real citation count
         if (ownDomain != null)
@@ -116,9 +117,9 @@ public class PromptExecutionService : IPromptExecutionService
 
         // Real LLM sentiment classification, scoped to responses that actually mentioned the brand.
         var brandMentionedPlatforms = mentions.Where(m => m.IsBrand).Select(m => m.Platform).ToHashSet();
-        foreach (var response in responses.Where(r => brandMentionedPlatforms.Contains(r.Platform)))
+        foreach (var response in successfulResponses.Where(r => brandMentionedPlatforms.Contains(r.Platform)))
         {
-            var (sentiment, quote) = await _sentimentClassifier.ClassifyAsync(response.ResponseText, brandName, ct);
+            var (sentiment, quote) = await _sentimentClassifier.ClassifyAsync(organizationId, response.ResponseText, brandName, ct);
             if (sentiment != null)
             {
                 await _repo.UpdateResponseSentimentAsync(analysisId, response.Platform, sentiment, quote);

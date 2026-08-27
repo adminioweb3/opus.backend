@@ -47,14 +47,14 @@ public class PersonaScoreResponse
 public class AnalyzePersonasCommandHandler : IRequestHandler<AnalyzePersonasCommand, PersonaAnalysisResult>
 {
     private readonly IWebsiteRepository _websiteRepository;
-    private readonly IOpenAiService _openRouterService;
+    private readonly IAiCompletionService _aiCompletionService;
 
     public AnalyzePersonasCommandHandler(
         IWebsiteRepository websiteRepository,
-        IOpenAiService openRouterService)
+        IAiCompletionService aiCompletionService)
     {
         _websiteRepository = websiteRepository;
-        _openRouterService = openRouterService;
+        _aiCompletionService = aiCompletionService;
     }
 
     public async Task<PersonaAnalysisResult> Handle(AnalyzePersonasCommand request, CancellationToken cancellationToken)
@@ -308,13 +308,20 @@ Return ONLY the JSON object.";
 
         try
         {
-            var responseContent = await _openRouterService.GenerateContentAsync(
-                prompt: userPrompt,
-                systemPrompt: systemPrompt,
+            var completion = await _aiCompletionService.CompleteAsync(
+                request.OrganizationId,
+                "onboarding.persona_analysis",
+                userPrompt,
+                systemPrompt,
                 requireJson: true,
-                model: "gpt-4o-mini");
+                preferredProviderKey: "openai",
+                cancellationToken);
+            if (!completion.Success)
+            {
+                return new PersonaAnalysisResult { Success = false, Error = completion.ErrorMessage };
+            }
 
-            responseContent = responseContent.Trim();
+            var responseContent = completion.Content.Trim();
             if (responseContent.StartsWith("```json"))
             {
                 responseContent = responseContent.Substring(7);

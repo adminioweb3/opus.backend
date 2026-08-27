@@ -6,6 +6,7 @@ namespace Citationly.Application.Features.Onboarding;
 
 public class SuggestKeywordsCommand : IRequest<List<string>>
 {
+    public Guid? OrganizationId { get; set; }
     public string WebsiteUrl { get; set; } = string.Empty;
     public string BusinessName { get; set; } = string.Empty;
     public string? Industry { get; set; }
@@ -13,11 +14,11 @@ public class SuggestKeywordsCommand : IRequest<List<string>>
 
 public class SuggestKeywordsCommandHandler : IRequestHandler<SuggestKeywordsCommand, List<string>>
 {
-    private readonly IOpenAiService _openAiService;
+    private readonly IAiCompletionService _aiCompletionService;
 
-    public SuggestKeywordsCommandHandler(IOpenAiService openAiService)
+    public SuggestKeywordsCommandHandler(IAiCompletionService aiCompletionService)
     {
-        _openAiService = openAiService;
+        _aiCompletionService = aiCompletionService;
     }
 
     public async Task<List<string>> Handle(SuggestKeywordsCommand request, CancellationToken cancellationToken)
@@ -39,13 +40,17 @@ Ensure keywords are:
 - Realistic for the industry
 - Varied in length (1-3 words each)";
 
-            var response = await _openAiService.GenerateContentAsync(
-                prompt: userPrompt,
-                systemPrompt: "You are a keyword research expert. Generate relevant keywords for businesses.",
+            var completion = await _aiCompletionService.CompleteAsync(
+                request.OrganizationId,
+                "onboarding.suggest_keywords",
+                userPrompt,
+                "You are a keyword research expert. Generate relevant keywords for businesses.",
                 requireJson: true,
-                model: "gpt-4o-mini");
+                preferredProviderKey: "openai",
+                cancellationToken);
+            if (!completion.Success) return new List<string>();
 
-            response = response.Trim();
+            var response = completion.Content.Trim();
             if (response.StartsWith("```json")) response = response.Substring(7);
             if (response.StartsWith("```")) response = response.Substring(3);
             if (response.EndsWith("```")) response = response.Substring(0, response.Length - 3);

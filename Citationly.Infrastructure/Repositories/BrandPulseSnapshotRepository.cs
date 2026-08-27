@@ -13,29 +13,9 @@ public class BrandPulseSnapshotRepository : IBrandPulseSnapshotRepository
         _dbConnectionFactory = dbConnectionFactory;
     }
 
-    public async Task EnsureTableCreatedAsync()
+    public Task EnsureTableCreatedAsync()
     {
-        using var connection = _dbConnectionFactory.CreateConnection();
-        await connection.ExecuteAsync(@"
-            CREATE TABLE IF NOT EXISTS BrandPulseScanSummaries (
-                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                OrganizationId UUID NOT NULL,
-                ScanDate DATE NOT NULL,
-                BrandHealth INT NOT NULL DEFAULT 0,
-                AiConfidence INT NOT NULL DEFAULT 0,
-                MessagingConsistency INT NOT NULL DEFAULT 0,
-                BrandTrust INT NOT NULL DEFAULT 0,
-                SentimentPositive INT NOT NULL DEFAULT 0,
-                SentimentNeutral INT NOT NULL DEFAULT 0,
-                SentimentNegative INT NOT NULL DEFAULT 0,
-                AlertsJson JSONB NOT NULL DEFAULT '[]'::jsonb,
-                ModelInsightsJson JSONB NOT NULL DEFAULT '[]'::jsonb,
-                AccuracyFlagsJson JSONB NOT NULL DEFAULT '[]'::jsonb,
-                PromptEvidenceJson JSONB NOT NULL DEFAULT '[]'::jsonb,
-                CreatedAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE INDEX IF NOT EXISTS idx_brandpulsescansummaries_org_scandate ON BrandPulseScanSummaries (OrganizationId, ScanDate);
-        ");
+        return Task.CompletedTask;
     }
 
     public async Task DeleteByScanDateAsync(Guid organizationId, DateOnly scanDate)

@@ -1,12 +1,11 @@
 using System.Text.Json;
 using Citationly.Application.Interfaces;
-using Microsoft.Extensions.Configuration;
 
 namespace Citationly.Application.Features.PromptIntelligence.Services;
 
 public interface ISentimentClassifierService
 {
-    Task<(string? Sentiment, string? Quote)> ClassifyAsync(string responseText, string brandName, CancellationToken ct);
+    Task<(string? Sentiment, string? Quote)> ClassifyAsync(Guid organizationId, string responseText, string brandName, CancellationToken ct);
 }
 
 /// <summary>
@@ -17,16 +16,14 @@ public interface ISentimentClassifierService
 /// </summary>
 public class SentimentClassifierService : ISentimentClassifierService
 {
-    private readonly IOpenAiService _openAiService;
-    private readonly string _classificationModel;
+    private readonly IAiCompletionService _aiCompletionService;
 
-    public SentimentClassifierService(IOpenAiService openAiService, IConfiguration configuration)
+    public SentimentClassifierService(IAiCompletionService aiCompletionService)
     {
-        _openAiService = openAiService;
-        _classificationModel = configuration["OpenAI:ClassificationModel"] ?? "gpt-4o-mini";
+        _aiCompletionService = aiCompletionService;
     }
 
-    public async Task<(string? Sentiment, string? Quote)> ClassifyAsync(string responseText, string brandName, CancellationToken ct)
+    public async Task<(string? Sentiment, string? Quote)> ClassifyAsync(Guid organizationId, string responseText, string brandName, CancellationToken ct)
     {
         var deterministic = TryClassifyDeterministically(responseText, brandName);
         if (deterministic.Sentiment != null)
@@ -45,8 +42,17 @@ public class SentimentClassifierService : ISentimentClassifierService
 
         try
         {
-            var raw = await _openAiService.GenerateContentAsync(userPrompt, systemPrompt, requireJson: true, model: _classificationModel);
-            raw = StripFences(raw);
+            var completion = await _aiCompletionService.CompleteAsync(
+                organizationId,
+                "prompt_intelligence.sentiment_classification",
+                userPrompt,
+                systemPrompt,
+                requireJson: true,
+                preferredProviderKey: "openai",
+                ct);
+            if (!completion.Success) return (null, null);
+
+            var raw = StripFences(completion.Content);
             using var doc = JsonDocument.Parse(raw);
             var root = doc.RootElement;
 

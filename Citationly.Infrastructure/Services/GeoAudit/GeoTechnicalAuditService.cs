@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Citationly.Application.Interfaces.GeoAudit;
+using Citationly.Application.Interfaces.Security;
 using HtmlAgilityPack;
 
 namespace Citationly.Infrastructure.Services.GeoAudit;
@@ -8,23 +9,43 @@ namespace Citationly.Infrastructure.Services.GeoAudit;
 public sealed class GeoTechnicalAuditService : IGeoTechnicalAuditService
 {
     private static readonly string[] AiBotUserAgents = { "GPTBot", "ChatGPT-User", "ClaudeBot", "Google-Extended", "PerplexityBot" };
+    private const int MaxRedirects = 5;
+    private const int MaxResponseBytes = 2 * 1024 * 1024;
     private readonly HttpClient _httpClient;
+    private readonly IOutboundUrlSafetyValidator _urlSafetyValidator;
 
-    public GeoTechnicalAuditService(HttpClient httpClient)
+    public GeoTechnicalAuditService(HttpClient httpClient, IOutboundUrlSafetyValidator urlSafetyValidator)
     {
         _httpClient = httpClient;
+        _urlSafetyValidator = urlSafetyValidator;
     }
 
     public async Task<GeoTechnicalAuditResult> AuditAsync(string websiteUrl, CancellationToken cancellationToken = default)
     {
-        var homeUrl = NormalizeHomeUrl(websiteUrl);
         var checks = new List<GeoTechnicalCheck>();
         var notes = new List<string>();
+        var urlSafety = await _urlSafetyValidator.ValidateForHttpFetchAsync(
+            websiteUrl,
+            allowMissingScheme: true,
+            cancellationToken: cancellationToken);
+
+        if (!urlSafety.IsAllowed)
+        {
+            checks.Add(new GeoTechnicalCheck("url_safety", "URL safety", 0, false, urlSafety.Reason ?? "URL is not allowed."));
+            return Empty(websiteUrl, checks, notes);
+        }
+
+        var homeUrl = urlSafety.NormalizedUrl!;
 
         string html = string.Empty;
         try
         {
-            html = await _httpClient.GetStringAsync(homeUrl, cancellationToken);
+            html = await FetchTextWithSafetyAsync(homeUrl, cancellationToken) ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(html))
+            {
+                checks.Add(new GeoTechnicalCheck("homepage_fetch", "Homepage fetch", 0, false, "Homepage fetch returned no readable HTML."));
+                return Empty(homeUrl, checks, notes);
+            }
             notes.Add($"Fetched homepage HTML from {homeUrl}.");
         }
         catch (Exception ex)
@@ -92,15 +113,76 @@ public sealed class GeoTechnicalAuditService : IGeoTechnicalAuditService
     {
         try
         {
-            using var response = await _httpClient.GetAsync(url, cancellationToken);
-            if (!response.IsSuccessStatusCode) return null;
-            return await response.Content.ReadAsStringAsync(cancellationToken);
+            return await FetchTextWithSafetyAsync(url, cancellationToken);
         }
         catch
         {
             return null;
         }
     }
+
+    private async Task<string?> FetchTextWithSafetyAsync(string url, CancellationToken cancellationToken)
+    {
+        var currentUrl = url;
+        for (var redirect = 0; redirect <= MaxRedirects; redirect++)
+        {
+            var safety = await _urlSafetyValidator.ValidateForHttpFetchAsync(currentUrl, cancellationToken: cancellationToken);
+            if (!safety.IsAllowed || string.IsNullOrWhiteSpace(safety.NormalizedUrl)) return null;
+            currentUrl = safety.NormalizedUrl;
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, currentUrl);
+            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+            if (IsRedirect(response.StatusCode))
+            {
+                if (redirect == MaxRedirects) return null;
+                var location = response.Headers.Location;
+                if (location == null) return null;
+                currentUrl = location.IsAbsoluteUri
+                    ? location.ToString()
+                    : new Uri(new Uri(currentUrl), location).ToString();
+                continue;
+            }
+
+            if (!response.IsSuccessStatusCode || !IsReadableText(response.Content.Headers.ContentType?.MediaType))
+            {
+                return null;
+            }
+
+            if (response.Content.Headers.ContentLength > MaxResponseBytes)
+            {
+                return null;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var buffer = new MemoryStream();
+            var bytes = new byte[8192];
+            int read;
+            while ((read = await stream.ReadAsync(bytes, cancellationToken)) > 0)
+            {
+                if (buffer.Length + read > MaxResponseBytes) return null;
+                buffer.Write(bytes, 0, read);
+            }
+
+            return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
+        }
+
+        return null;
+    }
+
+    private static bool IsRedirect(System.Net.HttpStatusCode statusCode) =>
+        statusCode is System.Net.HttpStatusCode.MovedPermanently
+            or System.Net.HttpStatusCode.Found
+            or System.Net.HttpStatusCode.SeeOther
+            or System.Net.HttpStatusCode.TemporaryRedirect
+            or System.Net.HttpStatusCode.PermanentRedirect;
+
+    private static bool IsReadableText(string? mediaType) =>
+        string.IsNullOrWhiteSpace(mediaType) ||
+        mediaType.StartsWith("text/", StringComparison.OrdinalIgnoreCase) ||
+        mediaType.Equals("application/xml", StringComparison.OrdinalIgnoreCase) ||
+        mediaType.Equals("application/xhtml+xml", StringComparison.OrdinalIgnoreCase) ||
+        mediaType.Equals("application/rss+xml", StringComparison.OrdinalIgnoreCase);
 
     private static GeoTechnicalCheck CheckRobots(string? robots)
     {

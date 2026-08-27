@@ -13,5 +13,5 @@ public interface IRecommendationDiscoveryService
     /// Uses AI to discover recommendations based on the identified gaps.
     /// Returns a lightweight DTO containing only Category, Title, and Description.
     /// </summary>
-    Task<List<DiscoveryRecommendationDto>> DiscoverRecommendationsAsync(GapAnalysisResult gapAnalysis, string websiteUrl, string rawProfileJson);
+    Task<List<DiscoveryRecommendationDto>> DiscoverRecommendationsAsync(Guid organizationId, GapAnalysisResult gapAnalysis, string websiteUrl, string rawProfileJson);
 }

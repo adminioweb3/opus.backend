@@ -35,7 +35,7 @@ public class RunScanCommandHandler : IRequestHandler<RunScanCommand, RunScanResu
 
     private readonly IAiVisibilityRepository _aiVisibilityRepo;
     private readonly IWebsiteRepository _websiteRepository;
-    private readonly IOpenAiService _openAiService;
+    private readonly IAiCompletionService _aiCompletionService;
     private readonly IPromptIntelligenceRepository _promptIntelligenceRepo;
     private readonly ICompetitorRankingService _competitorRankingService;
     private readonly IGeoTechnicalAuditService _geoTechnicalAuditService;
@@ -43,14 +43,14 @@ public class RunScanCommandHandler : IRequestHandler<RunScanCommand, RunScanResu
     public RunScanCommandHandler(
         IAiVisibilityRepository aiVisibilityRepo,
         IWebsiteRepository websiteRepository,
-        IOpenAiService openAiService,
+        IAiCompletionService aiCompletionService,
         IPromptIntelligenceRepository promptIntelligenceRepo,
         ICompetitorRankingService competitorRankingService,
         IGeoTechnicalAuditService geoTechnicalAuditService)
     {
         _aiVisibilityRepo = aiVisibilityRepo;
         _websiteRepository = websiteRepository;
-        _openAiService = openAiService;
+        _aiCompletionService = aiCompletionService;
         _promptIntelligenceRepo = promptIntelligenceRepo;
         _competitorRankingService = competitorRankingService;
         _geoTechnicalAuditService = geoTechnicalAuditService;
@@ -91,8 +91,20 @@ public class RunScanCommandHandler : IRequestHandler<RunScanCommand, RunScanResu
             : await _geoTechnicalAuditService.AuditAsync(profile.WebsiteUrl, cancellationToken);
 
         var (systemPrompt, userPrompt) = BuildPrompt(profile, executiveSummary, personaSummary, regionSummary, competitors, previousScan);
-        var raw = await _openAiService.GenerateContentAsync(userPrompt, systemPrompt, requireJson: true);
-        var analysis = ParseAnalysis(raw, previousScan);
+        var completion = await _aiCompletionService.CompleteAsync(
+            orgId,
+            "geo.scan.technical_estimates",
+            userPrompt,
+            systemPrompt,
+            requireJson: true,
+            preferredProviderKey: "openai",
+            cancellationToken);
+        if (!completion.Success)
+        {
+            return new RunScanResult(false, completion.ErrorMessage ?? "GEO scan could not be completed because AI estimates were unavailable.");
+        }
+
+        var analysis = ParseAnalysis(completion.Content, previousScan);
 
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
 

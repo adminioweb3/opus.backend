@@ -34,29 +34,34 @@ public class GenerateContentCommand : IRequest<ContentDraft>
 
 public class GenerateContentCommandHandler : IRequestHandler<GenerateContentCommand, ContentDraft>
 {
-    private static readonly Dictionary<string, string> ModelMap = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["GPT-4.1"] = "gpt-4.1",
-        ["GPT-4o"] = "gpt-4o",
-        ["GPT-4.1 mini"] = "gpt-4.1-mini",
-    };
-
     private readonly IContentDraftRepository _repository;
-    private readonly IOpenAiService _openAiService;
+    private readonly IAiCompletionService _aiCompletionService;
 
-    public GenerateContentCommandHandler(IContentDraftRepository repository, IOpenAiService openAiService)
+    public GenerateContentCommandHandler(IContentDraftRepository repository, IAiCompletionService aiCompletionService)
     {
         _repository = repository;
-        _openAiService = openAiService;
+        _aiCompletionService = aiCompletionService;
     }
 
     public async Task<ContentDraft> Handle(GenerateContentCommand request, CancellationToken cancellationToken)
     {
         var systemPrompt = BuildSystemPrompt(request);
         var userPrompt = BuildUserPrompt(request);
-        var model = request.Model != null && ModelMap.TryGetValue(request.Model, out var mapped) ? mapped : "gpt-4o-mini";
 
-        var content = await _openAiService.GenerateContentAsync(userPrompt, systemPrompt, false, model);
+        var completion = await _aiCompletionService.CompleteAsync(
+            request.OrganizationId,
+            "content.generate",
+            userPrompt,
+            systemPrompt,
+            requireJson: false,
+            preferredProviderKey: "openai",
+            cancellationToken);
+        if (!completion.Success)
+        {
+            throw new InvalidOperationException(completion.ErrorMessage ?? "Content generation failed.");
+        }
+
+        var content = completion.Content;
 
         var draft = new ContentDraft
         {

@@ -65,7 +65,7 @@ public class ToneOfVoiceObj { public string PrimaryTone { get; set; } = string.E
 
 public class AnalyzeOnboardingCommandHandler : IRequestHandler<AnalyzeOnboardingCommand, OnboardingAnalysisResult>
 {
-    private readonly IOpenAiService _openRouterService;
+    private readonly IAiCompletionService _aiCompletionService;
     private readonly IScrapingJobRepository _scrapingRepository;
     private readonly IWebsiteRepository _websiteRepository;
     private readonly IDbConnectionFactory _dbConnectionFactory;
@@ -75,7 +75,7 @@ public class AnalyzeOnboardingCommandHandler : IRequestHandler<AnalyzeOnboarding
     private readonly Citationly.Application.Interfaces.Onboarding.IWebsiteContentBuilder _websiteContentBuilder;
 
     public AnalyzeOnboardingCommandHandler(
-        IOpenAiService openRouterService,
+        IAiCompletionService aiCompletionService,
         IScrapingJobRepository scrapingRepository,
         IWebsiteRepository websiteRepository,
         IDbConnectionFactory dbConnectionFactory,
@@ -84,7 +84,7 @@ public class AnalyzeOnboardingCommandHandler : IRequestHandler<AnalyzeOnboarding
         Citationly.Application.Interfaces.Onboarding.IContentCleaningService contentCleaningService,
         Citationly.Application.Interfaces.Onboarding.IWebsiteContentBuilder websiteContentBuilder)
     {
-        _openRouterService = openRouterService;
+        _aiCompletionService = aiCompletionService;
         _scrapingRepository = scrapingRepository;
         _websiteRepository = websiteRepository;
         _dbConnectionFactory = dbConnectionFactory;
@@ -211,14 +211,21 @@ SCHEMA (Return ONLY this JSON):
 
         try
         {
-            var responseContent = await _openRouterService.GenerateContentAsync(
-                prompt: userPrompt,
-                systemPrompt: systemPrompt,
+            var completion = await _aiCompletionService.CompleteAsync(
+                request.OrganizationId == Guid.Empty ? null : request.OrganizationId,
+                "onboarding.website_analysis",
+                userPrompt,
+                systemPrompt,
                 requireJson: true,
-                model: "gpt-4o-mini");
+                preferredProviderKey: "openai",
+                cancellationToken);
+            if (!completion.Success)
+            {
+                return new OnboardingAnalysisResult { OverallConfidence = 0 };
+            }
 
             // Clean up markdown just in case the LLM disobeys "no markdown wrapper"
-            responseContent = responseContent.Trim();
+            var responseContent = completion.Content.Trim();
             if (responseContent.StartsWith("```json"))
             {
                 responseContent = responseContent.Substring(7);

@@ -7,6 +7,7 @@ namespace Citationly.Application.Features.Onboarding;
 
 public class DetectIndustryCommand : IRequest<DetectIndustryResult>
 {
+    public Guid? OrganizationId { get; set; }
     public string WebsiteUrl { get; set; } = string.Empty;
     public string BusinessName { get; set; } = string.Empty;
 }
@@ -25,11 +26,11 @@ public class DetectIndustryResult
 
 public class DetectIndustryCommandHandler : IRequestHandler<DetectIndustryCommand, DetectIndustryResult>
 {
-    private readonly IOpenAiService _openAiService;
+    private readonly IAiCompletionService _aiCompletionService;
 
-    public DetectIndustryCommandHandler(IOpenAiService openAiService)
+    public DetectIndustryCommandHandler(IAiCompletionService aiCompletionService)
     {
-        _openAiService = openAiService;
+        _aiCompletionService = aiCompletionService;
     }
 
     public async Task<DetectIndustryResult> Handle(DetectIndustryCommand request, CancellationToken cancellationToken)
@@ -52,13 +53,20 @@ Industry options: SaaS, E-commerce, Healthcare, Finance, Manufacturing, Retail, 
 
 Confidence is 0-100. Be precise based on the business name and domain.";
 
-            var response = await _openAiService.GenerateContentAsync(
-                prompt: userPrompt,
-                systemPrompt: "You are an industry classification expert. Analyze businesses and suggest their industry category.",
+            var completion = await _aiCompletionService.CompleteAsync(
+                request.OrganizationId,
+                "onboarding.detect_industry",
+                userPrompt,
+                "You are an industry classification expert. Analyze businesses and suggest their industry category.",
                 requireJson: true,
-                model: "gpt-4o-mini");
+                preferredProviderKey: "openai",
+                cancellationToken);
+            if (!completion.Success)
+            {
+                return new DetectIndustryResult { Industry = "", Confidence = 0 };
+            }
 
-            response = response.Trim();
+            var response = completion.Content.Trim();
             if (response.StartsWith("```json")) response = response.Substring(7);
             if (response.StartsWith("```")) response = response.Substring(3);
             if (response.EndsWith("```")) response = response.Substring(0, response.Length - 3);

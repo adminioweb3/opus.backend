@@ -34,9 +34,9 @@ internal class StubVisibilityRepository : IAiVisibilityRepository
     public List<ShareOfVoice> ShareOfVoice { get; set; } = new();
     public List<Competitor> Competitors { get; set; } = new();
 
-    public Task<List<HistoricalScan>> GetHistoricalScansByOrgAsync(Guid organizationId) => Task.FromResult(Scans);
-    public Task<List<ShareOfVoice>> GetShareOfVoiceByOrgAsync(Guid organizationId) => Task.FromResult(ShareOfVoice);
-    public Task<List<Competitor>> GetCompetitorsByOrgAsync(Guid organizationId) => Task.FromResult(Competitors);
+    public Task<List<HistoricalScan>> GetHistoricalScansByOrgAsync(Guid organizationId, int limit = 365) => Task.FromResult(Scans.Take(limit).ToList());
+    public Task<List<ShareOfVoice>> GetShareOfVoiceByOrgAsync(Guid organizationId, int limit = 1000) => Task.FromResult(ShareOfVoice.Take(limit).ToList());
+    public Task<List<Competitor>> GetCompetitorsByOrgAsync(Guid organizationId, int limit = 100) => Task.FromResult(Competitors.Take(limit).ToList());
     
     // Unused in aggregator tests
     public Task<Guid> InsertCompetitorAsync(Competitor competitor) => Task.FromResult(Guid.NewGuid());
@@ -46,10 +46,10 @@ internal class StubVisibilityRepository : IAiVisibilityRepository
     public Task DeleteShareOfVoiceByScanDateAsync(Guid organizationId, DateOnly scanDate) => Task.CompletedTask;
     
     public Task<Guid> InsertGeoPillarAsync(GeoPillar pillar) => Task.FromResult(Guid.NewGuid());
-    public Task<List<GeoPillar>> GetGeoPillarsByOrgAsync(Guid orgId, DateOnly? minDate = null) => Task.FromResult(new List<GeoPillar>());
+    public Task<List<GeoPillar>> GetGeoPillarsByOrgAsync(Guid orgId, DateOnly? minDate = null, int limit = 1000) => Task.FromResult(new List<GeoPillar>());
 
     public Task<Guid> InsertPromptCoverageAsync(PromptCoverage coverage) => Task.FromResult(Guid.NewGuid());
-    public Task<List<PromptCoverage>> GetPromptCoverageByOrgAsync(Guid orgId, DateOnly? minDate = null) => Task.FromResult(new List<PromptCoverage>());
+    public Task<List<PromptCoverage>> GetPromptCoverageByOrgAsync(Guid orgId, DateOnly? minDate = null, int limit = 1000) => Task.FromResult(new List<PromptCoverage>());
 
     public Task<Guid> InsertWinLossEventAsync(WinLossEvent wle) => Task.FromResult(Guid.NewGuid());
     public Task<List<WinLossEvent>> GetWinLossEventsByOrgAsync(Guid orgId, int limit = 10) => Task.FromResult(new List<WinLossEvent>());

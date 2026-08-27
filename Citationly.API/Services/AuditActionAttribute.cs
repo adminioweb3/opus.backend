@@ -24,7 +24,6 @@ public sealed class AuditActionAttribute : Attribute, IAsyncActionFilter
 
         var audit = context.HttpContext.RequestServices.GetRequiredService<IAuditLogService>();
         var currentOrg = context.HttpContext.RequestServices.GetService<ICurrentOrganizationAccessor>();
-        var userRepo = context.HttpContext.RequestServices.GetService<IUserRepository>();
         var user = context.HttpContext.User;
 
         Guid? organizationId = null;
@@ -36,26 +35,13 @@ public sealed class AuditActionAttribute : Attribute, IAsyncActionFilter
         {
             try
             {
-                organizationId = await currentOrg.GetOrganizationIdAsync(user, context.HttpContext.RequestAborted);
+                var caller = await currentOrg.GetCurrentUserAsync(user, context.HttpContext.RequestAborted);
+                actorUserId = caller?.UserId;
+                organizationId = caller?.OrganizationId;
             }
             catch
             {
                 // Audit logging must never break the primary request.
-            }
-        }
-
-        var firebaseUid = user.FindFirst("user_id")?.Value ?? user.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? user.FindFirst("sub")?.Value;
-        if (!string.IsNullOrWhiteSpace(firebaseUid) && userRepo != null && !user.IsInRole("Admin"))
-        {
-            try
-            {
-                var caller = await userRepo.GetUserByFirebaseUidAsync(firebaseUid);
-                actorUserId = caller?.UserId;
-                organizationId ??= caller?.OrganizationId;
-            }
-            catch
-            {
-                // Best-effort enrichment only.
             }
         }
 

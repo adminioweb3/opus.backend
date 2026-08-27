@@ -56,16 +56,16 @@ public class VisibilityAnalysisItem
 public class AnalyzeVisibilityCommandHandler : IRequestHandler<AnalyzeVisibilityCommand, VisibilityAnalysisResult>
 {
     private readonly IWebsiteRepository _websiteRepository;
-    private readonly IOpenAiService _openRouterService;
+    private readonly IAiCompletionService _aiCompletionService;
     private const int BATCH_SIZE = 5;
     private const int MAX_CONCURRENT_BATCHES = 5;
 
     public AnalyzeVisibilityCommandHandler(
         IWebsiteRepository websiteRepository,
-        IOpenAiService openRouterService)
+        IAiCompletionService aiCompletionService)
     {
         _websiteRepository = websiteRepository;
-        _openRouterService = openRouterService;
+        _aiCompletionService = aiCompletionService;
     }
 
     public async Task<VisibilityAnalysisResult> Handle(AnalyzeVisibilityCommand request, CancellationToken cancellationToken)
@@ -113,7 +113,7 @@ public class AnalyzeVisibilityCommandHandler : IRequestHandler<AnalyzeVisibility
 
             foreach (var batch in promptBatches)
             {
-                tasks.Add(ProcessBatchWithSemaphoreAsync(batch, websiteUrl, websiteProfile, semaphore, cancellationToken));
+                tasks.Add(ProcessBatchWithSemaphoreAsync(request.OrganizationId, batch, websiteUrl, websiteProfile, semaphore, cancellationToken));
             }
 
             var batchResults = await Task.WhenAll(tasks);
@@ -138,6 +138,7 @@ public class AnalyzeVisibilityCommandHandler : IRequestHandler<AnalyzeVisibility
     }
 
     private async Task<List<AiSearchPrompt>> ProcessBatchWithSemaphoreAsync(
+        Guid organizationId,
         List<AiSearchPrompt> batch,
         string websiteUrl,
         string websiteProfile,
@@ -147,7 +148,7 @@ public class AnalyzeVisibilityCommandHandler : IRequestHandler<AnalyzeVisibility
         await semaphore.WaitAsync(cancellationToken);
         try
         {
-            return await ProcessPromptBatchAsync(batch, websiteUrl, websiteProfile, cancellationToken);
+            return await ProcessPromptBatchAsync(organizationId, batch, websiteUrl, websiteProfile, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -161,6 +162,7 @@ public class AnalyzeVisibilityCommandHandler : IRequestHandler<AnalyzeVisibility
     }
 
     private async Task<List<AiSearchPrompt>> ProcessPromptBatchAsync(
+        Guid organizationId,
         List<AiSearchPrompt> promptBatch,
         string websiteUrl,
         string websiteProfile,
@@ -228,13 +230,20 @@ Return exactly this JSON:
 
 Return ONLY JSON, no markdown.";
 
-        var responseContent = await _openRouterService.GenerateContentAsync(
-            prompt: userPrompt,
-            systemPrompt: systemPrompt,
+        var completion = await _aiCompletionService.CompleteAsync(
+            organizationId,
+            "onboarding.visibility_analysis",
+            userPrompt,
+            systemPrompt,
             requireJson: true,
-            model: "gpt-4o-mini");
+            preferredProviderKey: "openai",
+            cancellationToken);
+        if (!completion.Success)
+        {
+            return new List<AiSearchPrompt>();
+        }
 
-        responseContent = CleanJsonResponse(responseContent);
+        var responseContent = CleanJsonResponse(completion.Content);
 
         var options = new JsonSerializerOptions
         {

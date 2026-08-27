@@ -5,6 +5,6 @@ namespace Citationly.Application.Interfaces.GeoOptimizer;
 
 public interface IGeoOptimizerService
 {
-    Task<GeoOptimizationResponse> AnalyzeAsync(GeoOptimizationRequest request);
-    Task<SchemaGenerationResponse> GenerateSchemaAsync(SchemaGenerationRequest request);
+    Task<GeoOptimizationResponse> AnalyzeAsync(Guid organizationId, GeoOptimizationRequest request);
+    Task<SchemaGenerationResponse> GenerateSchemaAsync(Guid organizationId, SchemaGenerationRequest request);
 }

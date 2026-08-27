@@ -13,29 +13,9 @@ public class OpportunitySnapshotRepository : IOpportunitySnapshotRepository
         _dbConnectionFactory = dbConnectionFactory;
     }
 
-    public async Task EnsureTableCreatedAsync()
+    public Task EnsureTableCreatedAsync()
     {
-        using var connection = _dbConnectionFactory.CreateConnection();
-        await connection.ExecuteAsync(@"
-            CREATE TABLE IF NOT EXISTS OpportunitySnapshots (
-                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                OrganizationId UUID NOT NULL,
-                ScanDate DATE NOT NULL,
-                OpportunityKey VARCHAR(20) NOT NULL,
-                Category VARCHAR(100) NOT NULL,
-                Title VARCHAR(255) NOT NULL,
-                Summary TEXT,
-                WhyItMatters TEXT,
-                Score INT NOT NULL DEFAULT 0,
-                Effort INT NOT NULL DEFAULT 0,
-                EstimatedGainPct DOUBLE PRECISION NOT NULL DEFAULT 0,
-                Eta VARCHAR(100),
-                CompetitorContext TEXT,
-                ChecklistJson JSONB NOT NULL DEFAULT '[]'::jsonb,
-                CreatedAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE INDEX IF NOT EXISTS idx_opportunitysnapshots_org_scandate ON OpportunitySnapshots (OrganizationId, ScanDate);
-        ");
+        return Task.CompletedTask;
     }
 
     public async Task DeleteByScanDateAsync(Guid organizationId, DateOnly scanDate)

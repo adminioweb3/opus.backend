@@ -38,12 +38,12 @@ public class BillingController : ControllerBase
     }
 
     [HttpGet("invoices")]
-    public async Task<IActionResult> GetInvoices()
+    public async Task<IActionResult> GetInvoices([FromQuery] int limit = 100)
     {
         var orgId = await _currentOrg.GetOrganizationIdAsync(User);
         if (orgId == null) return Unauthorized();
 
-        var invoices = await _billingRepository.GetInvoicesAsync(orgId.Value);
+        var invoices = await _billingRepository.GetInvoicesAsync(orgId.Value, Math.Clamp(limit, 1, 500));
         return Ok(invoices);
     }
 

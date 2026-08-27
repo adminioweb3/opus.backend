@@ -6,7 +6,7 @@ namespace Citationly.Application.Features.PromptIntelligence.Services;
 
 public interface ITopicPromptGeneratorService
 {
-    Task<List<string>> GeneratePromptsAsync(Guid topicId, string topicName, int count, CancellationToken ct, string? brandName = null, string? brandWebsite = null);
+    Task<List<string>> GeneratePromptsAsync(Guid organizationId, Guid topicId, string topicName, int count, CancellationToken ct, string? brandName = null, string? brandWebsite = null);
 }
 
 /// <summary>
@@ -30,23 +30,23 @@ public class TopicPromptGeneratorService : ITopicPromptGeneratorService
     /// <summary>Ask for a few more than requested since dedup will reject some.</summary>
     private const int GenerationHeadroom = 6;
 
-    private readonly IOpenAiService _openAiService;
+    private readonly IAiCompletionService _aiCompletionService;
     private readonly IEmbeddingService _embeddingService;
     private readonly IPromptIntelligenceRepository _repo;
 
     public TopicPromptGeneratorService(
-        IOpenAiService openAiService,
+        IAiCompletionService aiCompletionService,
         IEmbeddingService embeddingService,
         IPromptIntelligenceRepository repo)
     {
-        _openAiService = openAiService;
+        _aiCompletionService = aiCompletionService;
         _embeddingService = embeddingService;
         _repo = repo;
     }
 
-    public async Task<List<string>> GeneratePromptsAsync(Guid topicId, string topicName, int count, CancellationToken ct, string? brandName = null, string? brandWebsite = null)
+    public async Task<List<string>> GeneratePromptsAsync(Guid organizationId, Guid topicId, string topicName, int count, CancellationToken ct, string? brandName = null, string? brandWebsite = null)
     {
-        var raw = await GenerateRawAsync(topicName, count + GenerationHeadroom, ct, brandName, brandWebsite);
+        var raw = await GenerateRawAsync(organizationId, topicName, count + GenerationHeadroom, ct, brandName, brandWebsite);
         if (raw.Count == 0) return raw;
 
         var existingQuestions = await _repo.GetQuestionsByTopicAsync(topicId);
@@ -55,7 +55,7 @@ public class TopicPromptGeneratorService : ITopicPromptGeneratorService
         return await DeduplicateAsync(raw, existingTexts, count, ct);
     }
 
-    private async Task<List<string>> GenerateRawAsync(string topicName, int requestCount, CancellationToken ct, string? brandName, string? brandWebsite)
+    private async Task<List<string>> GenerateRawAsync(Guid organizationId, string topicName, int requestCount, CancellationToken ct, string? brandName, string? brandWebsite)
     {
         const string systemPrompt = "You are an expert AI Search Prompt Generator for a brand visibility and AEO (Answer Engine Optimization) tool. Your goal is to generate prompts that real prospects would search for, and that could plausibly surface the evaluated brand in an AI answer.";
 
@@ -74,8 +74,17 @@ Respond with ONLY JSON: {{""prompts"": [string, ...]}}. Do not wrap in markdown.
         var result = new List<string>();
         try
         {
-            var content = await _openAiService.GenerateContentAsync(userPrompt, systemPrompt, requireJson: true);
-            content = StripFences(content);
+            var completion = await _aiCompletionService.CompleteAsync(
+                organizationId,
+                "prompt_intelligence.topic_prompt_generation",
+                userPrompt,
+                systemPrompt,
+                requireJson: true,
+                preferredProviderKey: "openai",
+                ct);
+            if (!completion.Success) return result;
+
+            var content = StripFences(completion.Content);
             using var doc = JsonDocument.Parse(content);
 
             if (doc.RootElement.TryGetProperty("prompts", out var arr) && arr.ValueKind == JsonValueKind.Array)

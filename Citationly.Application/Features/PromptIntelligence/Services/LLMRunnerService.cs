@@ -40,6 +40,9 @@ public class LLMRunnerService : ILLMRunnerService
                     ResponseText = "[Error] No AI providers are configured. Set at least one of OpenAI/Anthropic/Google/Perplexity's API key.",
                     ResponseLength = 0,
                     CreatedAt = DateTime.UtcNow,
+                    PromptVersion = "prompt-intelligence:v1",
+                    IsError = true,
+                    ErrorMessage = "No AI providers are configured. Set at least one of OpenAI/Anthropic/Google/Perplexity's API key."
                 }
             };
         }
@@ -75,6 +78,8 @@ public class LLMRunnerService : ILLMRunnerService
                 CompletionTokens = result.CompletionTokens,
                 CostUsd = result.CostUsd,
                 WasSearchGrounded = result.WasSearchGrounded,
+                PromptVersion = "prompt-intelligence:v1",
+                IsError = false,
             };
         }
         catch (Exception ex)
@@ -87,6 +92,9 @@ public class LLMRunnerService : ILLMRunnerService
                 ResponseLength = 0,
                 CreatedAt = DateTime.UtcNow,
                 ProviderKey = provider.ProviderKey,
+                PromptVersion = "prompt-intelligence:v1",
+                IsError = true,
+                ErrorMessage = ex.Message
             };
         }
     }

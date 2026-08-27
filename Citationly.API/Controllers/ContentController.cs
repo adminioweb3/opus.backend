@@ -95,7 +95,7 @@ public class ContentController : ControllerBase
 
         try
         {
-            var result = await _mediator.Send(new AnalyzeCompetitorCommand { Url = request.Url });
+            var result = await _mediator.Send(new AnalyzeCompetitorCommand { OrganizationId = orgId.Value, Url = request.Url });
             return Ok(result);
         }
         catch (Exception ex)

@@ -22,7 +22,7 @@ public class OpenAiService : IOpenAiService
         IAiResilienceService aiResilience)
     {
         _httpClient = httpClient;
-        _apiKey = configuration["OpenAI:ApiKey"] ?? string.Empty;
+        _apiKey = ConfigPlaceholderHelper.Resolve(configuration["OpenAI:ApiKey"]) ?? string.Empty;
         _aiContext = aiContext;
         _aiUsageLimiter = aiUsageLimiter;
         _aiResilience = aiResilience;
@@ -32,6 +32,11 @@ public class OpenAiService : IOpenAiService
     {
         if (string.IsNullOrEmpty(_apiKey))
         {
+            if (requireJson)
+            {
+                throw new InvalidOperationException("OpenAI is not configured; JSON analysis cannot be generated.");
+            }
+
             return $"[Draft Generated via Fallback]\n\nBased on your recommendation, here is a generated draft expanding on: {prompt}";
         }
 

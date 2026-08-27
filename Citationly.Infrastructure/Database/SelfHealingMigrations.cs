@@ -37,6 +37,12 @@ public static class SelfHealingMigrations
         -- now real deterministic computations (""v2-partial-real""). Existing rows default to v1
         -- since that's genuinely how they were produced - not a relabeling of old data as new.
         ALTER TABLE HistoricalScans ADD COLUMN IF NOT EXISTS ScoringMethodVersion VARCHAR(20) NOT NULL DEFAULT 'v1-ai-generated';
+        CREATE INDEX IF NOT EXISTS idx_historicalscans_org_scandate_desc ON HistoricalScans (OrganizationId, ScanDate DESC);
+        CREATE INDEX IF NOT EXISTS idx_shareofvoice_org_scandate_desc ON ShareOfVoice (OrganizationId, ScanDate DESC);
+        CREATE INDEX IF NOT EXISTS idx_scrapingjobs_org_created ON ScrapingJobs (OrganizationId, CreatedAt DESC);
+        CREATE INDEX IF NOT EXISTS idx_scrapingjobs_org_kb_created ON ScrapingJobs (OrganizationId, KnowledgeBaseId, CreatedAt DESC);
+        CREATE INDEX IF NOT EXISTS idx_users_org_created ON Users (OrganizationId, CreatedAt DESC);
+        CREATE INDEX IF NOT EXISTS idx_users_lower_email ON Users (LOWER(Email));
 
         -- Evidence provenance (Phase 2 B1) - which real provider/model produced a stored
         -- response, its cost, and whether it was grounded in a live web search. Backfills as
@@ -48,6 +54,9 @@ public static class SelfHealingMigrations
         ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS CompletionTokens INT;
         ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS CostUsd NUMERIC(10,6);
         ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS WasSearchGrounded BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS PromptVersion VARCHAR(100) NOT NULL DEFAULT 'prompt-intelligence:v1';
+        ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS IsError BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS ErrorMessage TEXT;
 
         -- AiSearchPrompts enrichment columns - previously added via a per-call ALTER TABLE inside
         -- WebsiteRepository.InsertAiSearchPromptsAsync/UpdateAiSearchPromptsAsync (the same
@@ -85,6 +94,25 @@ public static class SelfHealingMigrations
         END;
         $rename$;
         ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS EstimatedInterestLevel VARCHAR(50);
+        ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS VisibilityScore INTEGER DEFAULT 0;
+        ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS EstimatedRank VARCHAR(50);
+        ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Confidence INTEGER DEFAULT 0;
+        ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS AppearsInAnswer BOOLEAN DEFAULT FALSE;
+        ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS ShareOfVoiceContribution INTEGER DEFAULT 0;
+        ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS MentionProbability INTEGER DEFAULT 0;
+        ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS BrandStrength INTEGER DEFAULT 0;
+        ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS ContentStrength INTEGER DEFAULT 0;
+        ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS CitationStrength INTEGER DEFAULT 0;
+        ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS VisibilityReason TEXT;
+
+        ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS Rank INTEGER DEFAULT 0;
+        ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS SimilarityScore INTEGER DEFAULT 0;
+        ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS RawJson JSONB DEFAULT '{}'::jsonb;
+        ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS EnrichmentStatus VARCHAR(20) DEFAULT 'Pending';
+        ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS EnrichedJson JSONB;
+        ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS EnrichedAt TIMESTAMPTZ;
+        ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS CompetitorType VARCHAR(50) DEFAULT 'Direct';
+        ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS Confidence INTEGER DEFAULT 0;
 
         -- Immutable evidence enforcement (Phase 2 B2): once a raw AI response is stored, nothing
         -- may rewrite what was actually observed. The one legitimate post-hoc write is sentiment
@@ -103,6 +131,9 @@ public static class SelfHealingMigrations
                 OR NEW.CompletionTokens IS DISTINCT FROM OLD.CompletionTokens
                 OR NEW.CostUsd IS DISTINCT FROM OLD.CostUsd
                 OR NEW.WasSearchGrounded IS DISTINCT FROM OLD.WasSearchGrounded
+                OR NEW.PromptVersion IS DISTINCT FROM OLD.PromptVersion
+                OR NEW.IsError IS DISTINCT FROM OLD.IsError
+                OR NEW.ErrorMessage IS DISTINCT FROM OLD.ErrorMessage
             THEN
                 RAISE EXCEPTION 'PromptResponses evidence fields are immutable once inserted - only Sentiment/SentimentQuote may be updated (see roadmap Phase 2 B2).';
             END IF;
@@ -151,6 +182,289 @@ public static class SelfHealingMigrations
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_companycompetitor_pair ON CompanyCompetitor (CompanyId, CompetitorCompanyId);
         CREATE INDEX IF NOT EXISTS idx_companycompetitor_company_rank ON CompanyCompetitor (CompanyId, Rank);
+
+        CREATE TABLE IF NOT EXISTS VisibilityScanSummaries (
+            Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            OrganizationId UUID NOT NULL,
+            ScanDate DATE NOT NULL,
+            CompositeScore INT NOT NULL DEFAULT 0,
+            DirectPct INT NOT NULL DEFAULT 0,
+            MentionsPct INT NOT NULL DEFAULT 0,
+            IndirectPct INT NOT NULL DEFAULT 0,
+            ComparativePct INT NOT NULL DEFAULT 0,
+            CreatedAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_visibilityscansummaries_org_scandate ON VisibilityScanSummaries (OrganizationId, ScanDate);
+
+        CREATE TABLE IF NOT EXISTS VisibilityPlatformSnapshots (
+            Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            OrganizationId UUID NOT NULL,
+            ScanDate DATE NOT NULL,
+            Platform VARCHAR(255) NOT NULL,
+            Score INT NOT NULL DEFAULT 0,
+            Citations INT NOT NULL DEFAULT 0,
+            Status VARCHAR(20) NOT NULL DEFAULT 'Developing',
+            CreatedAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_visibilityplatformsnapshots_org_scandate ON VisibilityPlatformSnapshots (OrganizationId, ScanDate);
+
+        CREATE TABLE IF NOT EXISTS CitationScanSummaries (
+            Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            OrganizationId UUID NOT NULL,
+            ScanDate DATE NOT NULL,
+            CompositeQualityScore INT NOT NULL DEFAULT 0,
+            AverageAuthorityScore INT NOT NULL DEFAULT 0,
+            AverageInfluenceScore INT NOT NULL DEFAULT 0,
+            CitationSignal INT NOT NULL DEFAULT 0,
+            ModelsReferencingCount INT NOT NULL DEFAULT 0,
+            ModelsTrackedCount INT NOT NULL DEFAULT 0,
+            CreatedAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_citationscansummaries_org_scandate ON CitationScanSummaries (OrganizationId, ScanDate);
+
+        CREATE TABLE IF NOT EXISTS CitationSourceSnapshots (
+            Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            OrganizationId UUID NOT NULL,
+            ScanDate DATE NOT NULL,
+            Source VARCHAR(255) NOT NULL,
+            Category VARCHAR(255),
+            AuthorityScore INT NOT NULL DEFAULT 0,
+            InfluenceScore INT NOT NULL DEFAULT 0,
+            CitationFrequency INT NOT NULL DEFAULT 0,
+            CompetitorCoverage INT NOT NULL DEFAULT 0,
+            OpportunityScore INT NOT NULL DEFAULT 0,
+            MentionProbability INT NOT NULL DEFAULT 0,
+            Reason TEXT,
+            CreatedAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_citationsourcesnapshots_org_scandate ON CitationSourceSnapshots (OrganizationId, ScanDate);
+
+        CREATE TABLE IF NOT EXISTS BrandPulseScanSummaries (
+            Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            OrganizationId UUID NOT NULL,
+            ScanDate DATE NOT NULL,
+            BrandHealth INT NOT NULL DEFAULT 0,
+            AiConfidence INT NOT NULL DEFAULT 0,
+            MessagingConsistency INT NOT NULL DEFAULT 0,
+            BrandTrust INT NOT NULL DEFAULT 0,
+            SentimentPositive INT NOT NULL DEFAULT 0,
+            SentimentNeutral INT NOT NULL DEFAULT 0,
+            SentimentNegative INT NOT NULL DEFAULT 0,
+            AlertsJson JSONB NOT NULL DEFAULT '[]'::jsonb,
+            ModelInsightsJson JSONB NOT NULL DEFAULT '[]'::jsonb,
+            AccuracyFlagsJson JSONB NOT NULL DEFAULT '[]'::jsonb,
+            PromptEvidenceJson JSONB NOT NULL DEFAULT '[]'::jsonb,
+            CreatedAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_brandpulsescansummaries_org_scandate ON BrandPulseScanSummaries (OrganizationId, ScanDate);
+
+        CREATE TABLE IF NOT EXISTS CommandCenterInsightSnapshots (
+            Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            OrganizationId UUID NOT NULL,
+            ScanDate DATE NOT NULL,
+            InsightsJson JSONB NOT NULL DEFAULT '[]'::jsonb,
+            CreatedAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_commandcenterinsightsnapshots_org_scandate ON CommandCenterInsightSnapshots (OrganizationId, ScanDate);
+
+        CREATE TABLE IF NOT EXISTS OpportunitySnapshots (
+            Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            OrganizationId UUID NOT NULL,
+            ScanDate DATE NOT NULL,
+            OpportunityKey VARCHAR(20) NOT NULL,
+            Category VARCHAR(100) NOT NULL,
+            Title VARCHAR(255) NOT NULL,
+            Summary TEXT,
+            WhyItMatters TEXT,
+            Score INT NOT NULL DEFAULT 0,
+            Effort INT NOT NULL DEFAULT 0,
+            EstimatedGainPct DOUBLE PRECISION NOT NULL DEFAULT 0,
+            Eta VARCHAR(100),
+            CompetitorContext TEXT,
+            ChecklistJson JSONB NOT NULL DEFAULT '[]'::jsonb,
+            CreatedAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_opportunitysnapshots_org_scandate ON OpportunitySnapshots (OrganizationId, ScanDate);
+
+        CREATE TABLE IF NOT EXISTS VisibilitySummaries (
+            Id UUID PRIMARY KEY,
+            OrganizationId UUID NOT NULL,
+            OverallVisibilityScore INTEGER NOT NULL,
+            BestPlatform VARCHAR(255),
+            WeakestPlatform VARCHAR(255),
+            AverageMentionRate INTEGER NOT NULL,
+            AveragePromptCoverage INTEGER NOT NULL,
+            CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_visibilitysummaries_org_created ON VisibilitySummaries (OrganizationId, CreatedAt DESC);
+
+        CREATE TABLE IF NOT EXISTS PlatformVisibilities (
+            Id UUID PRIMARY KEY,
+            OrganizationId UUID NOT NULL,
+            Platform VARCHAR(255) NOT NULL,
+            VisibilityScore INTEGER NOT NULL,
+            AverageRank VARCHAR(50),
+            MentionRate INTEGER NOT NULL,
+            PromptCoverage INTEGER NOT NULL,
+            Confidence INTEGER NOT NULL,
+            StrengthsJson TEXT,
+            WeaknessesJson TEXT,
+            CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+        ALTER TABLE PlatformVisibilities ADD COLUMN IF NOT EXISTS Explanation TEXT;
+        ALTER TABLE PlatformVisibilities ADD COLUMN IF NOT EXISTS IsEnriched BOOLEAN DEFAULT FALSE;
+        CREATE INDEX IF NOT EXISTS idx_platformvisibilities_org_created ON PlatformVisibilities (OrganizationId, CreatedAt DESC);
+
+        CREATE TABLE IF NOT EXISTS CitationSummaries (
+            Id UUID PRIMARY KEY,
+            OrganizationId UUID NOT NULL,
+            TotalSources INTEGER NOT NULL,
+            AverageAuthorityScore INTEGER NOT NULL,
+            AverageInfluenceScore INTEGER NOT NULL,
+            HighestOpportunitySource VARCHAR(255),
+            MostInfluentialSource VARCHAR(255),
+            CreatedAt TIMESTAMP NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_citationsummaries_org_created ON CitationSummaries (OrganizationId, CreatedAt DESC);
+
+        CREATE TABLE IF NOT EXISTS CitationSources (
+            Id UUID PRIMARY KEY,
+            OrganizationId UUID NOT NULL,
+            Rank INTEGER NOT NULL,
+            Source VARCHAR(255) NOT NULL,
+            Category VARCHAR(255),
+            AuthorityScore INTEGER NOT NULL,
+            InfluenceScore INTEGER NOT NULL,
+            CitationFrequency INTEGER NOT NULL,
+            CompetitorCoverage INTEGER NOT NULL,
+            OpportunityScore INTEGER NOT NULL,
+            MentionProbability INTEGER NOT NULL,
+            Reason TEXT,
+            CreatedAt TIMESTAMP NOT NULL
+        );
+        ALTER TABLE CitationSources ADD COLUMN IF NOT EXISTS IsEnriched BOOLEAN DEFAULT FALSE;
+        ALTER TABLE CitationSources ADD COLUMN IF NOT EXISTS EnrichedAt TIMESTAMP WITH TIME ZONE;
+        CREATE INDEX IF NOT EXISTS idx_citationsources_org_rank ON CitationSources (OrganizationId, Rank);
+
+        CREATE TABLE IF NOT EXISTS PersonaAnalysisSummaries (
+            Id UUID PRIMARY KEY,
+            OrganizationId UUID NOT NULL,
+            OverallVisibility INTEGER NOT NULL,
+            StrongestPersona VARCHAR(255),
+            WeakestPersona VARCHAR(255),
+            AverageShareOfVoice INTEGER NOT NULL,
+            CreatedAt TIMESTAMP NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_personaanalysissummaries_org_created ON PersonaAnalysisSummaries (OrganizationId, CreatedAt DESC);
+
+        CREATE TABLE IF NOT EXISTS PersonaScores (
+            Id UUID PRIMARY KEY,
+            OrganizationId UUID NOT NULL,
+            Persona VARCHAR(255) NOT NULL,
+            Visibility INTEGER NOT NULL,
+            AverageRank VARCHAR(50),
+            ShareOfVoice INTEGER NOT NULL,
+            TopCompetitorsJson TEXT,
+            RecommendedContentJson TEXT,
+            Reason TEXT,
+            CreatedAt TIMESTAMP NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_personascores_org_created ON PersonaScores (OrganizationId, CreatedAt DESC);
+
+        CREATE TABLE IF NOT EXISTS RegionAnalysisSummaries (
+            Id UUID PRIMARY KEY,
+            OrganizationId UUID NOT NULL,
+            OverallGlobalVisibility INT NOT NULL,
+            StrongestRegion TEXT,
+            WeakestRegion TEXT,
+            AverageShareOfVoice INT NOT NULL,
+            CreatedAt TIMESTAMP NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_regionanalysissummaries_org_created ON RegionAnalysisSummaries (OrganizationId, CreatedAt DESC);
+
+        CREATE TABLE IF NOT EXISTS RegionScores (
+            Id UUID PRIMARY KEY,
+            OrganizationId UUID NOT NULL,
+            Region TEXT NOT NULL,
+            Visibility INT NOT NULL,
+            Ranking TEXT,
+            CompetitorLeader TEXT,
+            ShareOfVoice INT NOT NULL,
+            ContentOpportunityJson TEXT,
+            Reason TEXT,
+            CreatedAt TIMESTAMP NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_regionscores_org_created ON RegionScores (OrganizationId, CreatedAt DESC);
+
+        CREATE TABLE IF NOT EXISTS GeoRecommendationSummaries (
+            Id UUID PRIMARY KEY,
+            OrganizationId UUID NOT NULL,
+            OverallPriority TEXT,
+            EstimatedOverallImpact TEXT,
+            EstimatedImplementationTime TEXT,
+            TotalRecommendations INT NOT NULL,
+            CriticalRecommendations INT NOT NULL,
+            HighPriorityRecommendations INT NOT NULL,
+            CreatedAt TIMESTAMP NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_georecommendationsummaries_org_created ON GeoRecommendationSummaries (OrganizationId, CreatedAt DESC);
+
+        CREATE TABLE IF NOT EXISTS GeoRecommendations (
+            Id UUID PRIMARY KEY,
+            OrganizationId UUID NOT NULL,
+            RecommendationId TEXT NOT NULL,
+            Category TEXT NOT NULL,
+            Title TEXT NOT NULL,
+            Description TEXT NOT NULL,
+            Priority TEXT NOT NULL,
+            EstimatedImpact TEXT NOT NULL,
+            EstimatedDifficulty TEXT NOT NULL,
+            ImplementationTime TEXT NOT NULL,
+            ExpectedOutcome TEXT NOT NULL,
+            SuccessMetric TEXT NOT NULL,
+            ActionItemsJson TEXT NOT NULL,
+            IsEnriched BOOLEAN NOT NULL DEFAULT FALSE,
+            EnrichedAt TIMESTAMP NULL,
+            ExpandedGuidance TEXT NULL,
+            BusinessImpact TEXT NULL,
+            ExampleResourcesJson TEXT NULL,
+            ReferenceLinksJson TEXT NULL,
+            CreatedAt TIMESTAMP NOT NULL
+        );
+        ALTER TABLE GeoRecommendations ADD COLUMN IF NOT EXISTS IsEnriched BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE GeoRecommendations ADD COLUMN IF NOT EXISTS EnrichedAt TIMESTAMP NULL;
+        ALTER TABLE GeoRecommendations ADD COLUMN IF NOT EXISTS ExpandedGuidance TEXT NULL;
+        ALTER TABLE GeoRecommendations ADD COLUMN IF NOT EXISTS BusinessImpact TEXT NULL;
+        ALTER TABLE GeoRecommendations ADD COLUMN IF NOT EXISTS ExampleResourcesJson TEXT NULL;
+        ALTER TABLE GeoRecommendations ADD COLUMN IF NOT EXISTS ReferenceLinksJson TEXT NULL;
+        CREATE INDEX IF NOT EXISTS idx_georecommendations_org_created ON GeoRecommendations (OrganizationId, CreatedAt DESC);
+
+        CREATE TABLE IF NOT EXISTS ExecutiveSummaryData (
+            Id UUID PRIMARY KEY,
+            OrganizationId UUID NOT NULL,
+            BusinessOverview TEXT NOT NULL,
+            CurrentAIVisibility TEXT NOT NULL,
+            CompetitorPosition TEXT NOT NULL,
+            PlatformPerformance TEXT NOT NULL,
+            TopicPerformance TEXT NOT NULL,
+            PromptPerformance TEXT NOT NULL,
+            CitationSummary TEXT NOT NULL,
+            StrengthsJson TEXT NOT NULL,
+            WeaknessesJson TEXT NOT NULL,
+            OpportunitiesJson TEXT NOT NULL,
+            ThreatsJson TEXT NOT NULL,
+            OverallGEOScore INT NOT NULL,
+            OverallAIVisibilityScore INT NOT NULL,
+            OverallSEOScore INT NOT NULL,
+            OverallBrandAuthority INT NOT NULL,
+            OverallContentScore INT NOT NULL,
+            OverallAssessment TEXT NOT NULL,
+            TopPriorityRecommendation TEXT NOT NULL,
+            ExpectedBusinessImpact TEXT NOT NULL,
+            NextStepsJson TEXT NOT NULL,
+            CreatedAt TIMESTAMP NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_executivesummarydata_org_created ON ExecutiveSummaryData (OrganizationId, CreatedAt DESC);
 
         -- Phase 3 C4: distinguishes how each competitor edge was found - ""observed"" (the
         -- competitor actually co-occurs with the brand in real AI responses, per PromptMentions),
@@ -411,6 +725,16 @@ public static class SelfHealingMigrations
             UNIQUE (OrganizationId, MetricKey, PeriodStart)
         );
         CREATE INDEX IF NOT EXISTS idx_usagecounters_org_metric ON UsageCounters (OrganizationId, MetricKey, PeriodStart DESC);
+
+        CREATE TABLE IF NOT EXISTS AiRateLimitCounters (
+            ScopeKey VARCHAR(255) NOT NULL,
+            PeriodStart TIMESTAMP WITH TIME ZONE NOT NULL,
+            PeriodEnd TIMESTAMP WITH TIME ZONE NOT NULL,
+            Count BIGINT NOT NULL DEFAULT 0,
+            UpdatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (ScopeKey, PeriodStart)
+        );
+        CREATE INDEX IF NOT EXISTS idx_airatelimitcounters_periodend ON AiRateLimitCounters (PeriodEnd);
 
         -- Plan limits (Phase 1) - one row per plan/feature, read by IEntitlementService.
         -- A NULL LimitValue means unlimited. Seeded with today's actual plan set
@@ -705,6 +1029,7 @@ public static class SelfHealingMigrations
         );
         ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS Sentiment VARCHAR(10);
         ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS SentimentQuote TEXT;
+        CREATE INDEX IF NOT EXISTS idx_promptresponses_analysis_platform ON PromptResponses (PromptAnalysisId, Platform, CreatedAt DESC);
 
         CREATE TABLE IF NOT EXISTS PromptMentions (
             Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -715,6 +1040,8 @@ public static class SelfHealingMigrations
             ContextSnippet TEXT NOT NULL DEFAULT '',
             Position INT NOT NULL DEFAULT 0
         );
+        CREATE INDEX IF NOT EXISTS idx_promptmentions_analysis_platform_brand ON PromptMentions (PromptAnalysisId, Platform, IsBrand);
+        CREATE INDEX IF NOT EXISTS idx_promptmentions_entity_lower ON PromptMentions (LOWER(EntityName));
 
         CREATE TABLE IF NOT EXISTS PromptVisibility (
             Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -782,6 +1109,7 @@ public static class SelfHealingMigrations
             Category VARCHAR(50) NOT NULL DEFAULT 'Other',
             CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE INDEX IF NOT EXISTS idx_promptcitations_analysis_platform_domain ON PromptCitations (PromptAnalysisId, Platform, Domain);
 
         CREATE TABLE IF NOT EXISTS BrandClaims (
             Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

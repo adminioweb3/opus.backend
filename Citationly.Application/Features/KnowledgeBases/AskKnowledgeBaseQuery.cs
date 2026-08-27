@@ -37,12 +37,12 @@ public class AskKnowledgeBaseQueryHandler : IRequestHandler<AskKnowledgeBaseQuer
     };
 
     private readonly IScrapingJobRepository _scrapingJobRepository;
-    private readonly IOpenAiService _openAiService;
+    private readonly IAiCompletionService _aiCompletionService;
 
-    public AskKnowledgeBaseQueryHandler(IScrapingJobRepository scrapingJobRepository, IOpenAiService openAiService)
+    public AskKnowledgeBaseQueryHandler(IScrapingJobRepository scrapingJobRepository, IAiCompletionService aiCompletionService)
     {
         _scrapingJobRepository = scrapingJobRepository;
-        _openAiService = openAiService;
+        _aiCompletionService = aiCompletionService;
     }
 
     public async Task<KnowledgeBaseAnswer> Handle(AskKnowledgeBaseQuery request, CancellationToken cancellationToken)
@@ -85,11 +85,20 @@ public class AskKnowledgeBaseQueryHandler : IRequestHandler<AskKnowledgeBaseQuer
 
         var prompt = $"KNOWLEDGE BASE CONTENT:\n\n{context}\n\nQUESTION: {request.Question}";
 
-        var answer = await _openAiService.GenerateContentAsync(prompt, systemPrompt);
+        var completion = await _aiCompletionService.CompleteAsync(
+            request.OrganizationId,
+            "knowledge_base.answer",
+            prompt,
+            systemPrompt,
+            requireJson: false,
+            preferredProviderKey: "openai",
+            cancellationToken);
 
         return new KnowledgeBaseAnswer
         {
-            Answer = answer,
+            Answer = completion.Success
+                ? completion.Content
+                : completion.ErrorMessage ?? "The AI answer service is unavailable right now. Try again after an AI provider is connected.",
             Sources = topPages.Select(p => new KnowledgeBaseAnswerSource
             {
                 PageId = p.Id,

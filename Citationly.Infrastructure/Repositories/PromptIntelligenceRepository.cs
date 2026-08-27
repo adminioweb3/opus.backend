@@ -236,9 +236,11 @@ public class PromptIntelligenceRepository : IPromptIntelligenceRepository
         using var connection = _dbConnectionFactory.CreateConnection();
         var sql = @"
             INSERT INTO PromptResponses (PromptAnalysisId, Platform, ResponseText, ResponseLength, CreatedAt,
-                                          ProviderKey, ModelUsed, PromptTokens, CompletionTokens, CostUsd, WasSearchGrounded)
+                                          ProviderKey, ModelUsed, PromptTokens, CompletionTokens, CostUsd,
+                                          WasSearchGrounded, PromptVersion, IsError, ErrorMessage)
             VALUES (@PromptAnalysisId, @Platform, @ResponseText, @ResponseLength, @CreatedAt,
-                    @ProviderKey, @ModelUsed, @PromptTokens, @CompletionTokens, @CostUsd, @WasSearchGrounded);";
+                    @ProviderKey, @ModelUsed, @PromptTokens, @CompletionTokens, @CostUsd,
+                    @WasSearchGrounded, @PromptVersion, @IsError, @ErrorMessage);";
         await connection.ExecuteAsync(sql, responses);
     }
 

@@ -4,6 +4,7 @@ using Citationly.Application.Interfaces.Companies;
 using Citationly.Application.Interfaces.Competitors;
 using Citationly.Application.Interfaces.GeoAudit;
 using Citationly.Infrastructure.Data;
+using Citationly.Infrastructure.Database;
 using Citationly.Infrastructure.Repositories;
 using Citationly.Infrastructure.Services;
 using Citationly.Infrastructure.Services.Companies;
@@ -20,6 +21,7 @@ public static class DependencyInjection
         Dapper.SqlMapper.AddTypeHandler(new NullableDateOnlyTypeHandler());
 
         services.AddSingleton<IDbConnectionFactory, NpgsqlConnectionFactory>();
+        services.AddSingleton<DatabaseMigrationRunner>();
         services.AddTransient<IUserRepository, UserRepository>();
         services.AddTransient<ITeamRepository, TeamRepository>();
         services.AddTransient<IWebsiteRepository, WebsiteRepository>();
@@ -53,6 +55,7 @@ public static class DependencyInjection
         services.AddScoped<IScrapingJobService, ScrapingJobService>();
         services.AddScoped<IAiVisibilityEngineService, AiVisibilityEngineService>();
         services.AddSingleton<Citationly.Application.Interfaces.IAiRequestContextAccessor, AiRequestContextAccessor>();
+        services.AddSingleton<Citationly.Application.Interfaces.IAiRateLimitStore, AiRateLimitStore>();
         services.AddSingleton<Citationly.Application.Interfaces.IAiUsageLimiter, AiUsageLimiter>();
         services.AddSingleton<Citationly.Application.Interfaces.IAiResilienceService, AiResilienceService>();
         // Singleton (not Scoped): it only opens per-call connections via the already-singleton
@@ -133,6 +136,10 @@ public static class DependencyInjection
         services.AddHttpClient<IGeoTechnicalAuditService, GeoTechnicalAuditService>(client =>
         {
             client.Timeout = TimeSpan.FromSeconds(30);
+        })
+        .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+        {
+            AllowAutoRedirect = false
         });
         services.AddScoped<Citationly.Application.Interfaces.AnswerSimulator.IAnswerSimulatorService, Citationly.Infrastructure.Services.AnswerSimulator.AnswerSimulatorService>();
 

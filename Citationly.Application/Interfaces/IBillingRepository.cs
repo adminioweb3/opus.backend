@@ -5,7 +5,7 @@ namespace Citationly.Application.Interfaces;
 public interface IBillingRepository
 {
     Task<Subscription?> GetActiveSubscriptionAsync(Guid organizationId);
-    Task<IEnumerable<Invoice>> GetInvoicesAsync(Guid organizationId);
+    Task<IEnumerable<Invoice>> GetInvoicesAsync(Guid organizationId, int limit = 100);
     Task<IEnumerable<PaymentMethod>> GetPaymentMethodsAsync(Guid organizationId);
 
     Task<string?> GetStripeCustomerIdAsync(Guid organizationId);

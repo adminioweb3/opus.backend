@@ -1,4 +1,4 @@
-using System.Security.Claims;
+using Citationly.API.Services;
 using Citationly.Application.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -10,16 +10,16 @@ namespace Citationly.API.Controllers;
 [Authorize]
 public class BrandKnowledgeController : ControllerBase
 {
-    private readonly IUserRepository _userRepository;
+    private readonly ICurrentOrganizationAccessor _currentOrganization;
     private readonly IBrandKnowledgeService _brandKnowledgeService;
     private readonly ICrossEngineConsensusService _consensusService;
 
     public BrandKnowledgeController(
-        IUserRepository userRepository,
+        ICurrentOrganizationAccessor currentOrganization,
         IBrandKnowledgeService brandKnowledgeService,
         ICrossEngineConsensusService consensusService)
     {
-        _userRepository = userRepository;
+        _currentOrganization = currentOrganization;
         _brandKnowledgeService = brandKnowledgeService;
         _consensusService = consensusService;
     }
@@ -66,10 +66,6 @@ public class BrandKnowledgeController : ControllerBase
 
     private async Task<Guid?> GetOrganizationIdAsync()
     {
-        var firebaseUid = User.FindFirst("user_id")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-        if (string.IsNullOrEmpty(firebaseUid)) return null;
-
-        var user = await _userRepository.GetUserByFirebaseUidAsync(firebaseUid);
-        return user?.OrganizationId;
+        return await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
     }
 }

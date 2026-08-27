@@ -1,4 +1,5 @@
 using System.Threading.Tasks;
+using Citationly.API.Services;
 using Citationly.Application.Features.GeoOptimizer;
 using Citationly.Application.Interfaces.GeoOptimizer;
 using Microsoft.AspNetCore.Authorization;
@@ -12,15 +13,20 @@ namespace Citationly.API.Controllers;
 public class GeoOptimizerController : ControllerBase
 {
     private readonly IGeoOptimizerService _geoOptimizerService;
+    private readonly ICurrentOrganizationAccessor _currentOrganization;
 
-    public GeoOptimizerController(IGeoOptimizerService geoOptimizerService)
+    public GeoOptimizerController(IGeoOptimizerService geoOptimizerService, ICurrentOrganizationAccessor currentOrganization)
     {
         _geoOptimizerService = geoOptimizerService;
+        _currentOrganization = currentOrganization;
     }
 
     [HttpPost("analyze")]
     public async Task<IActionResult> Analyze([FromBody] GeoOptimizationRequest request)
     {
+        var organizationId = await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
+        if (organizationId == null) return Unauthorized("User not found or unlinked.");
+
         if (string.IsNullOrWhiteSpace(request.TargetKeyword))
         {
             return BadRequest("Target keyword is required.");
@@ -33,7 +39,7 @@ public class GeoOptimizerController : ControllerBase
 
         try
         {
-            var result = await _geoOptimizerService.AnalyzeAsync(request);
+            var result = await _geoOptimizerService.AnalyzeAsync(organizationId.Value, request);
             return Ok(result);
         }
         catch (System.Exception ex)
@@ -45,6 +51,9 @@ public class GeoOptimizerController : ControllerBase
     [HttpPost("generate-schema")]
     public async Task<IActionResult> GenerateSchema([FromBody] SchemaGenerationRequest request)
     {
+        var organizationId = await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
+        if (organizationId == null) return Unauthorized("User not found or unlinked.");
+
         if (string.IsNullOrWhiteSpace(request.SchemaType))
         {
             return BadRequest("Schema type is required.");
@@ -52,7 +61,7 @@ public class GeoOptimizerController : ControllerBase
 
         try
         {
-            var result = await _geoOptimizerService.GenerateSchemaAsync(request);
+            var result = await _geoOptimizerService.GenerateSchemaAsync(organizationId.Value, request);
             return Ok(result);
         }
         catch (System.Exception ex)

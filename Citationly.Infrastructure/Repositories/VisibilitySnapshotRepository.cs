@@ -13,35 +13,9 @@ public class VisibilitySnapshotRepository : IVisibilitySnapshotRepository
         _dbConnectionFactory = dbConnectionFactory;
     }
 
-    public async Task EnsureTableCreatedAsync()
+    public Task EnsureTableCreatedAsync()
     {
-        using var connection = _dbConnectionFactory.CreateConnection();
-        await connection.ExecuteAsync(@"
-            CREATE TABLE IF NOT EXISTS VisibilityScanSummaries (
-                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                OrganizationId UUID NOT NULL,
-                ScanDate DATE NOT NULL,
-                CompositeScore INT NOT NULL DEFAULT 0,
-                DirectPct INT NOT NULL DEFAULT 0,
-                MentionsPct INT NOT NULL DEFAULT 0,
-                IndirectPct INT NOT NULL DEFAULT 0,
-                ComparativePct INT NOT NULL DEFAULT 0,
-                CreatedAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE INDEX IF NOT EXISTS idx_visibilityscansummaries_org_scandate ON VisibilityScanSummaries (OrganizationId, ScanDate);
-
-            CREATE TABLE IF NOT EXISTS VisibilityPlatformSnapshots (
-                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                OrganizationId UUID NOT NULL,
-                ScanDate DATE NOT NULL,
-                Platform VARCHAR(255) NOT NULL,
-                Score INT NOT NULL DEFAULT 0,
-                Citations INT NOT NULL DEFAULT 0,
-                Status VARCHAR(20) NOT NULL DEFAULT 'Developing',
-                CreatedAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE INDEX IF NOT EXISTS idx_visibilityplatformsnapshots_org_scandate ON VisibilityPlatformSnapshots (OrganizationId, ScanDate);
-        ");
+        return Task.CompletedTask;
     }
 
     public async Task DeleteByScanDateAsync(Guid organizationId, DateOnly scanDate)

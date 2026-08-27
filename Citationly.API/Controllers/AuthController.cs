@@ -15,11 +15,13 @@ public class AuthController : ControllerBase
 {
     private readonly IMediator _mediator;
     private readonly IDbConnectionFactory _dbConnectionFactory;
+    private readonly ILogger<AuthController> _logger;
 
-    public AuthController(IMediator mediator, IDbConnectionFactory dbConnectionFactory)
+    public AuthController(IMediator mediator, IDbConnectionFactory dbConnectionFactory, ILogger<AuthController> logger)
     {
         _mediator = mediator;
         _dbConnectionFactory = dbConnectionFactory;
+        _logger = logger;
     }
 
     [HttpPost("sync")]
@@ -34,9 +36,8 @@ public class AuthController : ControllerBase
 
         if (string.IsNullOrEmpty(firebaseUid))
         {
-            var claims = string.Join(", ", User.Claims.Select(c => $"{c.Type}: {c.Value}"));
-            Console.WriteLine($"[AUTH ERROR] Missing user_id claim. Found claims: {claims}");
-            return BadRequest($"Invalid token claims: Missing user_id. Claims: {claims}");
+            _logger.LogWarning("Missing user_id claim during SyncUser.");
+            return BadRequest(new { message = "Invalid token claims: Missing user_id." });
         }
 
         var command = new SyncUserCommand
@@ -55,33 +56,26 @@ public class AuthController : ControllerBase
 
     [HttpGet("check-account")]
     [AllowAnonymous]
-    public async Task<IActionResult> CheckAccount([FromQuery] string email)
+    public IActionResult CheckAccount([FromQuery] string email)
     {
         if (string.IsNullOrEmpty(email))
-            return BadRequest("Email is required");
+            return BadRequest(new { message = "Email is required" });
 
-        using var connection = _dbConnectionFactory.CreateConnection();
-
-        var linkedProviders = (await connection.QueryAsync<string>(
-            @"SELECT DISTINCT Provider FROM AuthProviders ap
-              JOIN Users u ON ap.UserId = u.Id
-              WHERE LOWER(u.Email) = @Email
-              ORDER BY Provider",
-            new { Email = email.ToLower().Trim() })).ToList();
-
-        return Ok(new { exists = linkedProviders.Count > 0, email = email.ToLower(), linkedProviders });
+        // Generic response to prevent user enumeration
+        return Ok(new { message = "If this email is registered, you will be able to log in with it." });
     }
 
     private string DetermineProvider(System.Security.Claims.ClaimsPrincipal user)
     {
-        // Check for provider-specific claims
-        var aud = user.FindFirst("aud")?.Value ?? "";
-        var issuer = user.FindFirst("iss")?.Value ?? "";
+        var firebaseClaim = user.FindFirst("firebase")?.Value;
 
-        if (aud.Contains("github") || issuer.Contains("github"))
-            return "github";
-        if (aud.Contains("google") || issuer.Contains("accounts.google"))
-            return "google";
+        if (!string.IsNullOrEmpty(firebaseClaim))
+        {
+            if (firebaseClaim.Contains("\"sign_in_provider\":\"github.com\"") || firebaseClaim.Contains("\"sign_in_provider\": \"github.com\""))
+                return "github";
+            if (firebaseClaim.Contains("\"sign_in_provider\":\"google.com\"") || firebaseClaim.Contains("\"sign_in_provider\": \"google.com\""))
+                return "google";
+        }
 
         return "email"; // Default for email/password auth
     }

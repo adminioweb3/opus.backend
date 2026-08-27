@@ -21,16 +21,16 @@ public class OptimizeContentCommandHandler : IRequestHandler<OptimizeContentComm
 {
     private readonly IContentDraftRepository _draftRepository;
     private readonly IContentOptimizationRepository _optimizationRepository;
-    private readonly IOpenAiService _openAiService;
+    private readonly IAiCompletionService _aiCompletionService;
 
     public OptimizeContentCommandHandler(
         IContentDraftRepository draftRepository,
         IContentOptimizationRepository optimizationRepository,
-        IOpenAiService openAiService)
+        IAiCompletionService aiCompletionService)
     {
         _draftRepository = draftRepository;
         _optimizationRepository = optimizationRepository;
-        _openAiService = openAiService;
+        _aiCompletionService = aiCompletionService;
     }
 
     public async Task<ContentOptimization?> Handle(OptimizeContentCommand request, CancellationToken cancellationToken)
@@ -63,8 +63,20 @@ public class OptimizeContentCommandHandler : IRequestHandler<OptimizeContentComm
             (string.IsNullOrWhiteSpace(request.Notes) ? "" : $"NOTES: {request.Notes}\n") +
             $"\nCONTENT DRAFT:\n{draft.Content}";
 
-        var raw = await _openAiService.GenerateContentAsync(prompt, systemPrompt, requireJson: true);
-        var parsed = ParseOptimization(raw);
+        var completion = await _aiCompletionService.CompleteAsync(
+            request.OrganizationId,
+            "content.optimize",
+            prompt,
+            systemPrompt,
+            requireJson: true,
+            preferredProviderKey: "openai",
+            cancellationToken);
+        if (!completion.Success)
+        {
+            throw new InvalidOperationException(completion.ErrorMessage ?? "Content optimization failed.");
+        }
+
+        var parsed = ParseOptimization(completion.Content);
 
         var optimization = new ContentOptimization
         {

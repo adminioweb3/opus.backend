@@ -6,6 +6,7 @@ using Hangfire;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Citationly.API.Services;
+using Citationly.Application.Interfaces.Security;
 
 namespace Citationly.API.Controllers;
 
@@ -20,19 +21,22 @@ public class ScraperController : ControllerBase
     private readonly IMarkdownGeneratorService _markdownGenerator;
     private readonly ILogger<ScraperController> _logger;
     private readonly ICurrentOrganizationAccessor _currentOrganization;
+    private readonly IOutboundUrlSafetyValidator _urlSafetyValidator;
 
     public ScraperController(
         IScrapingJobRepository repository,
         IBackgroundJobClient backgroundJobClient,
         IMarkdownGeneratorService markdownGenerator,
         ILogger<ScraperController> logger,
-        ICurrentOrganizationAccessor currentOrganization)
+        ICurrentOrganizationAccessor currentOrganization,
+        IOutboundUrlSafetyValidator urlSafetyValidator)
     {
         _repository = repository;
         _backgroundJobClient = backgroundJobClient;
         _markdownGenerator = markdownGenerator;
         _logger = logger;
         _currentOrganization = currentOrganization;
+        _urlSafetyValidator = urlSafetyValidator;
     }
 
     // POST /api/scraper/start
@@ -46,7 +50,17 @@ public class ScraperController : ControllerBase
         {
             // A scrape/crawl for this exact URL is already in flight — return that job
             // instead of starting a second, duplicate crawl of the same site.
-            var existingJob = await _repository.GetActiveJobForUrlAsync(orgGuid.Value, request.Url);
+            var urlSafety = await _urlSafetyValidator.ValidateForHttpFetchAsync(
+                request.Url,
+                allowMissingScheme: true,
+                cancellationToken: HttpContext.RequestAborted);
+
+            if (!urlSafety.IsAllowed)
+            {
+                return BadRequest(new { message = urlSafety.Reason ?? "URL is not allowed." });
+            }
+
+            var existingJob = await _repository.GetActiveJobForUrlAsync(orgGuid.Value, urlSafety.NormalizedUrl!);
             if (existingJob != null)
             {
                 return Ok(new { JobId = existingJob.Id, Status = existingJob.Status });
@@ -60,9 +74,9 @@ public class ScraperController : ControllerBase
                 OrganizationId = orgGuid.Value,
                 KnowledgeBaseId = knowledgeBaseId,
                 FolderId = folderId,
-                Url = request.Url,
+                Url = urlSafety.NormalizedUrl!,
                 ScrapeType = request.ScrapeType,
-                MaxPages = request.MaxPages,
+                MaxPages = Math.Clamp(request.MaxPages, 1, 250),
                 Status = "Pending"
             };
 
@@ -83,14 +97,15 @@ public class ScraperController : ControllerBase
 
     // GET /api/scraper/jobs?knowledgeBaseId=yyy
     [HttpGet("jobs")]
-    public async Task<IActionResult> GetJobs([FromQuery] Guid? knowledgeBaseId)
+    public async Task<IActionResult> GetJobs([FromQuery] Guid? knowledgeBaseId, [FromQuery] int limit = 100)
     {
         var organizationId = await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
         if (organizationId is null) return Unauthorized();
 
+        limit = Math.Clamp(limit, 1, 500);
         var jobs = knowledgeBaseId.HasValue && knowledgeBaseId.Value != Guid.Empty
-            ? await _repository.GetJobsByOrgAndKbAsync(organizationId.Value, knowledgeBaseId.Value)
-            : await _repository.GetAllJobsByOrgAsync(organizationId.Value);
+            ? await _repository.GetJobsByOrgAndKbAsync(organizationId.Value, knowledgeBaseId.Value, limit)
+            : await _repository.GetAllJobsByOrgAsync(organizationId.Value, limit);
 
         var result = new List<object>();
         foreach (var job in jobs)
@@ -140,12 +155,12 @@ public class ScraperController : ControllerBase
 
     // GET /api/scraper/result/{jobId}
     [HttpGet("result/{jobId}")]
-    public async Task<IActionResult> GetResult(Guid jobId)
+    public async Task<IActionResult> GetResult(Guid jobId, [FromQuery] int limit = 250)
     {
         var job = await GetOwnedJobAsync(jobId);
         if (job == null) return NotFound();
 
-        var pages = await _repository.GetPagesByJobIdAsync(jobId);
+        var pages = await _repository.GetPagesByJobIdAsync(jobId, Math.Clamp(limit, 1, 1000));
         var pageResults = pages.Select(MapPageResult).ToList();
 
         return Ok(new { Job = job, Pages = pageResults });
@@ -190,7 +205,7 @@ public class ScraperController : ControllerBase
         var job = await GetOwnedJobAsync(jobId);
         if (job == null) return NotFound();
 
-        var pages = await _repository.GetPagesByJobIdAsync(jobId);
+        var pages = await _repository.GetPagesByJobIdAsync(jobId, 1000);
         var markdown = _markdownGenerator.AggregateMarkdown(pages);
 
         var bytes = Encoding.UTF8.GetBytes(markdown);

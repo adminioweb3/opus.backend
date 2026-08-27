@@ -13,41 +13,9 @@ public class CitationScanSnapshotRepository : ICitationScanSnapshotRepository
         _dbConnectionFactory = dbConnectionFactory;
     }
 
-    public async Task EnsureTableCreatedAsync()
+    public Task EnsureTableCreatedAsync()
     {
-        using var connection = _dbConnectionFactory.CreateConnection();
-        await connection.ExecuteAsync(@"
-            CREATE TABLE IF NOT EXISTS CitationScanSummaries (
-                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                OrganizationId UUID NOT NULL,
-                ScanDate DATE NOT NULL,
-                CompositeQualityScore INT NOT NULL DEFAULT 0,
-                AverageAuthorityScore INT NOT NULL DEFAULT 0,
-                AverageInfluenceScore INT NOT NULL DEFAULT 0,
-                CitationSignal INT NOT NULL DEFAULT 0,
-                ModelsReferencingCount INT NOT NULL DEFAULT 0,
-                ModelsTrackedCount INT NOT NULL DEFAULT 0,
-                CreatedAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE INDEX IF NOT EXISTS idx_citationscansummaries_org_scandate ON CitationScanSummaries (OrganizationId, ScanDate);
-
-            CREATE TABLE IF NOT EXISTS CitationSourceSnapshots (
-                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                OrganizationId UUID NOT NULL,
-                ScanDate DATE NOT NULL,
-                Source VARCHAR(255) NOT NULL,
-                Category VARCHAR(255),
-                AuthorityScore INT NOT NULL DEFAULT 0,
-                InfluenceScore INT NOT NULL DEFAULT 0,
-                CitationFrequency INT NOT NULL DEFAULT 0,
-                CompetitorCoverage INT NOT NULL DEFAULT 0,
-                OpportunityScore INT NOT NULL DEFAULT 0,
-                MentionProbability INT NOT NULL DEFAULT 0,
-                Reason TEXT,
-                CreatedAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE INDEX IF NOT EXISTS idx_citationsourcesnapshots_org_scandate ON CitationSourceSnapshots (OrganizationId, ScanDate);
-        ");
+        return Task.CompletedTask;
     }
 
     public async Task DeleteByScanDateAsync(Guid organizationId, DateOnly scanDate)

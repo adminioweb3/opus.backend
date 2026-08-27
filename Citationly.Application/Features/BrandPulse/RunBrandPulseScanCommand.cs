@@ -20,7 +20,7 @@ public class RunBrandPulseScanCommandHandler : IRequestHandler<RunBrandPulseScan
     private readonly ICompetitorSnapshotRepository _competitorSnapshotRepo;
     private readonly IVisibilitySnapshotRepository _visibilitySnapshotRepo;
     private readonly IBrandPulseSnapshotRepository _snapshotRepo;
-    private readonly IOpenAiService _openAiService;
+    private readonly IAiCompletionService _aiCompletionService;
 
     public RunBrandPulseScanCommandHandler(
         IWebsiteRepository websiteRepository,
@@ -28,14 +28,14 @@ public class RunBrandPulseScanCommandHandler : IRequestHandler<RunBrandPulseScan
         ICompetitorSnapshotRepository competitorSnapshotRepo,
         IVisibilitySnapshotRepository visibilitySnapshotRepo,
         IBrandPulseSnapshotRepository snapshotRepo,
-        IOpenAiService openAiService)
+        IAiCompletionService aiCompletionService)
     {
         _websiteRepository = websiteRepository;
         _visibilityRepo = visibilityRepo;
         _competitorSnapshotRepo = competitorSnapshotRepo;
         _visibilitySnapshotRepo = visibilitySnapshotRepo;
         _snapshotRepo = snapshotRepo;
-        _openAiService = openAiService;
+        _aiCompletionService = aiCompletionService;
     }
 
     public async Task<RunBrandPulseScanResult> Handle(RunBrandPulseScanCommand request, CancellationToken cancellationToken)
@@ -69,8 +69,20 @@ public class RunBrandPulseScanCommandHandler : IRequestHandler<RunBrandPulseScan
             : new List<VisibilityPlatformSnapshot>();
 
         var (systemPrompt, userPrompt) = BuildPrompt(profile, executiveSummary, latestScan, prompts, competitorSnapshots, platformSnapshots);
-        var raw = await _openAiService.GenerateContentAsync(userPrompt, systemPrompt, requireJson: true);
-        var judged = ParseJudgment(raw, latestScan);
+        var completion = await _aiCompletionService.CompleteAsync(
+            orgId,
+            "brand_pulse.scan",
+            userPrompt,
+            systemPrompt,
+            requireJson: true,
+            preferredProviderKey: "openai",
+            cancellationToken);
+        if (!completion.Success)
+        {
+            return new RunBrandPulseScanResult(false, completion.ErrorMessage ?? "Brand pulse scan could not be completed because AI provider output was unavailable.");
+        }
+
+        var judged = ParseJudgment(completion.Content, latestScan);
 
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         await _snapshotRepo.DeleteByScanDateAsync(orgId, today);
@@ -264,4 +276,5 @@ public class RunBrandPulseScanCommandHandler : IRequestHandler<RunBrandPulseScan
                 new List<object>(), new List<ModelInsightJudged>(), new List<object>(), new List<object>());
         }
     }
+
 }

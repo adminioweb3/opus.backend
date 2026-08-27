@@ -7,11 +7,11 @@ namespace Citationly.Infrastructure.Services.Citations;
 
 public class CitationEnrichmentService : ICitationEnrichmentService
 {
-    private readonly IOpenAiService _openRouterService;
+    private readonly IAiCompletionService _aiCompletionService;
 
-    public CitationEnrichmentService(IOpenAiService openRouterService)
+    public CitationEnrichmentService(IAiCompletionService aiCompletionService)
     {
-        _openRouterService = openRouterService;
+        _aiCompletionService = aiCompletionService;
     }
 
     public async Task<List<CitationSource>> EnrichCitationsAsync(
@@ -85,13 +85,16 @@ Provide a concise explanation (maximum 30 words) describing why this source is i
 
 Return ONLY the JSON object.";
 
-        var responseContent = await _openRouterService.GenerateContentAsync(
-            prompt: userPrompt,
-            systemPrompt: systemPrompt,
+        var completion = await _aiCompletionService.CompleteAsync(
+            organizationId,
+            "citations.enrichment",
+            userPrompt,
+            systemPrompt,
             requireJson: true,
-            model: "gpt-4o-mini");
+            preferredProviderKey: "openai");
+        if (!completion.Success) return sourcesToEnrich;
 
-        responseContent = responseContent.Trim();
+        var responseContent = completion.Content.Trim();
         if (responseContent.StartsWith("```json"))
         {
             responseContent = responseContent.Substring(7);

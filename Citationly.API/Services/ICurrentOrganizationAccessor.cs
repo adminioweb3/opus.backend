@@ -9,4 +9,5 @@ namespace Citationly.API.Services;
 public interface ICurrentOrganizationAccessor
 {
     Task<Guid?> GetOrganizationIdAsync(ClaimsPrincipal user, CancellationToken cancellationToken = default);
+    Task<(Guid UserId, Guid OrganizationId, string Role)?> GetCurrentUserAsync(ClaimsPrincipal user, CancellationToken cancellationToken = default);
 }

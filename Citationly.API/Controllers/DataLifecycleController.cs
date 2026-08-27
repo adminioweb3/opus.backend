@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using Citationly.API.Services;
 using Citationly.Application.Interfaces;
 using Citationly.Domain.Entities;
@@ -13,16 +12,13 @@ namespace Citationly.API.Controllers;
 public class DataLifecycleController : ControllerBase
 {
     private readonly ICurrentOrganizationAccessor _currentOrganization;
-    private readonly IUserRepository _users;
     private readonly IDataLifecycleRepository _repository;
 
     public DataLifecycleController(
         ICurrentOrganizationAccessor currentOrganization,
-        IUserRepository users,
         IDataLifecycleRepository repository)
     {
         _currentOrganization = currentOrganization;
-        _users = users;
         _repository = repository;
     }
 
@@ -78,12 +74,15 @@ public class DataLifecycleController : ControllerBase
 
     [HttpGet("deletion-requests")]
     [RequireOrgRole("Admin")]
-    public async Task<IActionResult> GetDeletionRequests()
+    public async Task<IActionResult> GetDeletionRequests([FromQuery] int limit = 100)
     {
         var organizationId = await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
         if (organizationId == null) return Unauthorized();
 
-        return Ok(await _repository.GetDeletionRequestsAsync(organizationId.Value, HttpContext.RequestAborted));
+        return Ok(await _repository.GetDeletionRequestsAsync(
+            organizationId.Value,
+            Math.Clamp(limit, 1, 500),
+            HttpContext.RequestAborted));
     }
 
     [HttpPost("deletion-requests")]
@@ -123,8 +122,7 @@ public class DataLifecycleController : ControllerBase
 
     private async Task<(Guid UserId, Guid OrganizationId, string Role)?> GetCallerAsync()
     {
-        var firebaseUid = User.FindFirst("user_id")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? User.FindFirst("sub")?.Value;
-        return string.IsNullOrWhiteSpace(firebaseUid) ? null : await _users.GetUserByFirebaseUidAsync(firebaseUid);
+        return await _currentOrganization.GetCurrentUserAsync(User, HttpContext.RequestAborted);
     }
 }
 

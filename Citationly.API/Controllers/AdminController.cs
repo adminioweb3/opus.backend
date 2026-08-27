@@ -13,6 +13,8 @@ using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.IdentityModel.Tokens;
+using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace Citationly.API.Controllers;
 
@@ -26,42 +28,61 @@ public class AdminController : ControllerBase
     private readonly ILogger<AdminController> _logger;
     private readonly IPromptIntelligenceFirstRunService _firstRunService;
     private readonly IMediator _mediator;
+    private readonly IMemoryCache _cache;
 
     public AdminController(
         IDbConnectionFactory dbConnectionFactory,
         IConfiguration configuration,
         ILogger<AdminController> logger,
         IPromptIntelligenceFirstRunService firstRunService,
-        IMediator mediator)
+        IMediator mediator,
+        IMemoryCache cache)
     {
         _dbConnectionFactory = dbConnectionFactory;
         _configuration = configuration;
         _logger = logger;
         _firstRunService = firstRunService;
         _mediator = mediator;
+        _cache = cache;
     }
 
     [AllowAnonymous]
+    [EnableRateLimiting("AdminLogin")]
     [HttpPost("login")]
     [AuditAction("admin.login", "Authentication", "AdminSession")]
     public IActionResult Login([FromBody] AdminLoginRequest request)
     {
+        var clientIp = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        var cacheKey = $"admin_login_attempts_{clientIp}_{request.Username}";
+        var attempts = _cache.GetOrCreate(cacheKey, entry => 
+        {
+            entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(15);
+            return 0;
+        });
+
+        if (attempts >= 5)
+        {
+            return StatusCode(429, new { message = "Account locked out due to too many failed attempts. Try again later." });
+        }
+
         var configuredUsername = _configuration["Admin:Username"];
-        var configuredPassword = _configuration["Admin:Password"];
+        var configuredPasswordHash = _configuration["Admin:PasswordHash"];
         var signingKey = _configuration["Admin:JwtSigningKey"];
         var issuer = _configuration["Admin:JwtIssuer"] ?? "Citationly.Admin";
         var audience = _configuration["Admin:JwtAudience"] ?? "Citationly.Admin.Panel";
 
-        if (string.IsNullOrWhiteSpace(configuredUsername) || string.IsNullOrWhiteSpace(configuredPassword) || string.IsNullOrWhiteSpace(signingKey))
+        if (string.IsNullOrWhiteSpace(configuredUsername) || string.IsNullOrWhiteSpace(configuredPasswordHash) || string.IsNullOrWhiteSpace(signingKey))
             return StatusCode(500, new { message = "Admin authentication is not configured on the server." });
 
         if (!string.Equals(request.Username?.Trim(), configuredUsername.Trim(), StringComparison.OrdinalIgnoreCase) ||
-            request.Password != configuredPassword)
+            !BCrypt.Net.BCrypt.Verify(request.Password, configuredPasswordHash))
         {
+            _cache.Set(cacheKey, attempts + 1, TimeSpan.FromMinutes(15));
             return Unauthorized(new { message = "Invalid admin credentials." });
         }
 
-        var expiresAt = DateTime.UtcNow.AddHours(12);
+        _cache.Remove(cacheKey);
+        var expiresAt = DateTime.UtcNow.AddHours(1);
         var claims = new[]
         {
             new Claim(ClaimTypes.NameIdentifier, request.Username!.Trim()),
@@ -106,6 +127,11 @@ public class AdminController : ControllerBase
     [AuditAction("admin.database.clear", "Destructive", "Database")]
     public async Task<IActionResult> ClearDatabase()
     {
+        if (IsProductionDestructiveDatabaseActionDisabled())
+        {
+            return StatusCode(403, new { message = "Destructive database actions are disabled in production." });
+        }
+
         using var connection = _dbConnectionFactory.CreateConnection();
 
         // Only the app's own schema â€” Hangfire keeps its tables in a separate "hangfire" schema,
@@ -131,6 +157,11 @@ public class AdminController : ControllerBase
     [AuditAction("admin.database.reset", "Destructive", "Database")]
     public async Task<IActionResult> ResetDatabase()
     {
+        if (IsProductionDestructiveDatabaseActionDisabled())
+        {
+            return StatusCode(403, new { message = "Destructive database actions are disabled in production." });
+        }
+
         var assembly = typeof(SelfHealingMigrations).Assembly;
         var resourceName = assembly.GetManifestResourceNames()
             .FirstOrDefault(n => n.EndsWith("init.sql", StringComparison.OrdinalIgnoreCase));
@@ -147,7 +178,9 @@ public class AdminController : ControllerBase
 
         using var connection = _dbConnectionFactory.CreateConnection();
         await connection.ExecuteAsync(initSql);
-        await connection.ExecuteAsync(SelfHealingMigrations.Sql);
+
+        var migrationRunner = HttpContext.RequestServices.GetRequiredService<DatabaseMigrationRunner>();
+        await migrationRunner.RunPendingAsync(HttpContext.RequestAborted);
 
         _logger.LogWarning("Database RESET via /api/Admin/database/reset â€” full schema drop & recreate.");
         return Ok(new { message = "Database reset â€” fresh schema created from init.sql, all data gone." });
@@ -182,8 +215,9 @@ public class AdminController : ControllerBase
     }
 
     [HttpGet("users")]
-    public async Task<IActionResult> GetUsers()
+    public async Task<IActionResult> GetUsers([FromQuery] int limit = 100)
     {
+        limit = Math.Clamp(limit, 1, 500);
         using var connection = _dbConnectionFactory.CreateConnection();
         var sql = @"
             SELECT
@@ -198,15 +232,17 @@ public class AdminController : ControllerBase
                 o.CreatedAt as OrganizationCreatedAt
             FROM Users u
             JOIN Organizations o ON u.OrganizationId = o.Id
-            ORDER BY u.CreatedAt DESC;
+            ORDER BY u.CreatedAt DESC
+            LIMIT @Limit;
         ";
-        var users = await connection.QueryAsync<AdminUserRow>(sql);
+        var users = await connection.QueryAsync<AdminUserRow>(sql, new { Limit = limit });
         return Ok(users);
     }
 
     [HttpGet("users/all")]
-    public async Task<IActionResult> GetAllUsersIncludingFirebase()
+    public async Task<IActionResult> GetAllUsersIncludingFirebase([FromQuery] int limit = 100)
     {
+        limit = Math.Clamp(limit, 1, 500);
         var allUsers = new List<AdminUserRow>();
 
         try
@@ -225,8 +261,9 @@ public class AdminController : ControllerBase
                     o.CreatedAt as OrganizationCreatedAt
                 FROM Users u
                 JOIN Organizations o ON u.OrganizationId = o.Id
-                ORDER BY u.CreatedAt DESC;
-            ");
+                ORDER BY u.CreatedAt DESC
+                LIMIT @Limit;
+            ", new { Limit = limit });
 
             allUsers.AddRange(dbUsers);
             _logger.LogInformation("Fetched {Count} database users", dbUsers.Count());
@@ -248,7 +285,7 @@ public class AdminController : ControllerBase
                     await foreach (var fbUser in pagedEnumerable)
                     {
                         firebaseCount++;
-                        var existingUser = allUsers.FirstOrDefault(u => u.Email == fbUser.Email);
+                        var existingUser = allUsers.FirstOrDefault(u => string.Equals(u.Email, fbUser.Email, StringComparison.OrdinalIgnoreCase));
                         if (existingUser == null)
                         {
                             firebaseUsersList.Add(new AdminUserRow
@@ -264,6 +301,11 @@ public class AdminController : ControllerBase
                                 OrganizationCreatedAt = DateTime.UtcNow
                             });
                         }
+
+                        if (allUsers.Count + firebaseUsersList.Count >= limit)
+                        {
+                            break;
+                        }
                     }
 
                     _logger.LogInformation("Fetched {TotalFirebase} Firebase users, {NewCount} not in database", firebaseCount, firebaseUsersList.Count);
@@ -277,11 +319,11 @@ public class AdminController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError("Error fetching all users: {Message}", ex.Message);
-            return StatusCode(500, new { message = "Error fetching users", error = ex.Message });
+            _logger.LogError(ex, "Error fetching all users");
+            return StatusCode(500, new { message = "Error fetching users." });
         }
 
-        return Ok(allUsers.OrderByDescending(u => u.UserCreatedAt));
+        return Ok(allUsers.OrderByDescending(u => u.UserCreatedAt).Take(limit));
     }
 
     [HttpDelete("users/{id}")]
@@ -344,9 +386,16 @@ public class AdminController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError("Error deleting user {UserId}: {Message}", id, ex.Message);
-            return StatusCode(500, new { message = "Failed to delete user", error = ex.Message });
+            _logger.LogError(ex, "Error deleting user {UserId}", id);
+            return StatusCode(500, new { message = "Failed to delete user." });
         }
+    }
+
+    private bool IsProductionDestructiveDatabaseActionDisabled()
+    {
+        var environmentName = _configuration["ASPNETCORE_ENVIRONMENT"] ?? _configuration["DOTNET_ENVIRONMENT"];
+        var isProduction = string.Equals(environmentName, "Production", StringComparison.OrdinalIgnoreCase);
+        return isProduction && !_configuration.GetValue<bool>("Admin:AllowDestructiveDatabaseActions");
     }
 }
 

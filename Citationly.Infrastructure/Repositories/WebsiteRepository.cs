@@ -112,18 +112,6 @@ public class WebsiteRepository : IWebsiteRepository
     {
         using var connection = _dbConnectionFactory.CreateConnection();
         
-        // Ensure table exists (temporary migration pattern)
-        await connection.ExecuteAsync(@"
-            CREATE TABLE IF NOT EXISTS WebsiteProfiles (
-                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                OrganizationId UUID NOT NULL,
-                WebsiteUrl TEXT NOT NULL,
-                BusinessName TEXT NOT NULL,
-                RawProfileJson JSONB NOT NULL,
-                CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-            );
-        ");
-
         var id = await connection.ExecuteScalarAsync<Guid>(@"
             INSERT INTO WebsiteProfiles (OrganizationId, WebsiteUrl, BusinessName, RawProfileJson, CreatedAt)
             VALUES (@OrganizationId, @WebsiteUrl, @BusinessName, @RawProfileJson::jsonb, @CreatedAt)
@@ -159,17 +147,6 @@ public class WebsiteRepository : IWebsiteRepository
         {
             connection.Open();
         }
-
-        await connection.ExecuteAsync(@"
-            ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS Rank INTEGER DEFAULT 0;
-            ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS SimilarityScore INTEGER DEFAULT 0;
-            ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS RawJson JSONB DEFAULT '{}'::jsonb;
-            ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS EnrichmentStatus VARCHAR(20) DEFAULT 'Pending';
-            ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS EnrichedJson JSONB;
-            ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS EnrichedAt TIMESTAMPTZ;
-            ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS CompetitorType VARCHAR(50) DEFAULT 'Direct';
-            ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS Confidence INTEGER DEFAULT 0;
-        ");
 
         using var transaction = connection.BeginTransaction();
 
@@ -421,20 +398,6 @@ public class WebsiteRepository : IWebsiteRepository
             connection.Open();
         }
 
-        // Auto-migrate schema for the new visibility properties
-        await connection.ExecuteAsync(@"
-            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS VisibilityScore INTEGER DEFAULT 0;
-            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS EstimatedRank VARCHAR(50);
-            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Confidence INTEGER DEFAULT 0;
-            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS AppearsInAnswer BOOLEAN DEFAULT FALSE;
-            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS ShareOfVoiceContribution INTEGER DEFAULT 0;
-            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS MentionProbability INTEGER DEFAULT 0;
-            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS BrandStrength INTEGER DEFAULT 0;
-            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS ContentStrength INTEGER DEFAULT 0;
-            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS CitationStrength INTEGER DEFAULT 0;
-            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS VisibilityReason TEXT;
-        ");
-
         using var transaction = connection.BeginTransaction();
 
         try
@@ -525,33 +488,6 @@ public class WebsiteRepository : IWebsiteRepository
             connection.Open();
         }
 
-        await connection.ExecuteAsync(@"
-            CREATE TABLE IF NOT EXISTS VisibilitySummaries (
-                Id UUID PRIMARY KEY,
-                OrganizationId UUID NOT NULL,
-                OverallVisibilityScore INTEGER NOT NULL,
-                BestPlatform VARCHAR(255),
-                WeakestPlatform VARCHAR(255),
-                AverageMentionRate INTEGER NOT NULL,
-                AveragePromptCoverage INTEGER NOT NULL,
-                CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE TABLE IF NOT EXISTS PlatformVisibilities (
-                Id UUID PRIMARY KEY,
-                OrganizationId UUID NOT NULL,
-                Platform VARCHAR(255) NOT NULL,
-                VisibilityScore INTEGER NOT NULL,
-                AverageRank VARCHAR(50),
-                MentionRate INTEGER NOT NULL,
-                PromptCoverage INTEGER NOT NULL,
-                Confidence INTEGER NOT NULL,
-                StrengthsJson TEXT,
-                WeaknessesJson TEXT,
-                CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-            );
-        ");
-
         using var transaction = connection.BeginTransaction();
         try
         {
@@ -583,12 +519,6 @@ public class WebsiteRepository : IWebsiteRepository
         {
             connection.Open();
         }
-
-        // Auto-migrate schema for the new enrichment properties
-        await connection.ExecuteAsync(@"
-            ALTER TABLE PlatformVisibilities ADD COLUMN IF NOT EXISTS Explanation TEXT;
-            ALTER TABLE PlatformVisibilities ADD COLUMN IF NOT EXISTS IsEnriched BOOLEAN DEFAULT FALSE;
-        ");
 
         await connection.ExecuteAsync(@"
             UPDATE PlatformVisibilities 
@@ -640,38 +570,6 @@ public class WebsiteRepository : IWebsiteRepository
         {
             connection.Open();
         }
-
-        // Auto-migrate schema
-        await connection.ExecuteAsync(@"
-            CREATE TABLE IF NOT EXISTS CitationSummaries (
-                Id UUID PRIMARY KEY,
-                OrganizationId UUID NOT NULL,
-                TotalSources INTEGER NOT NULL,
-                AverageAuthorityScore INTEGER NOT NULL,
-                AverageInfluenceScore INTEGER NOT NULL,
-                HighestOpportunitySource VARCHAR(255),
-                MostInfluentialSource VARCHAR(255),
-                CreatedAt TIMESTAMP NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS CitationSources (
-                Id UUID PRIMARY KEY,
-                OrganizationId UUID NOT NULL,
-                Rank INTEGER NOT NULL,
-                Source VARCHAR(255) NOT NULL,
-                Category VARCHAR(255),
-                AuthorityScore INTEGER NOT NULL,
-                InfluenceScore INTEGER NOT NULL,
-                CitationFrequency INTEGER NOT NULL,
-                CompetitorCoverage INTEGER NOT NULL,
-                OpportunityScore INTEGER NOT NULL,
-                MentionProbability INTEGER NOT NULL,
-                Reason TEXT,
-                CreatedAt TIMESTAMP NOT NULL
-            );
-
-            ALTER TABLE CitationSources ADD COLUMN IF NOT EXISTS IsEnriched BOOLEAN DEFAULT FALSE;
-            ALTER TABLE CitationSources ADD COLUMN IF NOT EXISTS EnrichedAt TIMESTAMP WITH TIME ZONE;
-        ");
 
         using var transaction = connection.BeginTransaction();
 
@@ -797,30 +695,6 @@ public class WebsiteRepository : IWebsiteRepository
             connection.Open();
         }
 
-        await connection.ExecuteAsync(@"
-            CREATE TABLE IF NOT EXISTS PersonaAnalysisSummaries (
-                Id UUID PRIMARY KEY,
-                OrganizationId UUID NOT NULL,
-                OverallVisibility INTEGER NOT NULL,
-                StrongestPersona VARCHAR(255),
-                WeakestPersona VARCHAR(255),
-                AverageShareOfVoice INTEGER NOT NULL,
-                CreatedAt TIMESTAMP NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS PersonaScores (
-                Id UUID PRIMARY KEY,
-                OrganizationId UUID NOT NULL,
-                Persona VARCHAR(255) NOT NULL,
-                Visibility INTEGER NOT NULL,
-                AverageRank VARCHAR(50),
-                ShareOfVoice INTEGER NOT NULL,
-                TopCompetitorsJson TEXT,
-                RecommendedContentJson TEXT,
-                Reason TEXT,
-                CreatedAt TIMESTAMP NOT NULL
-            );
-        ");
-
         using var transaction = connection.BeginTransaction();
         try
         {
@@ -875,31 +749,6 @@ public class WebsiteRepository : IWebsiteRepository
     {
         using var connection = _dbConnectionFactory.CreateConnection();
         
-        await connection.ExecuteAsync(@"
-            CREATE TABLE IF NOT EXISTS RegionAnalysisSummaries (
-                Id UUID PRIMARY KEY,
-                OrganizationId UUID NOT NULL,
-                OverallGlobalVisibility INT NOT NULL,
-                StrongestRegion TEXT,
-                WeakestRegion TEXT,
-                AverageShareOfVoice INT NOT NULL,
-                CreatedAt TIMESTAMP NOT NULL
-            )");
-            
-        await connection.ExecuteAsync(@"
-            CREATE TABLE IF NOT EXISTS RegionScores (
-                Id UUID PRIMARY KEY,
-                OrganizationId UUID NOT NULL,
-                Region TEXT NOT NULL,
-                Visibility INT NOT NULL,
-                Ranking TEXT,
-                CompetitorLeader TEXT,
-                ShareOfVoice INT NOT NULL,
-                ContentOpportunityJson TEXT,
-                Reason TEXT,
-                CreatedAt TIMESTAMP NOT NULL
-            )");
-
         connection.Open();
         using var transaction = connection.BeginTransaction();
         try
@@ -965,80 +814,6 @@ public class WebsiteRepository : IWebsiteRepository
     {
         using var connection = _dbConnectionFactory.CreateConnection();
         
-        await connection.ExecuteAsync(@"
-            CREATE TABLE IF NOT EXISTS GeoRecommendationSummaries (
-                Id UUID PRIMARY KEY,
-                OrganizationId UUID NOT NULL,
-                OverallPriority TEXT,
-                EstimatedOverallImpact TEXT,
-                EstimatedImplementationTime TEXT,
-                TotalRecommendations INT NOT NULL,
-                CriticalRecommendations INT NOT NULL,
-                HighPriorityRecommendations INT NOT NULL,
-                CreatedAt TIMESTAMP NOT NULL
-            )");
-            
-        await connection.ExecuteAsync(@"
-            CREATE TABLE IF NOT EXISTS GeoRecommendations (
-                Id UUID PRIMARY KEY,
-                OrganizationId UUID NOT NULL,
-                RecommendationId TEXT NOT NULL,
-                Category TEXT NOT NULL,
-                Title TEXT NOT NULL,
-                Description TEXT NOT NULL,
-                Priority TEXT NOT NULL,
-                EstimatedImpact TEXT NOT NULL,
-                EstimatedDifficulty TEXT NOT NULL,
-                ImplementationTime TEXT NOT NULL,
-                ExpectedOutcome TEXT NOT NULL,
-                SuccessMetric TEXT NOT NULL,
-                ActionItemsJson TEXT NOT NULL,
-                IsEnriched BOOLEAN NOT NULL DEFAULT FALSE,
-                EnrichedAt TIMESTAMP NULL,
-                ExpandedGuidance TEXT NULL,
-                BusinessImpact TEXT NULL,
-                ExampleResourcesJson TEXT NULL,
-                ReferenceLinksJson TEXT NULL,
-                CreatedAt TIMESTAMP NOT NULL
-            )");
-
-        // Add columns if they don't exist
-        await connection.ExecuteAsync(@"
-            DO $$ 
-            BEGIN 
-                BEGIN
-                    ALTER TABLE GeoRecommendations ADD COLUMN IsEnriched BOOLEAN NOT NULL DEFAULT FALSE;
-                EXCEPTION
-                    WHEN duplicate_column THEN null;
-                END;
-                BEGIN
-                    ALTER TABLE GeoRecommendations ADD COLUMN EnrichedAt TIMESTAMP NULL;
-                EXCEPTION
-                    WHEN duplicate_column THEN null;
-                END;
-                BEGIN
-                    ALTER TABLE GeoRecommendations ADD COLUMN ExpandedGuidance TEXT NULL;
-                EXCEPTION
-                    WHEN duplicate_column THEN null;
-                END;
-                BEGIN
-                    ALTER TABLE GeoRecommendations ADD COLUMN BusinessImpact TEXT NULL;
-                EXCEPTION
-                    WHEN duplicate_column THEN null;
-                END;
-                BEGIN
-                    ALTER TABLE GeoRecommendations ADD COLUMN ExampleResourcesJson TEXT NULL;
-                EXCEPTION
-                    WHEN duplicate_column THEN null;
-                END;
-                BEGIN
-                    ALTER TABLE GeoRecommendations ADD COLUMN ReferenceLinksJson TEXT NULL;
-                EXCEPTION
-                    WHEN duplicate_column THEN null;
-                END;
-            END $$;
-        ");
-
         connection.Open();
         using var transaction = connection.BeginTransaction();
         try
@@ -1132,33 +907,6 @@ public class WebsiteRepository : IWebsiteRepository
     {
         using var connection = _dbConnectionFactory.CreateConnection();
         
-        await connection.ExecuteAsync(@"
-            CREATE TABLE IF NOT EXISTS ExecutiveSummaryData (
-                Id UUID PRIMARY KEY,
-                OrganizationId UUID NOT NULL,
-                BusinessOverview TEXT NOT NULL,
-                CurrentAIVisibility TEXT NOT NULL,
-                CompetitorPosition TEXT NOT NULL,
-                PlatformPerformance TEXT NOT NULL,
-                TopicPerformance TEXT NOT NULL,
-                PromptPerformance TEXT NOT NULL,
-                CitationSummary TEXT NOT NULL,
-                StrengthsJson TEXT NOT NULL,
-                WeaknessesJson TEXT NOT NULL,
-                OpportunitiesJson TEXT NOT NULL,
-                ThreatsJson TEXT NOT NULL,
-                OverallGEOScore INT NOT NULL,
-                OverallAIVisibilityScore INT NOT NULL,
-                OverallSEOScore INT NOT NULL,
-                OverallBrandAuthority INT NOT NULL,
-                OverallContentScore INT NOT NULL,
-                OverallAssessment TEXT NOT NULL,
-                TopPriorityRecommendation TEXT NOT NULL,
-                ExpectedBusinessImpact TEXT NOT NULL,
-                NextStepsJson TEXT NOT NULL,
-                CreatedAt TIMESTAMP NOT NULL
-            )");
-
         connection.Open();
         using var transaction = connection.BeginTransaction();
         try

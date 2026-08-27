@@ -21,7 +21,7 @@ public class RunOpportunityScanCommandHandler : IRequestHandler<RunOpportunitySc
     private readonly IVisibilitySnapshotRepository _visibilitySnapshotRepo;
     private readonly ICitationScanSnapshotRepository _citationSnapshotRepo;
     private readonly IOpportunitySnapshotRepository _snapshotRepo;
-    private readonly IOpenAiService _openAiService;
+    private readonly IAiCompletionService _aiCompletionService;
 
     public RunOpportunityScanCommandHandler(
         IWebsiteRepository websiteRepository,
@@ -30,7 +30,7 @@ public class RunOpportunityScanCommandHandler : IRequestHandler<RunOpportunitySc
         IVisibilitySnapshotRepository visibilitySnapshotRepo,
         ICitationScanSnapshotRepository citationSnapshotRepo,
         IOpportunitySnapshotRepository snapshotRepo,
-        IOpenAiService openAiService)
+        IAiCompletionService aiCompletionService)
     {
         _websiteRepository = websiteRepository;
         _visibilityRepo = visibilityRepo;
@@ -38,7 +38,7 @@ public class RunOpportunityScanCommandHandler : IRequestHandler<RunOpportunitySc
         _visibilitySnapshotRepo = visibilitySnapshotRepo;
         _citationSnapshotRepo = citationSnapshotRepo;
         _snapshotRepo = snapshotRepo;
-        _openAiService = openAiService;
+        _aiCompletionService = aiCompletionService;
     }
 
     public async Task<RunOpportunityScanResult> Handle(RunOpportunityScanCommand request, CancellationToken cancellationToken)
@@ -74,8 +74,20 @@ public class RunOpportunityScanCommandHandler : IRequestHandler<RunOpportunitySc
             : new();
 
         var (systemPrompt, userPrompt) = BuildPrompt(profile, executiveSummary, latestScan, threats, weakPlatforms, citOpportunities);
-        var raw = await _openAiService.GenerateContentAsync(userPrompt, systemPrompt, requireJson: true);
-        var opportunities = ParseOpportunities(raw);
+        var completion = await _aiCompletionService.CompleteAsync(
+            orgId,
+            "opportunity.scan",
+            userPrompt,
+            systemPrompt,
+            requireJson: true,
+            preferredProviderKey: "openai",
+            cancellationToken);
+        if (!completion.Success)
+        {
+            return new RunOpportunityScanResult(false, completion.ErrorMessage ?? "Opportunity scan could not be completed because AI provider output was unavailable.");
+        }
+
+        var opportunities = ParseOpportunities(completion.Content);
 
         if (opportunities.Count == 0)
         {
@@ -224,4 +236,5 @@ public class RunOpportunityScanCommandHandler : IRequestHandler<RunOpportunitySc
 
         return results;
     }
+
 }

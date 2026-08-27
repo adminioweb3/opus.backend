@@ -8,12 +8,12 @@ namespace Citationly.Infrastructure.Services.Prompts;
 
 public class PromptEnrichmentService : IPromptEnrichmentService
 {
-    private readonly IOpenAiService _openAiService;
+    private readonly IAiCompletionService _aiCompletionService;
     private readonly IWebsiteRepository _websiteRepository;
 
-    public PromptEnrichmentService(IOpenAiService openAiService, IWebsiteRepository websiteRepository)
+    public PromptEnrichmentService(IAiCompletionService aiCompletionService, IWebsiteRepository websiteRepository)
     {
-        _openAiService = openAiService;
+        _aiCompletionService = aiCompletionService;
         _websiteRepository = websiteRepository;
     }
 
@@ -71,14 +71,18 @@ Return exactly this schema:
 }}
 ";
 
-        var responseContent = await _openAiService.GenerateContentAsync(
-            prompt: userPrompt,
-            systemPrompt: systemPrompt,
+        var organizationId = batch.FirstOrDefault()?.OrganizationId;
+        var completion = await _aiCompletionService.CompleteAsync(
+            organizationId,
+            "prompts.enrichment",
+            userPrompt,
+            systemPrompt,
             requireJson: true,
-            model: "gpt-4o-mini");
+            preferredProviderKey: "openai");
+        if (!completion.Success) return;
 
         // Clean up markdown just in case
-        responseContent = responseContent.Trim();
+        var responseContent = completion.Content.Trim();
         if (responseContent.StartsWith("```json"))
         {
             responseContent = responseContent.Substring(7);

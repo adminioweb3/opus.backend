@@ -28,9 +28,10 @@ public class BillingRepository : IBillingRepository
             new { OrganizationId = organizationId });
     }
 
-    public async Task<IEnumerable<Invoice>> GetInvoicesAsync(Guid organizationId)
+    public async Task<IEnumerable<Invoice>> GetInvoicesAsync(Guid organizationId, int limit = 100)
     {
         using var connection = _dbConnectionFactory.CreateConnection();
+        limit = Math.Clamp(limit, 1, 500);
         return await connection.QueryAsync<Invoice>(
             """
             SELECT Id, OrganizationId, StripeInvoiceId, AmountDueCents, AmountPaidCents,
@@ -38,8 +39,9 @@ public class BillingRepository : IBillingRepository
             FROM Invoices
             WHERE OrganizationId = @OrganizationId
             ORDER BY IssuedAt DESC NULLS LAST, CreatedAt DESC
+            LIMIT @Limit
             """,
-            new { OrganizationId = organizationId });
+            new { OrganizationId = organizationId, Limit = limit });
     }
 
     public async Task<IEnumerable<PaymentMethod>> GetPaymentMethodsAsync(Guid organizationId)

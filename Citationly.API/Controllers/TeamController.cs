@@ -3,8 +3,6 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Citationly.API.Services;
 using Citationly.Application.Features.Team;
-using Citationly.Application.Interfaces;
-using System.Security.Claims;
 
 namespace Citationly.API.Controllers;
 
@@ -14,20 +12,16 @@ namespace Citationly.API.Controllers;
 public class TeamController : ControllerBase
 {
     private readonly IMediator _mediator;
-    private readonly IUserRepository _userRepository;
+    private readonly ICurrentOrganizationAccessor _currentOrganization;
 
-    public TeamController(IMediator mediator, IUserRepository userRepository)
+    public TeamController(IMediator mediator, ICurrentOrganizationAccessor currentOrganization)
     {
         _mediator = mediator;
-        _userRepository = userRepository;
+        _currentOrganization = currentOrganization;
     }
 
     private async Task<(Guid UserId, Guid OrganizationId, string Role)?> GetCallerAsync()
-    {
-        var firebaseUid = User.FindFirst("user_id")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-        if (string.IsNullOrEmpty(firebaseUid)) return null;
-        return await _userRepository.GetUserByFirebaseUidAsync(firebaseUid);
-    }
+        => await _currentOrganization.GetCurrentUserAsync(User, HttpContext.RequestAborted);
 
     // Only Admins can invite, change roles, or remove members — everyone can view the list.
     private static bool CanManage(string role) => role == "Admin";

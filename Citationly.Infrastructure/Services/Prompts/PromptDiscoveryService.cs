@@ -22,7 +22,7 @@ namespace Citationly.Infrastructure.Services.Prompts;
 /// </summary>
 public class PromptDiscoveryService : IPromptDiscoveryService
 {
-    private readonly IOpenAiService _openAiService;
+    private readonly IAiCompletionService _aiCompletionService;
     private readonly IWebsiteRepository _websiteRepository;
 
     private const int TopicCount = 4; // business-line topics; the 5th is the fixed comparison topic
@@ -34,9 +34,9 @@ public class PromptDiscoveryService : IPromptDiscoveryService
     // is a hard cap regardless of how many the model returns.
     private const int RequestCount = 10;
 
-    public PromptDiscoveryService(IOpenAiService openAiService, IWebsiteRepository websiteRepository)
+    public PromptDiscoveryService(IAiCompletionService aiCompletionService, IWebsiteRepository websiteRepository)
     {
-        _openAiService = openAiService;
+        _aiCompletionService = aiCompletionService;
         _websiteRepository = websiteRepository;
     }
 
@@ -51,7 +51,7 @@ public class PromptDiscoveryService : IPromptDiscoveryService
             .Take(5)
             .ToList();
 
-        var topicNames = await DeriveTopicNamesAsync(businessName, ctx, systemPrompt);
+        var topicNames = await DeriveTopicNamesAsync(organizationId, businessName, ctx, systemPrompt);
 
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var entities = new List<AiSearchPrompt>();
@@ -59,11 +59,11 @@ public class PromptDiscoveryService : IPromptDiscoveryService
         // Topic 1 (fixed): head-to-head comparison. This is the one topic allowed to name the
         // business directly — that's the entire point of a comparison prompt.
         var comparisonTopic = $"{businessName} vs Competitors";
-        var comparisonItems = await DiscoverComparisonBatchAsync(businessName, competitorNames, ctx, systemPrompt);
+        var comparisonItems = await DiscoverComparisonBatchAsync(organizationId, businessName, competitorNames, ctx, systemPrompt);
         AppendTopic(entities, seen, organizationId, comparisonTopic, comparisonItems);
 
         // Topics 2-5: real business/service lines, generic non-branded prompts.
-        var batchTasks = topicNames.Select(name => DiscoverBusinessLineBatchAsync(businessName, name, ctx, systemPrompt));
+        var batchTasks = topicNames.Select(name => DiscoverBusinessLineBatchAsync(organizationId, businessName, name, ctx, systemPrompt));
         var batchResults = await Task.WhenAll(batchTasks);
 
         for (int i = 0; i < topicNames.Count; i++)
@@ -106,7 +106,7 @@ public class PromptDiscoveryService : IPromptDiscoveryService
     /// call fails or returns too few — never falls back to generic labels, since that's the exact
     /// defect being fixed here.
     /// </summary>
-    private async Task<List<string>> DeriveTopicNamesAsync(string businessName, CompanyProfileSummarizer.BiContext ctx, string systemPrompt)
+    private async Task<List<string>> DeriveTopicNamesAsync(Guid organizationId, string businessName, CompanyProfileSummarizer.BiContext ctx, string systemPrompt)
     {
         var userPrompt = $@"Business: {businessName}
 Industry: {ctx.Industry}
@@ -126,8 +126,16 @@ Return a JSON object whose ""topics"" key holds the array of {TopicCount} name s
 
         try
         {
-            var response = await _openAiService.GenerateContentAsync(userPrompt, systemPrompt, requireJson: true, model: "gpt-4o-mini");
-            var names = ExtractJsonArray<string>(response, "TopicNames", "topics")
+            var completion = await _aiCompletionService.CompleteAsync(
+                organizationId,
+                "prompts.topic_discovery",
+                userPrompt,
+                systemPrompt,
+                requireJson: true,
+                preferredProviderKey: "openai");
+            if (!completion.Success) return FillFromProfile(new List<string>(), ctx);
+
+            var names = ExtractJsonArray<string>(completion.Content, "TopicNames", "topics")
                 .Select(n => n?.Trim())
                 .Where(n => !string.IsNullOrWhiteSpace(n))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -176,7 +184,7 @@ Return a JSON object whose ""topics"" key holds the array of {TopicCount} name s
         return result.Take(TopicCount).ToList();
     }
 
-    private async Task<List<DiscoveryPromptItem>> DiscoverBusinessLineBatchAsync(string businessName, string topicName, CompanyProfileSummarizer.BiContext ctx, string systemPrompt)
+    private async Task<List<DiscoveryPromptItem>> DiscoverBusinessLineBatchAsync(Guid organizationId, string businessName, string topicName, CompanyProfileSummarizer.BiContext ctx, string systemPrompt)
     {
         var userPrompt = $@"
 You are an AI visibility research system.
@@ -418,10 +426,10 @@ Schema:
   ]
 }}
 ";
-        return await CallDiscoveryAsync(userPrompt, systemPrompt, topicName);
+        return await CallDiscoveryAsync(organizationId, userPrompt, systemPrompt, topicName);
     }
 
-    private async Task<List<DiscoveryPromptItem>> DiscoverComparisonBatchAsync(string businessName, List<string> competitorNames, CompanyProfileSummarizer.BiContext ctx, string systemPrompt)
+    private async Task<List<DiscoveryPromptItem>> DiscoverComparisonBatchAsync(Guid organizationId, string businessName, List<string> competitorNames, CompanyProfileSummarizer.BiContext ctx, string systemPrompt)
     {
         var competitorLine = competitorNames.Count > 0
             ? $"Real competitors to reference by name: {string.Join(", ", competitorNames)}."
@@ -460,19 +468,28 @@ Return exactly this schema:
   ]
 }}
 ";
-        return await CallDiscoveryAsync(userPrompt, systemPrompt, "vs Competitors");
+        return await CallDiscoveryAsync(organizationId, userPrompt, systemPrompt, "vs Competitors");
     }
 
-    private async Task<List<DiscoveryPromptItem>> CallDiscoveryAsync(string userPrompt, string systemPrompt, string logLabel)
+    private async Task<List<DiscoveryPromptItem>> CallDiscoveryAsync(Guid organizationId, string userPrompt, string systemPrompt, string logLabel)
     {
         string responseContent;
         try
         {
-            responseContent = await _openAiService.GenerateContentAsync(
-                prompt: userPrompt,
-                systemPrompt: systemPrompt,
+            var completion = await _aiCompletionService.CompleteAsync(
+                organizationId,
+                "prompts.discovery_batch",
+                userPrompt,
+                systemPrompt,
                 requireJson: true,
-                model: "gpt-4o-mini");
+                preferredProviderKey: "openai");
+            if (!completion.Success)
+            {
+                Console.WriteLine($"[Discovery] Batch '{logLabel}' failed: {completion.ErrorMessage}");
+                return new List<DiscoveryPromptItem>();
+            }
+
+            responseContent = completion.Content;
         }
         catch (Exception ex)
         {

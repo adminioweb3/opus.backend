@@ -83,12 +83,13 @@ public class DataLifecycleRepository : IDataLifecycleRepository
             policy);
     }
 
-    public async Task<IEnumerable<DataDeletionRequest>> GetDeletionRequestsAsync(Guid organizationId, CancellationToken cancellationToken = default)
+    public async Task<IEnumerable<DataDeletionRequest>> GetDeletionRequestsAsync(Guid organizationId, int limit = 100, CancellationToken cancellationToken = default)
     {
+        limit = Math.Clamp(limit, 1, 500);
         using var connection = _dbConnectionFactory.CreateConnection();
         return await connection.QueryAsync<DataDeletionRequest>(
-            "SELECT * FROM DataDeletionRequests WHERE OrganizationId = @OrganizationId ORDER BY RequestedAt DESC",
-            new { OrganizationId = organizationId });
+            "SELECT * FROM DataDeletionRequests WHERE OrganizationId = @OrganizationId ORDER BY RequestedAt DESC LIMIT @Limit",
+            new { OrganizationId = organizationId, Limit = limit });
     }
 
     public async Task<DataDeletionRequest> CreateDeletionRequestAsync(DataDeletionRequest request, CancellationToken cancellationToken = default)

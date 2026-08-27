@@ -3,6 +3,10 @@ using System.Reflection;
 using Citationly.Application.Behaviors;
 using Citationly.Application.Features.Assistant.Pipeline;
 using Citationly.Application.Features.Assistant.Services;
+using Citationly.Application.Interfaces;
+using Citationly.Application.Interfaces.Security;
+using Citationly.Application.Security;
+using Citationly.Application.Services;
 using MediatR;
 
 namespace Citationly.Application;
@@ -13,6 +17,7 @@ public static class DependencyInjection
     {
         services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(Assembly.GetExecutingAssembly()));
         services.AddTransient(typeof(IPipelineBehavior<,>), typeof(AiRequestContextBehavior<,>));
+        services.AddSingleton<IOutboundUrlSafetyValidator, OutboundUrlSafetyValidator>();
         
         // Assistant Pipeline Services
         services.AddScoped<OpenAiClientService>();
@@ -22,6 +27,7 @@ public static class DependencyInjection
         services.AddScoped<AnalyticsEngineService>();
         services.AddScoped<PromptBuilderService>();
         services.AddScoped<AgentOrchestrator>();
+        services.AddScoped<IAiCompletionService, AiCompletionService>();
         
         // Prompt Intelligence Services
         services.AddScoped<Citationly.Application.Features.PromptIntelligence.Services.ILLMRunnerService, Citationly.Application.Features.PromptIntelligence.Services.LLMRunnerService>();

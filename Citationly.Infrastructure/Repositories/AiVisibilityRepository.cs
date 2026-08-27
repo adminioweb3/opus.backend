@@ -23,9 +23,10 @@ public class AiVisibilityRepository : IAiVisibilityRepository
         return await connection.QuerySingleAsync<Guid>(sql, competitor);
     }
 
-    public async Task<List<Competitor>> GetCompetitorsByOrgAsync(Guid organizationId)
+    public async Task<List<Competitor>> GetCompetitorsByOrgAsync(Guid organizationId, int limit = 100)
     {
         using var connection = _dbConnectionFactory.CreateConnection();
+        limit = Math.Clamp(limit, 1, 500);
         var graphTablesExist = await connection.ExecuteScalarAsync<bool>(@"
             SELECT
                 EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'websites')
@@ -74,14 +75,15 @@ public class AiVisibilityRepository : IAiVisibilityRepository
                 FROM org_company oc
                 JOIN CompanyCompetitor cc ON cc.CompanyId = oc.CompanyId
                 JOIN Company c ON c.Id = cc.CompetitorCompanyId
-                ORDER BY cc.Rank, cc.Similarity DESC",
-                new { OrganizationId = organizationId })).ToList();
+                ORDER BY cc.Rank, cc.Similarity DESC
+                LIMIT @Limit",
+                new { OrganizationId = organizationId, Limit = limit })).ToList();
 
             if (graphResults.Count > 0) return graphResults;
         }
 
-        var sql = "SELECT * FROM Competitors WHERE OrganizationId = @OrganizationId ORDER BY Authority DESC;";
-        var results = await connection.QueryAsync<Competitor>(sql, new { OrganizationId = organizationId });
+        var sql = "SELECT * FROM Competitors WHERE OrganizationId = @OrganizationId ORDER BY Authority DESC LIMIT @Limit;";
+        var results = await connection.QueryAsync<Competitor>(sql, new { OrganizationId = organizationId, Limit = limit });
         return results.ToList();
     }
 
@@ -111,11 +113,19 @@ public class AiVisibilityRepository : IAiVisibilityRepository
         return await connection.QuerySingleAsync<Guid>(sql, scan);
     }
 
-    public async Task<List<HistoricalScan>> GetHistoricalScansByOrgAsync(Guid organizationId)
+    public async Task<List<HistoricalScan>> GetHistoricalScansByOrgAsync(Guid organizationId, int limit = 365)
     {
         using var connection = _dbConnectionFactory.CreateConnection();
-        var sql = "SELECT * FROM HistoricalScans WHERE OrganizationId = @OrganizationId ORDER BY ScanDate ASC;";
-        var results = await connection.QueryAsync<HistoricalScan>(sql, new { OrganizationId = organizationId });
+        limit = Math.Clamp(limit, 1, 1095);
+        var sql = @"
+            SELECT * FROM (
+                SELECT * FROM HistoricalScans
+                WHERE OrganizationId = @OrganizationId
+                ORDER BY ScanDate DESC
+                LIMIT @Limit
+            ) recent
+            ORDER BY ScanDate ASC;";
+        var results = await connection.QueryAsync<HistoricalScan>(sql, new { OrganizationId = organizationId, Limit = limit });
         return results.ToList();
     }
 
@@ -132,11 +142,19 @@ public class AiVisibilityRepository : IAiVisibilityRepository
         return await connection.QuerySingleAsync<Guid>(sql, share);
     }
 
-    public async Task<List<ShareOfVoice>> GetShareOfVoiceByOrgAsync(Guid organizationId)
+    public async Task<List<ShareOfVoice>> GetShareOfVoiceByOrgAsync(Guid organizationId, int limit = 1000)
     {
         using var connection = _dbConnectionFactory.CreateConnection();
-        var sql = "SELECT * FROM ShareOfVoice WHERE OrganizationId = @OrganizationId ORDER BY ScanDate ASC, SharePercentage DESC;";
-        var results = await connection.QueryAsync<ShareOfVoice>(sql, new { OrganizationId = organizationId });
+        limit = Math.Clamp(limit, 1, 5000);
+        var sql = @"
+            SELECT * FROM (
+                SELECT * FROM ShareOfVoice
+                WHERE OrganizationId = @OrganizationId
+                ORDER BY ScanDate DESC, SharePercentage DESC
+                LIMIT @Limit
+            ) recent
+            ORDER BY ScanDate ASC, SharePercentage DESC;";
+        var results = await connection.QueryAsync<ShareOfVoice>(sql, new { OrganizationId = organizationId, Limit = limit });
         return results.ToList();
     }
 
@@ -160,13 +178,14 @@ public class AiVisibilityRepository : IAiVisibilityRepository
         return await connection.QuerySingleAsync<Guid>(sql, pillar);
     }
 
-    public async Task<List<GeoPillar>> GetGeoPillarsByOrgAsync(Guid organizationId, DateOnly? fromDate = null)
+    public async Task<List<GeoPillar>> GetGeoPillarsByOrgAsync(Guid organizationId, DateOnly? fromDate = null, int limit = 1000)
     {
         using var connection = _dbConnectionFactory.CreateConnection();
+        limit = Math.Clamp(limit, 1, 5000);
         var sql = "SELECT * FROM GeoPillars WHERE OrganizationId = @OrganizationId";
         if (fromDate.HasValue) sql += " AND ScanDate >= @FromDate";
-        sql += " ORDER BY ScanDate ASC;";
-        var results = await connection.QueryAsync<GeoPillar>(sql, new { OrganizationId = organizationId, FromDate = fromDate });
+        sql += " ORDER BY ScanDate ASC LIMIT @Limit;";
+        var results = await connection.QueryAsync<GeoPillar>(sql, new { OrganizationId = organizationId, FromDate = fromDate, Limit = limit });
         return results.ToList();
     }
 
@@ -185,13 +204,14 @@ public class AiVisibilityRepository : IAiVisibilityRepository
         return await connection.QuerySingleAsync<Guid>(sql, coverage);
     }
 
-    public async Task<List<PromptCoverage>> GetPromptCoverageByOrgAsync(Guid organizationId, DateOnly? fromDate = null)
+    public async Task<List<PromptCoverage>> GetPromptCoverageByOrgAsync(Guid organizationId, DateOnly? fromDate = null, int limit = 1000)
     {
         using var connection = _dbConnectionFactory.CreateConnection();
+        limit = Math.Clamp(limit, 1, 5000);
         var sql = "SELECT * FROM PromptCoverages WHERE OrganizationId = @OrganizationId";
         if (fromDate.HasValue) sql += " AND ScanDate >= @FromDate";
-        sql += " ORDER BY ScanDate ASC;";
-        var results = await connection.QueryAsync<PromptCoverage>(sql, new { OrganizationId = organizationId, FromDate = fromDate });
+        sql += " ORDER BY ScanDate ASC LIMIT @Limit;";
+        var results = await connection.QueryAsync<PromptCoverage>(sql, new { OrganizationId = organizationId, FromDate = fromDate, Limit = limit });
         return results.ToList();
     }
 
@@ -208,55 +228,15 @@ public class AiVisibilityRepository : IAiVisibilityRepository
     public async Task<List<WinLossEvent>> GetWinLossEventsByOrgAsync(Guid organizationId, int limit = 10)
     {
         using var connection = _dbConnectionFactory.CreateConnection();
+        limit = Math.Clamp(limit, 1, 100);
         var sql = "SELECT * FROM WinLossEvents WHERE OrganizationId = @OrganizationId ORDER BY Timestamp DESC LIMIT @Limit;";
         var results = await connection.QueryAsync<WinLossEvent>(sql, new { OrganizationId = organizationId, Limit = limit });
         return results.ToList();
     }
 
-    public async Task EnsureGeoTablesCreatedAsync()
+    public Task EnsureGeoTablesCreatedAsync()
     {
-        using var connection = _dbConnectionFactory.CreateConnection();
-        var sql = @"
-            CREATE TABLE IF NOT EXISTS GeoPillars (
-                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                OrganizationId UUID NOT NULL,
-                ScanDate DATE NOT NULL,
-                PillarKey TEXT NOT NULL,
-                Label TEXT NOT NULL,
-                Description TEXT NOT NULL,
-                Score INT NOT NULL,
-                UNIQUE (OrganizationId, ScanDate, PillarKey)
-            );
-
-            CREATE TABLE IF NOT EXISTS PromptCoverages (
-                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                OrganizationId UUID NOT NULL,
-                ScanDate DATE NOT NULL,
-                PromptType TEXT NOT NULL,
-                Example TEXT NOT NULL,
-                Note TEXT NOT NULL,
-                Percentage INT NOT NULL,
-                Direction TEXT NOT NULL,
-                UNIQUE (OrganizationId, ScanDate, PromptType)
-            );
-
-            CREATE TABLE IF NOT EXISTS WinLossEvents (
-                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                OrganizationId UUID NOT NULL,
-                Timestamp TIMESTAMPTZ NOT NULL,
-                Type TEXT NOT NULL,
-                Title TEXT NOT NULL,
-                Engine TEXT NOT NULL
-            );
-        ";
-        await connection.ExecuteAsync(sql);
-
-        // Self-heal the timestamp column if it was created as timestamp without time zone
-        try 
-        {
-            await connection.ExecuteAsync("ALTER TABLE WinLossEvents ALTER COLUMN Timestamp TYPE TIMESTAMPTZ USING Timestamp AT TIME ZONE 'UTC';");
-        }
-        catch { /* Ignore if it's already TIMESTAMPTZ or fails */ }
+        return Task.CompletedTask;
     }
 
     public async Task<List<Guid>> GetAllOrganizationIdsAsync()

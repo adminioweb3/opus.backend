@@ -15,18 +15,15 @@ namespace Citationly.Application.Features.AnalysisEngine
         private readonly IAnalysisRepository _repository;
         private readonly IWebsiteRepository _websiteRepository;
         private readonly IScrapingJobRepository _scrapingRepository;
-        private readonly IOpenAiService _openAiService;
 
         public AnalysisOrchestrator(
             IAnalysisRepository repository,
             IWebsiteRepository websiteRepository,
-            IScrapingJobRepository scrapingRepository,
-            IOpenAiService openAiService)
+            IScrapingJobRepository scrapingRepository)
         {
             _repository = repository;
             _websiteRepository = websiteRepository;
             _scrapingRepository = scrapingRepository;
-            _openAiService = openAiService;
         }
 
         public async IAsyncEnumerable<string> ExecuteAnalysisStreamAsync(
@@ -92,106 +89,18 @@ namespace Citationly.Application.Features.AnalysisEngine
             yield return "Generating Prompts...";
             run.PromptsExecuted = 3;
 
-            // Step 5: Running OpenAI
-            yield return "Running OpenAI Analysis...";
-            string systemPrompt = "You are an expert AI Marketing Analyst evaluating the digital presence of a business.";
-            string prompt = $@"
-Evaluate the AI Search Engine visibility of the business '{businessName}' (URL: {profile.WebsiteUrl}).
-Competitors to compare against: {competitorContext}.
-
-Here is some context about {businessName} based on their website:
-{websiteContext}
-
-Please act as a search engine and answer this query from a customer's perspective: 
-'What are the best options for [infer industry from context] and how does {businessName} compare to {competitorContext}?'
-";
-
-            string aiResponse = await _openAiService.GenerateContentAsync(prompt, systemPrompt, false, "gpt-4o-mini");
-            run.ModelsUsed = "gpt-4o-mini";
-
-            // Step 6: Calculating Visibility & Health
-            yield return "Calculating Visibility & Citation Health...";
-
-            // Calculate pseudo metrics based on AI output
-            int visibilityScore = 40; // baseline
-            if (aiResponse.Contains(businessName, StringComparison.OrdinalIgnoreCase)) visibilityScore += 25;
-            if (aiResponse.Contains("best option", StringComparison.OrdinalIgnoreCase) || aiResponse.Contains("highly recommended", StringComparison.OrdinalIgnoreCase)) visibilityScore += 15;
-            if (aiResponse.Contains(profile.WebsiteUrl, StringComparison.OrdinalIgnoreCase)) visibilityScore += 10;
-
-            int citationHealth = Math.Min(95, visibilityScore + 5);
-
-            // Step 7: Generating Recommendations
-            yield return "Generating AI Recommendations...";
-
-            string jsonPrompt = $@"
-Based on the following AI visibility evaluation:
-'{aiResponse}'
-
-Generate a JSON object with the following schema:
-{{
-  ""executiveAlerts"": [
-    {{ ""title"": ""string"", ""estimatedImpact"": ""string"", ""description"": ""string"" }}
-  ],
-  ""recommendedActions"": [
-    {{ ""title"": ""string"", ""estimatedImpact"": ""string"", ""priority"": ""High"" }}
-  ]
-}}
-Only return valid JSON. Do not include markdown code blocks.
-";
-            string aiJsonOutput = await _openAiService.GenerateContentAsync(jsonPrompt, "You are a JSON generator. Return ONLY raw valid JSON.", true, "gpt-4o-mini");
-
-            string alertsJson = "[]";
-            string actionsJson = "[]";
-
-            try
-            {
-                using var doc = JsonDocument.Parse(aiJsonOutput);
-                var root = doc.RootElement;
-                if (root.TryGetProperty("executiveAlerts", out var alertsElem)) alertsJson = alertsElem.GetRawText();
-                if (root.TryGetProperty("recommendedActions", out var actionsElem)) actionsJson = actionsElem.GetRawText();
-            }
-            catch
-            {
-                // Fallback if JSON parsing fails
-                alertsJson = "[{\"title\": \"Improve AI Context\", \"estimatedImpact\": \"High\", \"description\": \"AI engines lack deep context about your offerings.\"}]";
-                actionsJson = "[{\"title\": \"Publish deeper service pages\", \"estimatedImpact\": \"+10% visibility\", \"priority\": \"High\"}]";
-            }
-
-            // Step 8: Updating Dashboard
-            yield return "Updating Dashboard...";
-
-            string platformJson = $@"[
-                {{""platform"": ""ChatGPT (OpenAI)"", ""score"": {visibilityScore}, ""citations"": {citationHealth}, ""change"": ""+2%"", ""bg"": ""#10A37F""}},
-                {{""platform"": ""Claude"", ""score"": {Math.Max(0, visibilityScore - 12)}, ""citations"": {Math.Max(0, citationHealth - 5)}, ""change"": ""-1%"", ""bg"": ""#D97757""}}
-            ]";
-
-            var snapshot = new DashboardSnapshot
-            {
-                OrganizationId = organizationId,
-                AnalysisRunId = run.Id,
-                VisibilityScore = visibilityScore,
-                CitationHealth = citationHealth,
-                RevenueImpact = visibilityScore > 70 ? "+$25K" : "-$5K",
-                CompetitorRisk = visibilityScore < 50 ? "High" : "Low",
-
-                PlatformVisibilitiesJson = platformJson,
-                TopCompetitorsJson = "[]",
-                OpportunityPipelineJson = $"{{\"revenue\": \"$40K\", \"traffic\": \"+12K\", \"citations\": {citationHealth}, \"authority\": 22, \"coverage\": {visibilityScore / 10}}}",
-                ExecutiveAlertsJson = alertsJson,
-                RecommendedActionsJson = actionsJson
-            };
-
-            await _repository.CreateDashboardSnapshotAsync(snapshot);
+            // Step 5: Legacy stream no longer publishes scores; keep it explicit and skip AI calls.
+            yield return "Skipping legacy AI analysis...";
+            run.ModelsUsed = "none";
 
             run.CompletedAt = DateTime.UtcNow;
-            run.Status = "Completed";
+            run.Status = "Unavailable";
             run.DurationSeconds = (int)(run.CompletedAt.Value - run.StartedAt.Value).TotalSeconds;
             run.PagesAnalyzed = pagesAnalyzed;
             run.CompetitorsCompared = competitorsCount;
-
             await _repository.UpdateAnalysisRunAsync(run);
 
-            yield return "Completed.";
+            yield return "Unavailable: this legacy analysis stream no longer publishes pseudo dashboard scores. Use the prompt intelligence and scan pipelines for evidence-backed scores.";
         }
     }
 }

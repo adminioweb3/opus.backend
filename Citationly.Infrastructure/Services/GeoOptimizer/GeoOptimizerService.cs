@@ -12,21 +12,21 @@ namespace Citationly.Infrastructure.Services.GeoOptimizer;
 
 public class GeoOptimizerService : IGeoOptimizerService
 {
-    private readonly IOpenAiService _openAiService;
+    private readonly IAiCompletionService _aiCompletionService;
     private readonly IScraperEngine _scraperEngine;
     private readonly IGeoTechnicalAuditService _geoTechnicalAuditService;
 
     public GeoOptimizerService(
-        IOpenAiService openAiService,
+        IAiCompletionService aiCompletionService,
         IScraperEngine scraperEngine,
         IGeoTechnicalAuditService geoTechnicalAuditService)
     {
-        _openAiService = openAiService;
+        _aiCompletionService = aiCompletionService;
         _scraperEngine = scraperEngine;
         _geoTechnicalAuditService = geoTechnicalAuditService;
     }
 
-    public async Task<GeoOptimizationResponse> AnalyzeAsync(GeoOptimizationRequest request)
+    public async Task<GeoOptimizationResponse> AnalyzeAsync(Guid organizationId, GeoOptimizationRequest request)
     {
         var textToAnalyze = request.Content;
         GeoTechnicalAuditResult? technicalAudit = null;
@@ -109,7 +109,19 @@ Return exactly 5 CitationGap items, one each for: statistics with sources, exper
 
         var userPrompt = $"Deterministic technical audit evidence:\n{deterministicEvidence}\n\nAnalyze the following content:\n\n{textToAnalyze}";
 
-        var jsonResponse = await _openAiService.GenerateContentAsync(userPrompt, systemPrompt, requireJson: true);
+        var completion = await _aiCompletionService.CompleteAsync(
+            organizationId,
+            "geo_optimizer.analyze",
+            userPrompt,
+            systemPrompt,
+            requireJson: true,
+            preferredProviderKey: "openai");
+        if (!completion.Success)
+        {
+            throw new Exception(completion.ErrorMessage ?? "GEO optimization analysis failed.");
+        }
+
+        var jsonResponse = completion.Content;
 
         try
         {
@@ -125,7 +137,7 @@ Return exactly 5 CitationGap items, one each for: statistics with sources, exper
         }
     }
 
-    public async Task<SchemaGenerationResponse> GenerateSchemaAsync(SchemaGenerationRequest request)
+    public async Task<SchemaGenerationResponse> GenerateSchemaAsync(Guid organizationId, SchemaGenerationRequest request)
     {
         var textToAnalyze = request.Content;
 
@@ -152,7 +164,19 @@ Return ONLY valid JSON. Do not wrap it in markdown code blocks like ```json ... 
 
         var userPrompt = $"Generate {request.SchemaType} schema for the following content:\n\n{textToAnalyze}";
 
-        var jsonResponse = await _openAiService.GenerateContentAsync(userPrompt, systemPrompt, requireJson: true);
+        var completion = await _aiCompletionService.CompleteAsync(
+            organizationId,
+            "geo_optimizer.generate_schema",
+            userPrompt,
+            systemPrompt,
+            requireJson: true,
+            preferredProviderKey: "openai");
+        if (!completion.Success)
+        {
+            throw new Exception(completion.ErrorMessage ?? "Schema generation failed.");
+        }
+
+        var jsonResponse = completion.Content;
         
         // Strip markdown backticks if OpenAI still includes them
         if (jsonResponse.StartsWith("```json"))

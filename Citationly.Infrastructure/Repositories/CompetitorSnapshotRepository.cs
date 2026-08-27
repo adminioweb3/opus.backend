@@ -13,32 +13,9 @@ public class CompetitorSnapshotRepository : ICompetitorSnapshotRepository
         _dbConnectionFactory = dbConnectionFactory;
     }
 
-    public async Task EnsureTableCreatedAsync()
+    public Task EnsureTableCreatedAsync()
     {
-        using var connection = _dbConnectionFactory.CreateConnection();
-        await connection.ExecuteAsync(@"
-            CREATE TABLE IF NOT EXISTS CompetitorSnapshots (
-                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                OrganizationId UUID NOT NULL,
-                CompetitorId UUID,
-                IsYou BOOLEAN NOT NULL DEFAULT false,
-                ScanDate DATE NOT NULL,
-                Name VARCHAR(255) NOT NULL,
-                Score INT NOT NULL DEFAULT 0,
-                Rank INT NOT NULL DEFAULT 0,
-                ShareOfVoice INT NOT NULL DEFAULT 0,
-                ShareOfVoiceChange INT NOT NULL DEFAULT 0,
-                Visibility INT NOT NULL DEFAULT 0,
-                VisibilityChange INT NOT NULL DEFAULT 0,
-                Threat VARCHAR(10) NOT NULL DEFAULT 'low',
-                ModelsJson JSONB NOT NULL DEFAULT '{}'::jsonb,
-                Tagline VARCHAR(512),
-                WebsiteUrl VARCHAR(500),
-                CreatedAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE INDEX IF NOT EXISTS idx_competitorsnapshots_org_scandate ON CompetitorSnapshots (OrganizationId, ScanDate);
-            ALTER TABLE CompetitorSnapshots ADD COLUMN IF NOT EXISTS WebsiteUrl VARCHAR(500);
-        ");
+        return Task.CompletedTask;
     }
 
     public async Task<Guid> InsertSnapshotAsync(CompetitorSnapshot snapshot)

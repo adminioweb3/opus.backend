@@ -7,12 +7,12 @@ namespace Citationly.Infrastructure.Services;
 
 public class WebsiteAiAnalysisService : IAiAnalysisService
 {
-    private readonly IOpenAiService _openAiService;
+    private readonly IAiCompletionService _aiCompletionService;
     private readonly IEmbeddingService _embeddingService;
 
-    public WebsiteAiAnalysisService(IOpenAiService openAiService, IEmbeddingService embeddingService)
+    public WebsiteAiAnalysisService(IAiCompletionService aiCompletionService, IEmbeddingService embeddingService)
     {
-        _openAiService = openAiService;
+        _aiCompletionService = aiCompletionService;
         _embeddingService = embeddingService;
     }
 
@@ -45,8 +45,16 @@ Return ONLY valid JSON, no markdown:
 
         try
         {
-            var response = await _openAiService.GenerateContentAsync(userPrompt, systemPrompt, requireJson: true, model: "gpt-4o-mini");
-            var parsed = JsonSerializer.Deserialize<RecommendationResponse>(StripFences(response), JsonOpts);
+            var completion = await _aiCompletionService.CompleteAsync(
+                null,
+                "website.page_analysis",
+                userPrompt,
+                systemPrompt,
+                requireJson: true,
+                preferredProviderKey: "openai");
+            if (!completion.Success) return Enumerable.Empty<Recommendation>();
+
+            var parsed = JsonSerializer.Deserialize<RecommendationResponse>(StripFences(completion.Content), JsonOpts);
             return parsed?.Recommendations?.Select(r => new Recommendation
             {
                 Title = r.Title ?? "Untitled recommendation",

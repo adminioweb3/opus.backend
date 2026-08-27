@@ -1,5 +1,3 @@
-using System.Security.Claims;
-using Citationly.Application.Interfaces;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
 
@@ -33,15 +31,8 @@ public sealed class RequireOrgRoleAttribute : Attribute, IAsyncAuthorizationFilt
             return;
         }
 
-        var firebaseUid = user.FindFirst("user_id")?.Value ?? user.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? user.FindFirst("sub")?.Value;
-        if (string.IsNullOrWhiteSpace(firebaseUid))
-        {
-            context.Result = new UnauthorizedObjectResult(new { message = "Authenticated user is missing an identity claim." });
-            return;
-        }
-
-        var users = context.HttpContext.RequestServices.GetRequiredService<IUserRepository>();
-        var caller = await users.GetUserByFirebaseUidAsync(firebaseUid);
+        var currentOrganization = context.HttpContext.RequestServices.GetRequiredService<ICurrentOrganizationAccessor>();
+        var caller = await currentOrganization.GetCurrentUserAsync(user, context.HttpContext.RequestAborted);
         if (caller == null)
         {
             context.Result = new UnauthorizedObjectResult(new { message = "User not found or unlinked." });

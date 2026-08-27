@@ -129,7 +129,7 @@ public class GenerateRecommendationsCommandHandler : IRequestHandler<GenerateRec
 
             // 3. Recommendation Discovery (AI - Lightweight)
             var discoveredRecs = await _discoveryService.DiscoverRecommendationsAsync(
-                gapAnalysis, profile.WebsiteUrl, profile.RawProfileJson);
+                request.OrganizationId, gapAnalysis, profile.WebsiteUrl, profile.RawProfileJson);
 
             if (discoveredRecs == null || !discoveredRecs.Any())
             {

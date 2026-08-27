@@ -11,14 +11,14 @@ public class RecommendationDiscoveryResponseWrapper
 
 public class RecommendationDiscoveryService : IRecommendationDiscoveryService
 {
-    private readonly IOpenAiService _openAiService;
+    private readonly IAiCompletionService _aiCompletionService;
 
-    public RecommendationDiscoveryService(IOpenAiService openAiService)
+    public RecommendationDiscoveryService(IAiCompletionService aiCompletionService)
     {
-        _openAiService = openAiService;
+        _aiCompletionService = aiCompletionService;
     }
 
-    public async Task<List<DiscoveryRecommendationDto>> DiscoverRecommendationsAsync(GapAnalysisResult gapAnalysis, string websiteUrl, string rawProfileJson)
+    public async Task<List<DiscoveryRecommendationDto>> DiscoverRecommendationsAsync(Guid organizationId, GapAnalysisResult gapAnalysis, string websiteUrl, string rawProfileJson)
     {
         var systemPrompt = "You are an expert in Generative Engine Optimization (GEO) and AI Search Optimization. Generate highly focused, actionable recommendations based on the provided gaps.";
 
@@ -58,13 +58,16 @@ Return ONLY valid JSON in the exact schema below. Do NOT wrap in markdown blocks
   ]
 }}";
 
-        var responseContent = await _openAiService.GenerateContentAsync(
-            prompt: userPrompt,
-            systemPrompt: systemPrompt,
+        var completion = await _aiCompletionService.CompleteAsync(
+            organizationId,
+            "onboarding.recommendation_discovery",
+            userPrompt,
+            systemPrompt,
             requireJson: true,
-            model: "gpt-4o-mini"); // Fast, cheap model since task is simplified
+            preferredProviderKey: "openai");
+        if (!completion.Success) return new List<DiscoveryRecommendationDto>();
 
-        responseContent = responseContent.Trim();
+        var responseContent = completion.Content.Trim();
         if (responseContent.StartsWith("```json"))
         {
             responseContent = responseContent.Substring(7);

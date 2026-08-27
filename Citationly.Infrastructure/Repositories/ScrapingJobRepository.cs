@@ -70,21 +70,23 @@ public class ScrapingJobRepository : IScrapingJobRepository
         await connection.ExecuteAsync("DELETE FROM ScrapingJobs WHERE Id = @Id;", new { Id = jobId });
     }
 
-    public async Task<List<ScrapingJob>> GetAllJobsByOrgAsync(Guid organizationId)
+    public async Task<List<ScrapingJob>> GetAllJobsByOrgAsync(Guid organizationId, int limit = 100)
     {
         using var connection = _dbConnectionFactory.CreateConnection();
+        limit = Math.Clamp(limit, 1, 500);
         var results = await connection.QueryAsync<ScrapingJob>(
-            "SELECT * FROM ScrapingJobs WHERE OrganizationId = @OrganizationId ORDER BY CreatedAt DESC;",
-            new { OrganizationId = organizationId });
+            "SELECT * FROM ScrapingJobs WHERE OrganizationId = @OrganizationId ORDER BY CreatedAt DESC LIMIT @Limit;",
+            new { OrganizationId = organizationId, Limit = limit });
         return results.ToList();
     }
 
-    public async Task<List<ScrapingJob>> GetJobsByOrgAndKbAsync(Guid organizationId, Guid knowledgeBaseId)
+    public async Task<List<ScrapingJob>> GetJobsByOrgAndKbAsync(Guid organizationId, Guid knowledgeBaseId, int limit = 100)
     {
         using var connection = _dbConnectionFactory.CreateConnection();
+        limit = Math.Clamp(limit, 1, 500);
         var results = await connection.QueryAsync<ScrapingJob>(
-            "SELECT * FROM ScrapingJobs WHERE OrganizationId = @OrganizationId AND KnowledgeBaseId = @KnowledgeBaseId ORDER BY CreatedAt DESC;",
-            new { OrganizationId = organizationId, KnowledgeBaseId = knowledgeBaseId });
+            "SELECT * FROM ScrapingJobs WHERE OrganizationId = @OrganizationId AND KnowledgeBaseId = @KnowledgeBaseId ORDER BY CreatedAt DESC LIMIT @Limit;",
+            new { OrganizationId = organizationId, KnowledgeBaseId = knowledgeBaseId, Limit = limit });
         return results.ToList();
     }
 
@@ -113,24 +115,27 @@ public class ScrapingJobRepository : IScrapingJobRepository
         return await connection.QuerySingleAsync<Guid>(sql, page);
     }
 
-    public async Task<List<ScrapedPage>> GetPagesByJobIdAsync(Guid jobId)
+    public async Task<List<ScrapedPage>> GetPagesByJobIdAsync(Guid jobId, int limit = 250)
     {
         using var connection = _dbConnectionFactory.CreateConnection();
+        limit = Math.Clamp(limit, 1, 1000);
         var results = await connection.QueryAsync<ScrapedPage>(
-            "SELECT * FROM ScrapedPages WHERE JobId = @JobId ORDER BY ScrapedAt;",
-            new { JobId = jobId });
+            "SELECT * FROM ScrapedPages WHERE JobId = @JobId ORDER BY ScrapedAt LIMIT @Limit;",
+            new { JobId = jobId, Limit = limit });
         return results.ToList();
     }
 
-    public async Task<List<ScrapedPage>> GetPagesByKnowledgeBaseAsync(Guid organizationId, Guid knowledgeBaseId)
+    public async Task<List<ScrapedPage>> GetPagesByKnowledgeBaseAsync(Guid organizationId, Guid knowledgeBaseId, int limit = 250)
     {
         using var connection = _dbConnectionFactory.CreateConnection();
+        limit = Math.Clamp(limit, 1, 1000);
         var results = await connection.QueryAsync<ScrapedPage>(
             @"SELECT sp.* FROM ScrapedPages sp
               JOIN ScrapingJobs sj ON sp.JobId = sj.Id
               WHERE sj.OrganizationId = @OrganizationId AND sj.KnowledgeBaseId = @KnowledgeBaseId
-              ORDER BY sp.ScrapedAt DESC;",
-            new { OrganizationId = organizationId, KnowledgeBaseId = knowledgeBaseId });
+              ORDER BY sp.ScrapedAt DESC
+              LIMIT @Limit;",
+            new { OrganizationId = organizationId, KnowledgeBaseId = knowledgeBaseId, Limit = limit });
         return results.ToList();
     }
 

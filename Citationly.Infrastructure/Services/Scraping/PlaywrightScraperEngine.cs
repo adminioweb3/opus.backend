@@ -1,6 +1,7 @@
 using Microsoft.Playwright;
 using HtmlAgilityPack;
 using Citationly.Application.Interfaces;
+using Citationly.Application.Interfaces.Security;
 using Citationly.Domain.Entities;
 using System.Text;
 using System.Text.Json;
@@ -11,14 +12,23 @@ namespace Citationly.Infrastructure.Services.Scraping;
 public class PlaywrightScraperEngine : IScraperEngine
 {
     private readonly IMarkdownGeneratorService _markdownGenerator;
+    private readonly IOutboundUrlSafetyValidator _urlSafetyValidator;
 
-    public PlaywrightScraperEngine(IMarkdownGeneratorService markdownGenerator)
+    public PlaywrightScraperEngine(IMarkdownGeneratorService markdownGenerator, IOutboundUrlSafetyValidator urlSafetyValidator)
     {
         _markdownGenerator = markdownGenerator;
+        _urlSafetyValidator = urlSafetyValidator;
     }
 
     public async Task<ScrapedPage> ScrapeSinglePageAsync(string url, Guid jobId)
     {
+        var urlSafety = await _urlSafetyValidator.ValidateForHttpFetchAsync(url, allowMissingScheme: true);
+        if (!urlSafety.IsAllowed)
+        {
+            throw new InvalidOperationException(urlSafety.Reason ?? "URL is not allowed.");
+        }
+
+        url = urlSafety.NormalizedUrl!;
         using var playwright = await Playwright.CreateAsync();
         // --no-sandbox is required to run headless Chromium as root in Docker (the default here) —
         // Chromium's sandbox needs Linux namespace privileges containers don't grant without extra
@@ -29,6 +39,7 @@ public class PlaywrightScraperEngine : IScraperEngine
             Args = new[] { "--no-sandbox", "--disable-setuid-sandbox" }
         });
         var page = await browser.NewPageAsync();
+        await AttachUrlSafetyRouteAsync(page);
 
         try
         {
@@ -47,6 +58,13 @@ public class PlaywrightScraperEngine : IScraperEngine
 
     public async Task<List<ScrapedPage>> ScrapeWebsiteAsync(string startUrl, Guid jobId, int maxPages, Action<int>? progressCallback = null)
     {
+        var startUrlSafety = await _urlSafetyValidator.ValidateForHttpFetchAsync(startUrl, allowMissingScheme: true);
+        if (!startUrlSafety.IsAllowed)
+        {
+            throw new InvalidOperationException(startUrlSafety.Reason ?? "URL is not allowed.");
+        }
+
+        startUrl = startUrlSafety.NormalizedUrl!;
         var visitedUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var queue = new Queue<string>();
         var results = new List<ScrapedPage>();
@@ -72,7 +90,12 @@ public class PlaywrightScraperEngine : IScraperEngine
 
             try
             {
+                var urlSafety = await _urlSafetyValidator.ValidateForHttpFetchAsync(url, allowMissingScheme: true);
+                if (!urlSafety.IsAllowed) continue;
+                url = urlSafety.NormalizedUrl!;
+
                 var page = await browser.NewPageAsync();
+                await AttachUrlSafetyRouteAsync(page);
                 try
                 {
                     await page.GotoAsync(url, new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle, Timeout = 30000 });
@@ -119,6 +142,21 @@ public class PlaywrightScraperEngine : IScraperEngine
     }
 
     // ── Core parser: HTML → ScrapedPage with rich Markdown ──────────────────
+
+    private async Task AttachUrlSafetyRouteAsync(IPage page)
+    {
+        await page.RouteAsync("**/*", async route =>
+        {
+            var safety = await _urlSafetyValidator.ValidateForHttpFetchAsync(route.Request.Url, allowMissingScheme: false);
+            if (!safety.IsAllowed)
+            {
+                await route.AbortAsync();
+                return;
+            }
+
+            await route.ContinueAsync();
+        });
+    }
 
     private ScrapedPage ParsePageToScrapedPage(string url, Guid jobId, string title, string html)
     {

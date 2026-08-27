@@ -115,13 +115,12 @@ public class PublicV1Controller : ControllerBase
             return (organizationId, StatusCode(403, new { error = "Public API access is not enabled for this plan." }));
         }
 
-        var quota = await _entitlements.CheckQuotaAsync(organizationId, PublicApiMetric, HttpContext.RequestAborted);
+        var quota = await _entitlements.TryConsumeUsageAsync(organizationId, PublicApiMetric, 1, HttpContext.RequestAborted);
         if (!quota.IsWithinLimit)
         {
             return (organizationId, StatusCode(429, new { error = "Public API daily quota exceeded.", quota.CurrentUsage, quota.Limit }));
         }
 
-        await _entitlements.ConsumeUsageAsync(organizationId, PublicApiMetric, 1, HttpContext.RequestAborted);
         return (organizationId, null);
     }
 }

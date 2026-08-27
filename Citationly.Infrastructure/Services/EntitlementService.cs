@@ -81,6 +81,8 @@ public sealed class EntitlementService : IEntitlementService
 
     public async Task ConsumeUsageAsync(Guid organizationId, string metricKey, long amount = 1, CancellationToken cancellationToken = default)
     {
+        if (amount <= 0) throw new ArgumentOutOfRangeException(nameof(amount), "Usage amount must be positive.");
+
         var (periodStart, periodEnd) = GetCurrentDailyPeriod();
         using var connection = _dbConnectionFactory.CreateConnection();
 
@@ -92,6 +94,41 @@ public sealed class EntitlementService : IEntitlementService
             DO UPDATE SET Count = UsageCounters.Count + @Amount, UpdatedAt = CURRENT_TIMESTAMP
             """,
             new { OrganizationId = organizationId, MetricKey = metricKey, PeriodStart = periodStart, PeriodEnd = periodEnd, Amount = amount });
+    }
+
+    public async Task<UsageQuotaStatus> TryConsumeUsageAsync(Guid organizationId, string metricKey, long amount = 1, CancellationToken cancellationToken = default)
+    {
+        if (amount <= 0) throw new ArgumentOutOfRangeException(nameof(amount), "Usage amount must be positive.");
+
+        var limit = await GetPlanLimitValueAsync(organizationId, metricKey, cancellationToken);
+        var (periodStart, periodEnd) = GetCurrentDailyPeriod();
+        using var connection = _dbConnectionFactory.CreateConnection();
+
+        var reservedCount = await connection.ExecuteScalarAsync<long?>(
+            """
+            WITH reserved AS (
+                INSERT INTO UsageCounters (OrganizationId, MetricKey, PeriodStart, PeriodEnd, Count, UpdatedAt)
+                SELECT @OrganizationId, @MetricKey, @PeriodStart, @PeriodEnd, @Amount, CURRENT_TIMESTAMP
+                WHERE @Limit IS NULL OR @Amount <= @Limit
+                ON CONFLICT (OrganizationId, MetricKey, PeriodStart)
+                DO UPDATE SET Count = UsageCounters.Count + @Amount, PeriodEnd = @PeriodEnd, UpdatedAt = CURRENT_TIMESTAMP
+                WHERE @Limit IS NULL OR UsageCounters.Count + @Amount <= @Limit
+                RETURNING Count
+            )
+            SELECT Count FROM reserved
+            """,
+            new { OrganizationId = organizationId, MetricKey = metricKey, PeriodStart = periodStart, PeriodEnd = periodEnd, Amount = amount, Limit = limit });
+
+        if (reservedCount.HasValue)
+        {
+            return new UsageQuotaStatus(true, reservedCount.Value, limit);
+        }
+
+        var currentUsage = await connection.ExecuteScalarAsync<long?>(
+            "SELECT Count FROM UsageCounters WHERE OrganizationId = @OrganizationId AND MetricKey = @MetricKey AND PeriodStart = @PeriodStart",
+            new { OrganizationId = organizationId, MetricKey = metricKey, PeriodStart = periodStart }) ?? 0;
+
+        return new UsageQuotaStatus(false, currentUsage, limit);
     }
 
     private static (DateTime PeriodStart, DateTime PeriodEnd) GetCurrentDailyPeriod()

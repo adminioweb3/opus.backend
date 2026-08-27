@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Citationly.API.Services;
 using Citationly.Application.Features.Onboarding;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace Citationly.API.Controllers;
 
@@ -356,6 +357,7 @@ public class OnboardingController : ControllerBase
     }
 
     [AllowAnonymous]
+    [EnableRateLimiting("AnonymousAI")]
     [HttpPost("suggest-keywords")]
     public async Task<IActionResult> SuggestKeywords([FromBody] SuggestKeywordsRequest request)
     {
@@ -374,6 +376,7 @@ public class OnboardingController : ControllerBase
     }
 
     [AllowAnonymous]
+    [EnableRateLimiting("AnonymousAI")]
     [HttpPost("detect-industry")]
     public async Task<IActionResult> DetectIndustry([FromBody] DetectIndustryRequest request)
     {
@@ -391,6 +394,7 @@ public class OnboardingController : ControllerBase
     }
 
     [AllowAnonymous]
+    [EnableRateLimiting("AnonymousAI")]
     [HttpPost("detect-offering")]
     public async Task<IActionResult> DetectOffering([FromBody] DetectIndustryRequest request)
     {

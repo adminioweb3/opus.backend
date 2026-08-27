@@ -19,20 +19,20 @@ public class RunVisibilityScanCommandHandler : IRequestHandler<RunVisibilityScan
     private readonly IVisibilityScoringService _scoringService;
     private readonly IVisibilityRankingService _rankingService;
     private readonly IVisibilitySnapshotRepository _snapshotRepo;
-    private readonly IOpenAiService _openAiService;
+    private readonly IAiCompletionService _aiCompletionService;
 
     public RunVisibilityScanCommandHandler(
         IWebsiteRepository websiteRepository,
         IVisibilityScoringService scoringService,
         IVisibilityRankingService rankingService,
         IVisibilitySnapshotRepository snapshotRepo,
-        IOpenAiService openAiService)
+        IAiCompletionService aiCompletionService)
     {
         _websiteRepository = websiteRepository;
         _scoringService = scoringService;
         _rankingService = rankingService;
         _snapshotRepo = snapshotRepo;
-        _openAiService = openAiService;
+        _aiCompletionService = aiCompletionService;
     }
 
     public async Task<RunVisibilityScanResult> Handle(RunVisibilityScanCommand request, CancellationToken cancellationToken)
@@ -56,7 +56,11 @@ public class RunVisibilityScanCommandHandler : IRequestHandler<RunVisibilityScan
         var appearingPrompts = prompts.Count(p => p.AppearsInAnswer);
         var totalScoreWeight = Math.Max(1, platformScores.Sum(p => p.VisibilityScore));
 
-        var signalMix = await JudgeSignalMixAsync(profile, summary.OverallVisibilityScore);
+        var signalMix = await JudgeSignalMixAsync(orgId, profile, summary.OverallVisibilityScore, cancellationToken);
+        if (signalMix is null)
+        {
+            return new RunVisibilityScanResult(false, "Visibility scan could not be completed because AI signal-mix estimates were unavailable.");
+        }
 
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         await _snapshotRepo.DeleteByScanDateAsync(orgId, today);
@@ -99,7 +103,7 @@ public class RunVisibilityScanCommandHandler : IRequestHandler<RunVisibilityScan
 
     private record SignalMix(int Direct, int Mentions, int Indirect, int Comparative);
 
-    private async Task<SignalMix> JudgeSignalMixAsync(WebsiteProfile? profile, int compositeScore)
+    private async Task<SignalMix?> JudgeSignalMixAsync(Guid organizationId, WebsiteProfile? profile, int compositeScore, CancellationToken cancellationToken)
     {
         var systemPrompt =
             "You analyze how a brand's presence in AI search answers breaks down by citation type. " +
@@ -114,7 +118,17 @@ public class RunVisibilityScanCommandHandler : IRequestHandler<RunVisibilityScan
 
         try
         {
-            var raw = await _openAiService.GenerateContentAsync(userPrompt, systemPrompt, requireJson: true);
+            var completion = await _aiCompletionService.CompleteAsync(
+                organizationId,
+                "visibility.scan.signal_mix",
+                userPrompt,
+                systemPrompt,
+                requireJson: true,
+                preferredProviderKey: "openai",
+                cancellationToken);
+            if (!completion.Success) return null;
+
+            var raw = completion.Content;
             using var doc = JsonDocument.Parse(raw);
             var root = doc.RootElement;
 
@@ -143,7 +157,7 @@ public class RunVisibilityScanCommandHandler : IRequestHandler<RunVisibilityScan
         }
         catch (Exception)
         {
-            return new SignalMix(55, 25, 13, 7);
+            return null;
         }
     }
 }

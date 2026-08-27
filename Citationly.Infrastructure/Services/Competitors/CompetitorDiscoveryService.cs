@@ -75,18 +75,18 @@ public class CompetitorDiscoveryService : ICompetitorDiscoveryService
     private const int ObservedLookbackDays = 90;
 
     private readonly ICompanySimilarityService _similarityService;
-    private readonly IOpenAiService _openAiService;
+    private readonly IAiCompletionService _aiCompletionService;
     private readonly ICompanyRepository _companyRepository;
     private readonly IPromptIntelligenceRepository _promptIntelligenceRepository;
 
     public CompetitorDiscoveryService(
         ICompanySimilarityService similarityService,
-        IOpenAiService openAiService,
+        IAiCompletionService aiCompletionService,
         ICompanyRepository companyRepository,
         IPromptIntelligenceRepository promptIntelligenceRepository)
     {
         _similarityService = similarityService;
-        _openAiService = openAiService;
+        _aiCompletionService = aiCompletionService;
         _companyRepository = companyRepository;
         _promptIntelligenceRepository = promptIntelligenceRepository;
     }
@@ -103,7 +103,7 @@ public class CompetitorDiscoveryService : ICompetitorDiscoveryService
         LogThresholdOutcome(pool, candidates.Count);
 
         var graphEdges = candidates.Count > 0
-            ? await RankGraphCandidatesAsync(companyId, businessName, rawProfileJson, candidates)
+            ? await RankGraphCandidatesAsync(organizationId, companyId, businessName, rawProfileJson, candidates)
             : new List<CompanyCompetitor>();
         foreach (var edge in graphEdges) edge.DiscoverySource = "graph";
 
@@ -131,6 +131,7 @@ public class CompetitorDiscoveryService : ICompetitorDiscoveryService
                 : GeneratedTopSimilarity;
 
             var generated = await GenerateCompetitorsAsync(
+                organizationId,
                 companyId,
                 businessName,
                 rawProfileJson,
@@ -251,6 +252,7 @@ public class CompetitorDiscoveryService : ICompetitorDiscoveryService
     }
 
     private async Task<List<CompanyCompetitor>> RankGraphCandidatesAsync(
+        Guid organizationId,
         Guid companyId,
         string businessName,
         string rawProfileJson,
@@ -258,7 +260,7 @@ public class CompetitorDiscoveryService : ICompetitorDiscoveryService
     {
         var candidatesById = candidates.ToDictionary(c => c.Company.Id, c => c);
 
-        var selections = await SelectAndExplainAsync(businessName, rawProfileJson, candidates);
+        var selections = await SelectAndExplainAsync(organizationId, businessName, rawProfileJson, candidates);
 
         // Enforce "never invent" in code, not just in the prompt — drop anything the model
         // returned that isn't literally one of the ids we handed it.
@@ -429,6 +431,7 @@ public class CompetitorDiscoveryService : ICompetitorDiscoveryService
     }
 
     private async Task<List<Selection>> SelectAndExplainAsync(
+        Guid organizationId,
         string businessName,
         string rawProfileJson,
         List<(Company Company, double CosineSimilarity)> candidates)
@@ -467,7 +470,20 @@ Return a JSON object whose ""selections"" key holds the array, with companyId co
         string responseContent;
         try
         {
-            responseContent = await _openAiService.GenerateContentAsync(userPrompt, systemPrompt, true, "gpt-4o-mini");
+            var completion = await _aiCompletionService.CompleteAsync(
+                organizationId,
+                "competitors.graph_candidate_ranking",
+                userPrompt,
+                systemPrompt,
+                requireJson: true,
+                preferredProviderKey: "openai");
+            if (!completion.Success)
+            {
+                Console.WriteLine($"[Discovery] Ranking call failed: {completion.ErrorMessage}");
+                return new List<Selection>();
+            }
+
+            responseContent = completion.Content;
         }
         catch (Exception ex)
         {
@@ -498,6 +514,7 @@ Return a JSON object whose ""selections"" key holds the array, with companyId co
     /// itself analyzed), so repeat generations across orgs converge on the same rows.
     /// </summary>
     private async Task<List<CompanyCompetitor>> GenerateCompetitorsAsync(
+        Guid organizationId,
         Guid companyId,
         string businessName,
         string rawProfileJson,
@@ -553,8 +570,21 @@ Return a JSON object whose ""competitors"" key holds the array:
         try
         {
             Console.WriteLine($"[Discovery] Asking AI for {count + GenerationHeadroom} competitors (need {count})...");
-            var responseContent = await _openAiService.GenerateContentAsync(
-                userPrompt, systemPrompt, requireJson: true, model: "gpt-4o-mini");
+            var completion = await _aiCompletionService.CompleteAsync(
+                organizationId,
+                "competitors.cold_start_generation",
+                userPrompt,
+                systemPrompt,
+                requireJson: true,
+                preferredProviderKey: "openai",
+                cancellationToken);
+            if (!completion.Success)
+            {
+                Console.WriteLine($"[Discovery] Generation call failed: {completion.ErrorMessage}");
+                return new List<CompanyCompetitor>();
+            }
+
+            var responseContent = completion.Content;
 
             Console.WriteLine($"[Discovery] AI raw response: {responseContent[..Math.Min(300, responseContent.Length)]}");
             generated = ExtractJsonArray<ColdStartCompetitor>(responseContent, "Generation");

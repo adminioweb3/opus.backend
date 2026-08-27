@@ -7,11 +7,11 @@ namespace Citationly.Infrastructure.Services.Citations;
 
 public class CitationDiscoveryService : ICitationDiscoveryService
 {
-    private readonly IOpenAiService _openRouterService;
+    private readonly IAiCompletionService _aiCompletionService;
 
-    public CitationDiscoveryService(IOpenAiService openRouterService)
+    public CitationDiscoveryService(IAiCompletionService aiCompletionService)
     {
-        _openRouterService = openRouterService;
+        _aiCompletionService = aiCompletionService;
     }
 
     public async Task<List<CitationSource>> DiscoverCitationsAsync(
@@ -87,13 +87,16 @@ Provide a concise explanation (maximum 20 words) describing why this source is i
 
 Return ONLY the JSON object.";
 
-        var responseContent = await _openRouterService.GenerateContentAsync(
-            prompt: userPrompt,
-            systemPrompt: systemPrompt,
+        var completion = await _aiCompletionService.CompleteAsync(
+            organizationId,
+            "citations.discovery",
+            userPrompt,
+            systemPrompt,
             requireJson: true,
-            model: "gpt-4o-mini");
+            preferredProviderKey: "openai");
+        if (!completion.Success) return new List<CitationSource>();
 
-        responseContent = responseContent.Trim();
+        var responseContent = completion.Content.Trim();
         
         // Find the start and end of the JSON object in case there's any surrounding text
         int startIdx = responseContent.IndexOf('{');

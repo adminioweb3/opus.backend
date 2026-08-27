@@ -15,7 +15,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\Citationly.API\Citationly.API.csproj" />
     <ProjectReference Include="..\Citationly.Application\Citationly.Application.csproj" />
+    <ProjectReference Include="..\Citationly.Infrastructure\Citationly.Infrastructure.csproj" />
   </ItemGroup>
 
 </Project>

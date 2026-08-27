@@ -21,18 +21,18 @@ public class RunCompetitorScanCommandHandler : IRequestHandler<RunCompetitorScan
     private readonly IAiVisibilityRepository _visibilityRepo;
     private readonly IWebsiteRepository _websiteRepository;
     private readonly ICompetitorSnapshotRepository _snapshotRepo;
-    private readonly IOpenAiService _openAiService;
+    private readonly IAiCompletionService _aiCompletionService;
 
     public RunCompetitorScanCommandHandler(
         IAiVisibilityRepository visibilityRepo,
         IWebsiteRepository websiteRepository,
         ICompetitorSnapshotRepository snapshotRepo,
-        IOpenAiService openAiService)
+        IAiCompletionService aiCompletionService)
     {
         _visibilityRepo = visibilityRepo;
         _websiteRepository = websiteRepository;
         _snapshotRepo = snapshotRepo;
-        _openAiService = openAiService;
+        _aiCompletionService = aiCompletionService;
     }
 
     public async Task<RunCompetitorScanResult> Handle(RunCompetitorScanCommand request, CancellationToken cancellationToken)
@@ -60,8 +60,20 @@ public class RunCompetitorScanCommandHandler : IRequestHandler<RunCompetitorScan
         var previousByCompetitorId = previousSnapshots.Where(s => s.CompetitorId.HasValue).ToDictionary(s => s.CompetitorId!.Value);
 
         var (systemPrompt, userPrompt) = BuildPrompt(profile, executiveSummary, latestScan, competitors, previousYou, previousByCompetitorId);
-        var raw = await _openAiService.GenerateContentAsync(userPrompt, systemPrompt, requireJson: true);
-        var judged = ParseJudgedScores(raw, competitors.Count, previousYou, previousByCompetitorId, competitors);
+        var completion = await _aiCompletionService.CompleteAsync(
+            orgId,
+            "competitor.scan",
+            userPrompt,
+            systemPrompt,
+            requireJson: true,
+            preferredProviderKey: "openai",
+            cancellationToken);
+        if (!completion.Success)
+        {
+            return new RunCompetitorScanResult(false, completion.ErrorMessage ?? "Competitor scan could not be completed because the AI provider returned invalid JSON.");
+        }
+
+        var judged = ParseJudgedScores(completion.Content, competitors.Count, previousYou, previousByCompetitorId, competitors);
 
         // "You" uses the real, already-AI-analyzed VisibilityScore when available — the model's
         // own judged score only fills the gap when no GEO scan has run yet.

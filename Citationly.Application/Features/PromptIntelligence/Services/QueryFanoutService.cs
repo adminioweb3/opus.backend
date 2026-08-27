@@ -6,7 +6,7 @@ namespace Citationly.Application.Features.PromptIntelligence.Services;
 
 public interface IQueryFanoutService
 {
-    Task<List<PromptFanout>> GenerateFanoutsAsync(Guid questionId, string promptText, CancellationToken ct);
+    Task<List<PromptFanout>> GenerateFanoutsAsync(Guid organizationId, Guid questionId, string promptText, CancellationToken ct);
 }
 
 /// <summary>
@@ -17,14 +17,14 @@ public interface IQueryFanoutService
 /// </summary>
 public class QueryFanoutService : IQueryFanoutService
 {
-    private readonly IOpenAiService _openAiService;
+    private readonly IAiCompletionService _aiCompletionService;
 
-    public QueryFanoutService(IOpenAiService openAiService)
+    public QueryFanoutService(IAiCompletionService aiCompletionService)
     {
-        _openAiService = openAiService;
+        _aiCompletionService = aiCompletionService;
     }
 
-    public async Task<List<PromptFanout>> GenerateFanoutsAsync(Guid questionId, string promptText, CancellationToken ct)
+    public async Task<List<PromptFanout>> GenerateFanoutsAsync(Guid organizationId, Guid questionId, string promptText, CancellationToken ct)
     {
         const string systemPrompt =
             "You help analyze how AI search engines break a broad question into more specific sub-queries. " +
@@ -37,8 +37,17 @@ public class QueryFanoutService : IQueryFanoutService
         var result = new List<PromptFanout>();
         try
         {
-            var raw = await _openAiService.GenerateContentAsync(userPrompt, systemPrompt, requireJson: true);
-            raw = StripFences(raw);
+            var completion = await _aiCompletionService.CompleteAsync(
+                organizationId,
+                "prompt_intelligence.query_fanout",
+                userPrompt,
+                systemPrompt,
+                requireJson: true,
+                preferredProviderKey: "openai",
+                ct);
+            if (!completion.Success) return result;
+
+            var raw = StripFences(completion.Content);
             using var doc = JsonDocument.Parse(raw);
 
             if (doc.RootElement.TryGetProperty("fanouts", out var arr) && arr.ValueKind == JsonValueKind.Array)

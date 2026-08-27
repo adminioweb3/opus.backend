@@ -6,6 +6,7 @@ namespace Citationly.Application.Features.Content;
 
 public class AnalyzeCompetitorCommand : IRequest<CompetitorAnalysisResult>
 {
+    public Guid OrganizationId { get; set; }
     public string Url { get; set; } = string.Empty;
 }
 
@@ -23,12 +24,12 @@ public class AnalyzeCompetitorCommandHandler : IRequestHandler<AnalyzeCompetitor
     private const int MaxContentChars = 6000;
 
     private readonly IScraperEngine _scraperEngine;
-    private readonly IOpenAiService _openAiService;
+    private readonly IAiCompletionService _aiCompletionService;
 
-    public AnalyzeCompetitorCommandHandler(IScraperEngine scraperEngine, IOpenAiService openAiService)
+    public AnalyzeCompetitorCommandHandler(IScraperEngine scraperEngine, IAiCompletionService aiCompletionService)
     {
         _scraperEngine = scraperEngine;
-        _openAiService = openAiService;
+        _aiCompletionService = aiCompletionService;
     }
 
     public async Task<CompetitorAnalysisResult> Handle(AnalyzeCompetitorCommand request, CancellationToken cancellationToken)
@@ -46,9 +47,20 @@ public class AnalyzeCompetitorCommandHandler : IRequestHandler<AnalyzeCompetitor
 
         var prompt = $"COMPETITOR PAGE TITLE: {page.Title}\n\nCOMPETITOR PAGE CONTENT:\n{content}";
 
-        var raw = await _openAiService.GenerateContentAsync(prompt, systemPrompt, requireJson: true);
+        var completion = await _aiCompletionService.CompleteAsync(
+            request.OrganizationId,
+            "content.analyze_competitor",
+            prompt,
+            systemPrompt,
+            requireJson: true,
+            preferredProviderKey: "openai",
+            cancellationToken);
+        if (!completion.Success)
+        {
+            throw new InvalidOperationException(completion.ErrorMessage ?? "Competitor content analysis failed.");
+        }
 
-        var result = ParseAnalysis(raw);
+        var result = ParseAnalysis(completion.Content);
         result.Title = page.Title;
         result.WordCount = page.WordCount;
         return result;
