@@ -1,5 +1,8 @@
-.env
+.env*
+appsettings.*.json
 /.claude
 /graphify-out
 /.tmp-route-check
 /tempdb
+/.tmp
+/roadmap
