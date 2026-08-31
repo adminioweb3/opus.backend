@@ -101,7 +101,7 @@ public class GetUnifiedCompetitorsQueryHandler : IRequestHandler<GetUnifiedCompe
         }
     }
 
-    private static string ExtractReason(string? rawJson)
+    private static string? ExtractReason(string? rawJson)
     {
         if (string.IsNullOrWhiteSpace(rawJson)) return null;
         try
@@ -122,7 +122,8 @@ public class GetUnifiedCompetitorsQueryHandler : IRequestHandler<GetUnifiedCompe
         {
             if (Uri.TryCreate(url, UriKind.Absolute, out var uri))
             {
-                return uri.Host.ToLowerInvariant().TrimStart(new[] { 'w', '.' });
+                var host = uri.Host.ToLowerInvariant();
+                return host.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? host[4..] : host;
             }
         }
         catch { }

@@ -73,14 +73,19 @@ public class AlertsController : ControllerBase
         var orgId = await _currentOrganization.GetOrganizationIdAsync(User);
         if (orgId == null) return Unauthorized();
 
+        if (request.WebhookEnabled)
+        {
+            return BadRequest(new { message = "Alert webhooks are not available yet. Configure email alerts instead." });
+        }
+
         await _alertRepository.UpsertThresholdAsync(new AlertThreshold
         {
             OrganizationId = orgId.Value,
             AlertType = alertType,
             ThresholdValue = Math.Clamp(request.ThresholdValue, 1, 100),
             EmailEnabled = request.EmailEnabled,
-            WebhookEnabled = request.WebhookEnabled,
-            WebhookUrl = request.WebhookUrl ?? string.Empty
+            WebhookEnabled = false,
+            WebhookUrl = string.Empty
         });
 
         return Ok(new { saved = true });

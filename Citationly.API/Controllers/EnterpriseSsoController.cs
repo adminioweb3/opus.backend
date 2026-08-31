@@ -60,12 +60,21 @@ public class EnterpriseSsoController : ControllerBase
         var organizationId = await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
         if (organizationId == null) return Unauthorized();
 
+        var provider = string.IsNullOrWhiteSpace(request.Provider) ? "OIDC" : request.Provider.Trim().ToUpperInvariant();
+        if (provider is not ("OIDC" or "SAML")) return BadRequest(new { message = "Provider must be OIDC or SAML." });
+        var domain = request.Domain?.Trim().ToLowerInvariant() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(domain) || domain.Contains('/') || domain.Contains('@'))
+            return BadRequest(new { message = "A verified organization domain is required." });
+        var metadataUrl = request.MetadataUrl?.Trim() ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(metadataUrl) && (!Uri.TryCreate(metadataUrl, UriKind.Absolute, out var metadataUri) || metadataUri.Scheme != Uri.UriSchemeHttps))
+            return BadRequest(new { message = "SSO metadata URL must use HTTPS." });
+
         var connection = await _ssoRepository.UpsertAsync(new SsoConnection
         {
             OrganizationId = organizationId.Value,
-            Provider = string.IsNullOrWhiteSpace(request.Provider) ? "OIDC" : request.Provider.Trim(),
-            Domain = request.Domain?.Trim().ToLowerInvariant() ?? string.Empty,
-            MetadataUrl = request.MetadataUrl?.Trim() ?? string.Empty,
+            Provider = provider,
+            Domain = domain,
+            MetadataUrl = metadataUrl,
             EntityId = request.EntityId?.Trim() ?? string.Empty,
             IsEnabled = request.IsEnabled
         }, HttpContext.RequestAborted);
@@ -82,9 +91,9 @@ public class EnterpriseSsoController : ControllerBase
         if (organizationId == null) return Unauthorized();
 
         var existing = await _ssoRepository.GetByOrganizationAsync(organizationId.Value, HttpContext.RequestAborted);
-        if (existing == null)
+        if (existing == null || !existing.IsEnabled)
         {
-            return BadRequest(new { message = "Configure SSO before enabling SCIM provisioning." });
+            return BadRequest(new { message = "Configure and enable SSO before enabling SCIM provisioning." });
         }
 
         var token = "scim_" + Base64UrlEncode(RandomNumberGenerator.GetBytes(32));

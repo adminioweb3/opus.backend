@@ -658,10 +658,12 @@ public static class SelfHealingMigrations
             TokenHash VARCHAR(255) NOT NULL,
             ReportType VARCHAR(100) NOT NULL DEFAULT 'Executive',
             ExpiresAt TIMESTAMP WITH TIME ZONE NOT NULL,
+            RevokedAt TIMESTAMP WITH TIME ZONE NULL,
             CreatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE (TokenHash)
         );
         CREATE INDEX IF NOT EXISTS idx_reportsharelinks_org ON ReportShareLinks (OrganizationId, CreatedAt DESC);
+        ALTER TABLE ReportShareLinks ADD COLUMN IF NOT EXISTS RevokedAt TIMESTAMP WITH TIME ZONE NULL;
 
         -- Billing (Phase 1) - Stripe-backed subscription/invoice/payment records.
         -- Organizations.PlanType remains a cached/derived mirror of Subscriptions.Status,
@@ -673,6 +675,7 @@ public static class SelfHealingMigrations
             Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             OrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,
             StripeSubscriptionId VARCHAR(255) UNIQUE,
+            CashfreeSubscriptionId VARCHAR(255) UNIQUE,
             PlanKey VARCHAR(100) NOT NULL,
             Status VARCHAR(50) NOT NULL DEFAULT 'trialing',
             CurrentPeriodStart TIMESTAMP WITH TIME ZONE,
@@ -709,6 +712,40 @@ public static class SelfHealingMigrations
             CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS idx_paymentmethods_org ON PaymentMethods (OrganizationId);
+
+        -- Stripe delivery ledger: event IDs are globally unique, so a duplicate webhook cannot
+        -- repeat subscription state transitions. Failed events retain their error and are claimable
+        -- for a later Stripe retry.
+        CREATE TABLE IF NOT EXISTS StripeWebhookEvents (
+            Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            StripeEventId VARCHAR(255) NOT NULL UNIQUE,
+            PayloadHash VARCHAR(64) NOT NULL,
+            EventType VARCHAR(255) NOT NULL,
+            Status VARCHAR(32) NOT NULL,
+            AttemptCount INT NOT NULL DEFAULT 1,
+            ReceivedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            LastAttemptAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CompletedAt TIMESTAMP WITH TIME ZONE,
+            FailureReason VARCHAR(2000)
+        );
+        ALTER TABLE Subscriptions ADD COLUMN IF NOT EXISTS CashfreeSubscriptionId VARCHAR(255);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_cashfreesubscriptionid
+            ON Subscriptions (CashfreeSubscriptionId) WHERE CashfreeSubscriptionId IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_stripewebhookevents_status ON StripeWebhookEvents (Status, LastAttemptAt);
+
+        CREATE TABLE IF NOT EXISTS CashfreeWebhookEvents (
+            Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            CashfreeEventId VARCHAR(255) NOT NULL UNIQUE,
+            PayloadHash VARCHAR(64) NOT NULL,
+            EventType VARCHAR(255) NOT NULL,
+            Status VARCHAR(50) NOT NULL,
+            AttemptCount INT NOT NULL DEFAULT 1,
+            ReceivedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            LastAttemptAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CompletedAt TIMESTAMP WITH TIME ZONE,
+            FailureReason VARCHAR(2000)
+        );
+        CREATE INDEX IF NOT EXISTS idx_cashfreewebhookevents_status ON CashfreeWebhookEvents (Status, LastAttemptAt);
 
         -- Usage metering (Phase 1) - per-org, per-metric, per-period counters so AI-cost
         -- endpoints and recurring jobs can be capped by plan instead of running unbounded.

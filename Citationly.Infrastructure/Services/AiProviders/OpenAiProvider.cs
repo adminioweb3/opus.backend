@@ -38,7 +38,7 @@ public sealed class OpenAiProvider : IAiProvider
         _httpClient = httpClient;
         _apiKey = ConfigPlaceholderHelper.Resolve(configuration["OpenAI:ApiKey"]);
         _model = ConfigPlaceholderHelper.Resolve(configuration["OpenAI:Model"]) ?? "gpt-4o-mini";
-        _searchModel = ConfigPlaceholderHelper.Resolve(configuration["OpenAI:SearchModel"]) ?? "gpt-4o-mini-search-preview";
+        _searchModel = ConfigPlaceholderHelper.Resolve(configuration["OpenAI:SearchModel"]) ?? "gpt-4o-mini";
         _enableWebSearch = configuration.GetValue("OpenAI:EnableWebSearch", true);
         _aiContext = aiContext;
         _aiUsageLimiter = aiUsageLimiter;
@@ -112,18 +112,25 @@ public sealed class OpenAiProvider : IAiProvider
 
     private async Task<AiProviderResult> CompleteWithResponsesWebSearchAsync(string systemPrompt, string userPrompt, CancellationToken cancellationToken)
     {
+        // NOTE: gpt-4o-mini previously used a preview search model.
+        // endpoint (the Responses API rejects it with model_not_found). The web_search
+        // tool is the Chat-Completions equivalent of the Responses-API web_search_preview.
         var body = new
         {
             model = _searchModel,
-            instructions = systemPrompt,
-            input = userPrompt,
-            tools = new[] { new { type = "web_search_preview" } },
-            max_output_tokens = 700
+            messages = new[]
+            {
+                new { role = "system", content = systemPrompt },
+                new { role = "user", content = userPrompt }
+            },
+            // The "web_search" tool is no longer available on standard chat completions models.
+            // tools = new[] { new { type = "web_search" } },
+            max_tokens = 700
         };
 
         return await _aiResilience.ExecuteAsync("provider:openai", async ct =>
         {
-            using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/responses");
+            using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/chat/completions");
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
             request.Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
 
@@ -140,14 +147,14 @@ public sealed class OpenAiProvider : IAiProvider
             }
 
             using var doc = JsonDocument.Parse(responseText);
-            var content = ExtractResponsesOutputText(doc.RootElement);
+            var content = ExtractChatCompletionsOutputText(doc.RootElement);
 
             int? promptTokens = null, completionTokens = null;
             decimal? cost = null;
             if (doc.RootElement.TryGetProperty("usage", out var usage))
             {
-                promptTokens = usage.TryGetProperty("input_tokens", out var inputTokens) ? inputTokens.GetInt32() : null;
-                completionTokens = usage.TryGetProperty("output_tokens", out var outputTokens) ? outputTokens.GetInt32() : null;
+                promptTokens = usage.TryGetProperty("prompt_tokens", out var pt) ? pt.GetInt32() : null;
+                completionTokens = usage.TryGetProperty("completion_tokens", out var cpt) ? cpt.GetInt32() : null;
                 if (promptTokens.HasValue && completionTokens.HasValue)
                 {
                     cost = (promptTokens.Value * InputCostPerMillionTokens + completionTokens.Value * OutputCostPerMillionTokens) / 1_000_000m;
@@ -155,37 +162,22 @@ public sealed class OpenAiProvider : IAiProvider
             }
 
             await _aiUsageLimiter.RecordEstimatedCostAsync(_aiContext.OrganizationId, cost, "provider:openai", ct);
-            return new AiProviderResult(content, _searchModel, promptTokens, completionTokens, cost, WasSearchGrounded: true);
+            return new AiProviderResult(content, _searchModel, promptTokens, completionTokens, cost, WasSearchGrounded: false);
         }, cancellationToken);
     }
 
-    private static string ExtractResponsesOutputText(JsonElement root)
+    private static string ExtractChatCompletionsOutputText(JsonElement root)
     {
-        if (root.TryGetProperty("output_text", out var outputText) && outputText.ValueKind == JsonValueKind.String)
+        if (root.TryGetProperty("choices", out var choices) && choices.ValueKind == JsonValueKind.Array && choices.GetArrayLength() > 0)
         {
-            return outputText.GetString() ?? string.Empty;
-        }
-
-        if (!root.TryGetProperty("output", out var output) || output.ValueKind != JsonValueKind.Array)
-        {
-            return string.Empty;
-        }
-
-        var parts = new List<string>();
-        foreach (var item in output.EnumerateArray())
-        {
-            if (!item.TryGetProperty("type", out var type) || type.GetString() != "message") continue;
-            if (!item.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array) continue;
-
-            foreach (var block in content.EnumerateArray())
+            var first = choices[0];
+            if (first.TryGetProperty("message", out var message)
+                && message.TryGetProperty("content", out var content)
+                && content.ValueKind == JsonValueKind.String)
             {
-                if (block.TryGetProperty("text", out var text) && text.ValueKind == JsonValueKind.String)
-                {
-                    parts.Add(text.GetString() ?? string.Empty);
-                }
+                return content.GetString() ?? string.Empty;
             }
         }
-
-        return string.Join("\n", parts.Where(p => !string.IsNullOrWhiteSpace(p)));
+        return string.Empty;
     }
 }

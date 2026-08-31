@@ -9,7 +9,7 @@ namespace Citationly.Infrastructure.Services;
 public class AiVisibilityEngineService : IAiVisibilityEngineService
 {
     private readonly IAiVisibilityRepository _repository;
-    private readonly IOpenAiService _openRouterService;
+    private readonly IAiCompletionService _aiCompletionService;
     private readonly IWebsiteRepository _websiteRepository;
     private readonly IUserRepository _userRepository;
     private readonly ICompanyGraphService _companyGraphService;
@@ -19,7 +19,7 @@ public class AiVisibilityEngineService : IAiVisibilityEngineService
 
     public AiVisibilityEngineService(
         IAiVisibilityRepository repository,
-        IOpenAiService openRouterService,
+        IAiCompletionService aiCompletionService,
         IWebsiteRepository websiteRepository,
         IUserRepository userRepository,
         ICompanyGraphService companyGraphService,
@@ -28,7 +28,7 @@ public class AiVisibilityEngineService : IAiVisibilityEngineService
         ICompetitorGraphSyncService syncService)
     {
         _repository = repository;
-        _openRouterService = openRouterService;
+        _aiCompletionService = aiCompletionService;
         _websiteRepository = websiteRepository;
         _userRepository = userRepository;
         _companyGraphService = companyGraphService;
@@ -76,7 +76,7 @@ public class AiVisibilityEngineService : IAiVisibilityEngineService
 
         // Step 2: Run AI Prompts
         var industry = competitors.FirstOrDefault()?.Industry ?? "technology";
-        var scores = await EvaluateVisibilityScoresAsync(domainName, industry, competitors);
+        var scores = await EvaluateVisibilityScoresAsync(organizationId, domainName, industry, competitors);
         if (scores == null)
         {
             var message = $"AI visibility scan incomplete for org {organizationId}; retry later.";
@@ -126,7 +126,7 @@ public class AiVisibilityEngineService : IAiVisibilityEngineService
         Console.WriteLine("AI Visibility Analysis Completed.");
     }
 
-    private async Task<ScoreResult?> EvaluateVisibilityScoresAsync(string domainName, string industry, List<Competitor> competitors)
+    private async Task<ScoreResult?> EvaluateVisibilityScoresAsync(Guid organizationId, string domainName, string industry, List<Competitor> competitors)
     {
         var competitorNames = string.Join(", ", competitors.Select(c => c.Name));
         var prompt = $@"
@@ -145,29 +145,21 @@ Format the JSON exactly like this:
 ```
 ";
 
-        try
+        var completion = await _aiCompletionService.CompleteAsync(
+            organizationId,
+            "visibility_engine.score_evaluation",
+            prompt,
+            "Return only the requested JSON object. Do not include markdown or explanatory text.",
+            requireJson: true);
+        if (!completion.Success)
         {
-            var responseContent = await _openRouterService.GenerateContentAsync(prompt);
-            
-            // Extract the JSON block
-            var jsonStart = responseContent.LastIndexOf("```json");
-            if (jsonStart != -1)
-            {
-                var jsonEnd = responseContent.IndexOf("```", jsonStart + 7);
-                if (jsonEnd != -1)
-                {
-                    var jsonStr = responseContent.Substring(jsonStart + 7, jsonEnd - (jsonStart + 7)).Trim();
-                    var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-                    var result = JsonSerializer.Deserialize<ScoreResult>(jsonStr, options);
-                    if (result != null) return result;
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Visibility evaluation failed: {ex.Message}");
+            Console.WriteLine($"Visibility evaluation failed: {completion.ErrorMessage}");
             return null;
         }
+
+        var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+        var result = JsonSerializer.Deserialize<ScoreResult>(completion.Content, options);
+        if (result != null) return result;
 
         return null;
     }

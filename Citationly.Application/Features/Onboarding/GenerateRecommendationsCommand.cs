@@ -82,7 +82,7 @@ public class GenerateRecommendationsCommandHandler : IRequestHandler<GenerateRec
             var existingSummary = await _websiteRepository.GetGeoRecommendationSummaryAsync(request.OrganizationId);
             
             // 1. Cache Check
-            if (await _cacheService.IsCacheValidAsync(request.OrganizationId, existingSummary))
+            if (existingSummary != null && await _cacheService.IsCacheValidAsync(request.OrganizationId, existingSummary))
             {
                 var existingRecs = await _websiteRepository.GetGeoRecommendationsAsync(request.OrganizationId);
                 var summaryResponse = existingSummary != null ? new GeoRecommendationSummaryResponse

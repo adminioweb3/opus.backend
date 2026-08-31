@@ -21,7 +21,7 @@ public class BillingController : ControllerBase
         _billingService = billingService;
     }
 
-    // Real DB reads regardless of whether Stripe is configured yet - an org's PlanType and
+    // Real DB reads regardless of whether Cashfree is configured yet - an org's PlanType and
     // any locally-recorded Subscription/Invoice/PaymentMethod rows are always accurate.
     [HttpGet("subscription")]
     public async Task<IActionResult> GetSubscription()
@@ -57,23 +57,24 @@ public class BillingController : ControllerBase
         return Ok(methods);
     }
 
-    [HttpPost("checkout-session")]
+    [HttpPost("subscription-session")]
     [RequireOrgRole("Admin")]
-    [AuditAction("billing.checkout_session.create", "Billing", "Subscription")]
-    public async Task<IActionResult> CreateCheckoutSession([FromBody] CreateCheckoutSessionRequest request)
+    [AuditAction("billing.subscription_session.create", "Billing", "Subscription")]
+    public async Task<IActionResult> CreateSubscriptionSession([FromBody] CreateSubscriptionSessionRequest request)
     {
         var orgId = await _currentOrg.GetOrganizationIdAsync(User);
         if (orgId == null) return Unauthorized();
 
         if (!_billingService.IsConfigured)
         {
-            return StatusCode(501, new { message = "Billing is not configured yet. Set Stripe:ApiKey to enable checkout." });
+            return StatusCode(501, new { message = "Billing is not configured yet. Configure Cashfree credentials and plan IDs to enable subscriptions." });
         }
 
         try
         {
-            var url = await _billingService.CreateCheckoutSessionAsync(orgId.Value, request.PlanKey, request.SuccessUrl, request.CancelUrl);
-            return Ok(new { url });
+            var session = await _billingService.CreateSubscriptionSessionAsync(orgId.Value, request.PlanKey, request.CustomerName,
+                request.CustomerEmail, request.CustomerPhone, request.ReturnUrl, HttpContext.RequestAborted);
+            return Ok(session);
         }
         catch (Exception ex) when (ex is not BillingNotConfiguredException)
         {
@@ -81,23 +82,18 @@ public class BillingController : ControllerBase
         }
     }
 
-    [HttpPost("portal-session")]
+    [HttpPost("subscription/cancel")]
     [RequireOrgRole("Admin")]
-    [AuditAction("billing.portal_session.create", "Billing", "Subscription")]
-    public async Task<IActionResult> CreatePortalSession([FromBody] CreatePortalSessionRequest request)
+    [AuditAction("billing.subscription.cancel", "Billing", "Subscription")]
+    public async Task<IActionResult> CancelSubscription()
     {
         var orgId = await _currentOrg.GetOrganizationIdAsync(User);
         if (orgId == null) return Unauthorized();
-
-        if (!_billingService.IsConfigured)
-        {
-            return StatusCode(501, new { message = "Billing is not configured yet." });
-        }
-
+        if (!_billingService.IsConfigured) return StatusCode(501, new { message = "Billing is not configured yet." });
         try
         {
-            var url = await _billingService.CreateBillingPortalSessionAsync(orgId.Value, request.ReturnUrl);
-            return Ok(new { url });
+            await _billingService.CancelSubscriptionAsync(orgId.Value, HttpContext.RequestAborted);
+            return NoContent();
         }
         catch (Exception ex) when (ex is not BillingNotConfiguredException)
         {
@@ -105,10 +101,10 @@ public class BillingController : ControllerBase
         }
     }
 
-    // Stripe calls this directly - no user JWT, verified instead by the webhook signature.
-    [HttpPost("webhook")]
+    // Cashfree calls this directly - no user JWT, verified against its raw-body HMAC signature.
+    [HttpPost("cashfree/webhook")]
     [AllowAnonymous]
-    [AuditAction("billing.webhook.received", "Billing", "StripeWebhook")]
+    [AuditAction("billing.webhook.received", "Billing", "CashfreeWebhook")]
     public async Task<IActionResult> Webhook()
     {
         if (!_billingService.IsConfigured)
@@ -118,11 +114,12 @@ public class BillingController : ControllerBase
 
         using var reader = new StreamReader(Request.Body);
         var json = await reader.ReadToEndAsync();
-        var signature = Request.Headers["Stripe-Signature"].ToString();
+        var signature = Request.Headers["x-webhook-signature"].ToString();
+        var timestamp = Request.Headers["x-webhook-timestamp"].ToString();
 
         try
         {
-            await _billingService.HandleWebhookEventAsync(json, signature);
+            await _billingService.HandleWebhookEventAsync(json, signature, timestamp, HttpContext.RequestAborted);
             return Ok();
         }
         catch (Exception ex)
@@ -132,14 +129,11 @@ public class BillingController : ControllerBase
     }
 }
 
-public class CreateCheckoutSessionRequest
+public class CreateSubscriptionSessionRequest
 {
     public string PlanKey { get; set; } = "Pro";
-    public string SuccessUrl { get; set; } = string.Empty;
-    public string CancelUrl { get; set; } = string.Empty;
-}
-
-public class CreatePortalSessionRequest
-{
+    public string CustomerName { get; set; } = string.Empty;
+    public string CustomerEmail { get; set; } = string.Empty;
+    public string CustomerPhone { get; set; } = string.Empty;
     public string ReturnUrl { get; set; } = string.Empty;
 }

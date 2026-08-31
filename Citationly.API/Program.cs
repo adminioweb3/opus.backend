@@ -29,6 +29,8 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddHttpClient();
 builder.Services.AddMemoryCache();
+builder.Services.AddHealthChecks()
+    .AddCheck<DatabaseHealthCheck>("database", tags: new[] { "ready" });
 
 // Security Services
 builder.Services.AddAntiforgery(options =>
@@ -330,6 +332,16 @@ using (var scope = app.Services.CreateScope())
         "alert-delivery-check",
         job => job.RunAsync(),
         "*/15 * * * *");
+
+    recurringJobManager.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.BillingReconciliationRecurringJob>(
+        "billing-subscription-reconciliation",
+        job => job.RunAsync(),
+        "0 3 * * *");
+
+    recurringJobManager.AddOrUpdate<Citationly.Infrastructure.BackgroundJobs.ScrapingJobRecoveryRecurringJob>(
+        "scraping-job-stale-recovery",
+        job => job.RunAsync(),
+        "*/15 * * * *");
 }
 
 app.UseHttpsRedirection();
@@ -341,6 +353,14 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
+app.MapHealthChecks("/health/live", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+{
+    Predicate = _ => false
+});
+app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("ready")
+});
 app.MapGet("/", () => "Citationly API is running");
 
 app.Run();

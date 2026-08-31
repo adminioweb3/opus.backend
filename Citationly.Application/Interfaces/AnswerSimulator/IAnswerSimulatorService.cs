@@ -5,7 +5,7 @@ namespace Citationly.Application.Interfaces.AnswerSimulator;
 
 public interface IAnswerSimulatorService
 {
-    Task<SimulateAnswerResponse> SimulateAsync(SimulateAnswerRequest request);
-    Task<CompareContentResponse> CompareAsync(CompareContentRequest request);
-    Task<BattleResponse> BattleAsync(BattleRequest request);
+    Task<SimulateAnswerResponse> SimulateAsync(Guid organizationId, SimulateAnswerRequest request);
+    Task<CompareContentResponse> CompareAsync(Guid organizationId, CompareContentRequest request);
+    Task<BattleResponse> BattleAsync(Guid organizationId, BattleRequest request);
 }

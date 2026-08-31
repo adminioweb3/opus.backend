@@ -161,6 +161,19 @@ public class AgencyController : ControllerBase
         return Ok(new { id, token, expiresAt, apiUrl, shareUrl });
     }
 
+    [Authorize]
+    [HttpDelete("report-links/{id:guid}")]
+    [RequireOrgRole("Manager")]
+    [AuditAction("agency.report_link.revoke", "DataExport", "ReportShareLink")]
+    public async Task<IActionResult> RevokeReportLink(Guid id)
+    {
+        var agency = await GetCallerAgencyAsync();
+        if (agency.Result != null) return agency.Result;
+
+        var revoked = await _agencyRepository.RevokeReportShareLinkAsync(id, agency.Agency!.Id);
+        return revoked ? NoContent() : NotFound();
+    }
+
     [AllowAnonymous]
     [HttpGet("public/reports/{token}")]
     public async Task<IActionResult> GetSharedReport(string token)

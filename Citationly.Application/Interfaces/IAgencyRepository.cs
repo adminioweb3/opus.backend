@@ -12,4 +12,5 @@ public interface IAgencyRepository
     Task<WhiteLabelSettings?> GetWhiteLabelSettingsAsync(Guid agencyId);
     Task<Guid> CreateReportShareLinkAsync(ReportShareLink link);
     Task<ReportShareLink?> GetReportShareLinkByTokenHashAsync(string tokenHash);
+    Task<bool> RevokeReportShareLinkAsync(Guid id, Guid agencyId);
 }

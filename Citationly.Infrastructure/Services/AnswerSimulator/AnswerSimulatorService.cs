@@ -9,15 +9,15 @@ namespace Citationly.Infrastructure.Services.AnswerSimulator;
 
 public class AnswerSimulatorService : IAnswerSimulatorService
 {
-    private readonly IOpenAiService _openAiService;
+    private readonly IAiCompletionService _aiCompletionService;
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 
-    public AnswerSimulatorService(IOpenAiService openAiService)
+    public AnswerSimulatorService(IAiCompletionService aiCompletionService)
     {
-        _openAiService = openAiService;
+        _aiCompletionService = aiCompletionService;
     }
 
-    public async Task<SimulateAnswerResponse> SimulateAsync(SimulateAnswerRequest request)
+    public async Task<SimulateAnswerResponse> SimulateAsync(Guid organizationId, SimulateAnswerRequest request)
     {
         var brand = string.IsNullOrWhiteSpace(request.Brand) ? "the brand" : request.Brand;
 
@@ -27,7 +27,12 @@ public class AnswerSimulatorService : IAnswerSimulatorService
             "specific real products, brands, or sources where relevant, as a real AI search engine would for this person. " +
             "Do not mention that you are an AI or reference this being a simulation.";
 
-        var answer = await _openAiService.GenerateContentAsync(request.Prompt, answerSystemPrompt);
+        var answerCompletion = await _aiCompletionService.CompleteAsync(
+            organizationId, "answer_simulator.simulate", request.Prompt, answerSystemPrompt);
+        if (!answerCompletion.Success)
+            throw new InvalidOperationException(answerCompletion.ErrorMessage ?? "The AI answer simulation is unavailable.");
+
+        var answer = answerCompletion.Content;
 
         var analysisSystemPrompt =
             "You analyze an AI-generated answer for brand visibility. Return ONLY a JSON object with EXACTLY these keys: " +
@@ -41,33 +46,20 @@ public class AnswerSimulatorService : IAnswerSimulatorService
 
         var analysisUserPrompt = $"Brand to check for: {brand}\n\nAI answer to analyze:\n{answer}";
 
-        SimulateAnswerResponse result;
-        try
-        {
-            var raw = await _openAiService.GenerateContentAsync(analysisUserPrompt, analysisSystemPrompt, requireJson: true);
-            result = JsonSerializer.Deserialize<SimulateAnswerResponse>(raw, JsonOptions) ?? new SimulateAnswerResponse();
-        }
-        catch (Exception)
-        {
-            var mentioned = answer.Contains(brand, StringComparison.OrdinalIgnoreCase);
-            result = new SimulateAnswerResponse
-            {
-                Mentioned = mentioned,
-                Position = mentioned ? "Mentioned" : "Not mentioned",
-                Sentiment = "neu",
-                SharePct = mentioned ? 40 : 5,
-                Summary = mentioned
-                    ? $"{brand} is referenced in the answer."
-                    : $"{brand} does not appear in this answer."
-            };
-        }
+        var analysisCompletion = await _aiCompletionService.CompleteAsync(
+            organizationId, "answer_simulator.analysis", analysisUserPrompt, analysisSystemPrompt, requireJson: true);
+        if (!analysisCompletion.Success)
+            throw new InvalidOperationException(analysisCompletion.ErrorMessage ?? "The AI visibility analysis is unavailable.");
+
+        var result = JsonSerializer.Deserialize<SimulateAnswerResponse>(analysisCompletion.Content, JsonOptions)
+            ?? throw new InvalidOperationException("The AI returned an empty visibility analysis.");
 
         result.Answer = answer;
         result.ConsistencyOutOfFive = EstimateConsistency(result.Mentioned, result.SharePct);
         return result;
     }
 
-    public async Task<CompareContentResponse> CompareAsync(CompareContentRequest request)
+    public async Task<CompareContentResponse> CompareAsync(Guid organizationId, CompareContentRequest request)
     {
         var brand = string.IsNullOrWhiteSpace(request.Brand) ? "the brand" : request.Brand;
         var pageContent = request.PageContent.Length > 3000 ? request.PageContent[..3000] : request.PageContent;
@@ -82,24 +74,16 @@ public class AnswerSimulatorService : IAnswerSimulatorService
 
         var userPrompt = $"Question: {request.Prompt}\nBrand: {brand}\n\nPage content:\n{pageContent}";
 
-        try
-        {
-            var raw = await _openAiService.GenerateContentAsync(userPrompt, systemPrompt, requireJson: true);
-            return JsonSerializer.Deserialize<CompareContentResponse>(raw, JsonOptions) ?? new CompareContentResponse();
-        }
-        catch (Exception)
-        {
-            return new CompareContentResponse
-            {
-                Without = "The AI provides a generic recommendation relying on third-party sources, without citing your content.",
-                With = $"The AI directly references {brand}'s own content when forming its answer.",
-                Changed = true,
-                Verdict = "Indexing this content gives the AI a first-party source to cite."
-            };
-        }
+        var completion = await _aiCompletionService.CompleteAsync(
+            organizationId, "answer_simulator.compare", userPrompt, systemPrompt, requireJson: true);
+        if (!completion.Success)
+            throw new InvalidOperationException(completion.ErrorMessage ?? "The content comparison is unavailable.");
+
+        return JsonSerializer.Deserialize<CompareContentResponse>(completion.Content, JsonOptions)
+            ?? throw new InvalidOperationException("The AI returned an empty content comparison.");
     }
 
-    public async Task<BattleResponse> BattleAsync(BattleRequest request)
+    public async Task<BattleResponse> BattleAsync(Guid organizationId, BattleRequest request)
     {
         var brand = string.IsNullOrWhiteSpace(request.Brand) ? "your brand" : request.Brand;
 
@@ -111,20 +95,13 @@ public class AnswerSimulatorService : IAnswerSimulatorService
 
         var userPrompt = $"Question: {request.Prompt}\nYour brand: {brand}\nCompetitor (question framed to favor them): {request.Competitor}";
 
-        try
-        {
-            var raw = await _openAiService.GenerateContentAsync(userPrompt, systemPrompt, requireJson: true);
-            return JsonSerializer.Deserialize<BattleResponse>(raw, JsonOptions) ?? new BattleResponse();
-        }
-        catch (Exception)
-        {
-            return new BattleResponse
-            {
-                YouPct = 35,
-                CompPct = 65,
-                Note = $"When framed to favor {request.Competitor}, {brand} is likely relegated to a secondary mention."
-            };
-        }
+        var completion = await _aiCompletionService.CompleteAsync(
+            organizationId, "answer_simulator.battle", userPrompt, systemPrompt, requireJson: true);
+        if (!completion.Success)
+            throw new InvalidOperationException(completion.ErrorMessage ?? "The comparison battle is unavailable.");
+
+        return JsonSerializer.Deserialize<BattleResponse>(completion.Content, JsonOptions)
+            ?? throw new InvalidOperationException("The AI returned an empty comparison battle.");
     }
 
     private static int EstimateConsistency(bool mentioned, int sharePct)

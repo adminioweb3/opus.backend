@@ -29,15 +29,7 @@ public class AssistantController : ControllerBase
     [HttpGet("recent")]
     public IActionResult GetRecentItems()
     {
-        // Mocking the recent items to match the screenshot for the UI demo
-        var recentItems = new List<object>
-        {
-            new { id = 1, name = "Ioweb3 AEO Content Producer", owner = "Sudarshan Patil", type = "Agent", updatedAt = "5h ago" },
-            new { id = 2, name = "AEO-Optimized FAQ Generator", owner = "Sudarshan Patil", type = "Agent", updatedAt = "22h ago" },
-            new { id = 3, name = "Untitled Agent", owner = "Sudarshan Patil", type = "Agent", updatedAt = "22h ago" }
-        };
-
-        return Ok(recentItems);
+        return Ok(Array.Empty<object>());
     }
 
     [HttpPost("chat")]
@@ -46,13 +38,13 @@ public class AssistantController : ControllerBase
         if (string.IsNullOrWhiteSpace(request.Message))
             return BadRequest(new { error = "Message cannot be empty." });
 
-        Response.Headers.Add("Content-Type", "text/event-stream");
-        Response.Headers.Add("Cache-Control", "no-cache");
-        Response.Headers.Add("Connection", "keep-alive");
+        Response.Headers.ContentType = "text/event-stream";
+        Response.Headers.CacheControl = "no-cache";
+        Response.Headers.Connection = "keep-alive";
 
         var orgId = await _currentOrg.GetOrganizationIdAsync(User);
         
-        await foreach (var status in orchestrator.ExecutePipelineAsync(orgId, request.Message, request.History, HttpContext.RequestAborted))
+        await foreach (var status in orchestrator.ExecutePipelineAsync(orgId, request.Message, request.History ?? new List<ChatMessageDto>(), HttpContext.RequestAborted))
         {
             var data = JsonSerializer.Serialize(new { status = status });
             await Response.WriteAsync($"data: {data}\n\n");

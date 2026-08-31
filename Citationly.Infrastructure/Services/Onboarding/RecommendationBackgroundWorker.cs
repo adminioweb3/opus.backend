@@ -17,16 +17,16 @@ public class EnrichmentResponse
 public class RecommendationBackgroundWorker
 {
     private readonly IWebsiteRepository _websiteRepository;
-    private readonly IOpenAiService _openAiService;
+    private readonly IAiCompletionService _aiCompletionService;
     private readonly ILogger<RecommendationBackgroundWorker> _logger;
 
     public RecommendationBackgroundWorker(
         IWebsiteRepository websiteRepository, 
-        IOpenAiService openAiService,
+        IAiCompletionService aiCompletionService,
         ILogger<RecommendationBackgroundWorker> logger)
     {
         _websiteRepository = websiteRepository;
-        _openAiService = openAiService;
+        _aiCompletionService = aiCompletionService;
         _logger = logger;
     }
 
@@ -47,7 +47,7 @@ public class RecommendationBackgroundWorker
         {
             try
             {
-                await EnrichSingleRecommendationAsync(rec);
+                await EnrichSingleRecommendationAsync(organizationId, rec);
                 await _websiteRepository.UpdateGeoRecommendationAsync(rec);
                 // Respect rate limits
                 await Task.Delay(1000);
@@ -68,7 +68,7 @@ public class RecommendationBackgroundWorker
         }
     }
 
-    private async Task EnrichSingleRecommendationAsync(GeoRecommendation rec)
+    private async Task EnrichSingleRecommendationAsync(Guid organizationId, GeoRecommendation rec)
     {
         var systemPrompt = "You are an expert Technical SEO and GEO implementation specialist. Provide actionable, step-by-step guidance for a specific recommendation.";
 
@@ -97,11 +97,12 @@ Return ONLY valid JSON matching this schema exactly. No markdown blocks.
   ""referenceLinks"": [""https://..."", ""https://...""]
 }}";
 
-        var responseContent = await _openAiService.GenerateContentAsync(
-            prompt: userPrompt,
-            systemPrompt: systemPrompt,
-            requireJson: true,
-            model: "gpt-4o-mini");
+        var completion = await _aiCompletionService.CompleteAsync(
+            organizationId, "onboarding.recommendation_enrichment", userPrompt, systemPrompt, requireJson: true);
+        if (!completion.Success)
+            throw new InvalidOperationException(completion.ErrorMessage ?? "Recommendation enrichment is unavailable.");
+
+        var responseContent = completion.Content;
 
         responseContent = responseContent.Trim();
         if (responseContent.StartsWith("```json"))

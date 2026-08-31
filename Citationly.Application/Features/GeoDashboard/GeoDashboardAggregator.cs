@@ -139,7 +139,8 @@ public class GeoDashboardAggregator
             CompositeChange: compositeChange,
             EnginesScanned:  enginesScanned,
             PromptsTracked:  promptsTracked,
-            Status:          hasData ? "live" : "pending");
+            Status:          hasData ? "live" : "pending",
+            ScoringMethodVersion: latestScan?.ScoringMethodVersion ?? "unavailable");
 
         // ── Weakest pillar insight (derived) ────────────────────────
         WeakestPillarInsightDto? weakestInsight = null;

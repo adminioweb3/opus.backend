@@ -5,6 +5,7 @@ public class Subscription
     public Guid Id { get; set; }
     public Guid OrganizationId { get; set; }
     public string? StripeSubscriptionId { get; set; }
+    public string? CashfreeSubscriptionId { get; set; }
     public string PlanKey { get; set; } = "Trial";
     public string Status { get; set; } = "trialing";
     public DateTime? CurrentPeriodStart { get; set; }

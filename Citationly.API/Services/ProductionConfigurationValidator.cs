@@ -15,10 +15,16 @@ public static class ProductionConfigurationValidator
         Require(configuration["Firebase:ProjectId"], "Firebase:ProjectId", missing);
         Require(configuration["Admin:JwtSigningKey"], "Admin:JwtSigningKey", missing, minLength: 32);
 
-        if (configuration.GetValue<bool>("Billing:RequireStripe"))
+        if (configuration.GetValue<bool>("Billing:RequireCashfree"))
         {
-            Require(configuration["Stripe:ApiKey"], "Stripe:ApiKey", missing);
-            Require(configuration["Stripe:WebhookSecret"], "Stripe:WebhookSecret", missing);
+            Require(configuration["Cashfree:AppId"], "Cashfree:AppId", missing);
+            Require(configuration["Cashfree:SecretKey"], "Cashfree:SecretKey", missing);
+            Require(configuration["Cashfree:Plans:Pro:PlanId"], "Cashfree:Plans:Pro:PlanId", missing);
+            Require(configuration["Cashfree:Plans:Enterprise:PlanId"], "Cashfree:Plans:Enterprise:PlanId", missing);
+            if (!configuration.GetSection("Billing:AllowedRedirectOrigins").GetChildren().Any())
+            {
+                missing.Add("Billing:AllowedRedirectOrigins");
+            }
         }
 
         if (configuration.GetValue<bool>("AI:RequireOpenAI"))

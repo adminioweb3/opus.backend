@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Citationly.Application.Features.AnswerSimulator;
 using Citationly.Application.Interfaces.AnswerSimulator;
+using Citationly.API.Services;
 
 namespace Citationly.API.Controllers;
 
@@ -11,10 +12,12 @@ namespace Citationly.API.Controllers;
 public class AnswerSimulatorController : ControllerBase
 {
     private readonly IAnswerSimulatorService _service;
+    private readonly ICurrentOrganizationAccessor _organizationAccessor;
 
-    public AnswerSimulatorController(IAnswerSimulatorService service)
+    public AnswerSimulatorController(IAnswerSimulatorService service, ICurrentOrganizationAccessor organizationAccessor)
     {
         _service = service;
+        _organizationAccessor = organizationAccessor;
     }
 
     [HttpPost("simulate")]
@@ -25,11 +28,13 @@ public class AnswerSimulatorController : ControllerBase
 
         try
         {
-            return Ok(await _service.SimulateAsync(request));
+            var organizationId = await _organizationAccessor.GetOrganizationIdAsync(User);
+            if (!organizationId.HasValue) return Unauthorized();
+            return Ok(await _service.SimulateAsync(organizationId.Value, request));
         }
-        catch (Exception ex)
+        catch (InvalidOperationException)
         {
-            return StatusCode(500, new { message = ex.Message });
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new { message = "AI simulation is temporarily unavailable. Please try again." });
         }
     }
 
@@ -41,11 +46,13 @@ public class AnswerSimulatorController : ControllerBase
 
         try
         {
-            return Ok(await _service.CompareAsync(request));
+            var organizationId = await _organizationAccessor.GetOrganizationIdAsync(User);
+            if (!organizationId.HasValue) return Unauthorized();
+            return Ok(await _service.CompareAsync(organizationId.Value, request));
         }
-        catch (Exception ex)
+        catch (InvalidOperationException)
         {
-            return StatusCode(500, new { message = ex.Message });
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new { message = "AI comparison is temporarily unavailable. Please try again." });
         }
     }
 
@@ -57,11 +64,13 @@ public class AnswerSimulatorController : ControllerBase
 
         try
         {
-            return Ok(await _service.BattleAsync(request));
+            var organizationId = await _organizationAccessor.GetOrganizationIdAsync(User);
+            if (!organizationId.HasValue) return Unauthorized();
+            return Ok(await _service.BattleAsync(organizationId.Value, request));
         }
-        catch (Exception ex)
+        catch (InvalidOperationException)
         {
-            return StatusCode(500, new { message = ex.Message });
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new { message = "AI comparison is temporarily unavailable. Please try again." });
         }
     }
 }

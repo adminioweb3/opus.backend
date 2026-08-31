@@ -63,6 +63,18 @@ public class ScrapingJobRepository : IScrapingJobRepository
             new { OrganizationId = organizationId, Url = url });
     }
 
+    public async Task<int> MarkStaleProcessingJobsFailedAsync(TimeSpan staleAfter)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        return await connection.ExecuteAsync(
+            @"UPDATE ScrapingJobs
+              SET Status = 'Failed', CompletedAt = NOW()
+              WHERE Status = 'Processing'
+                AND StartedAt IS NOT NULL
+                AND StartedAt < NOW() - @StaleAfter;",
+            new { StaleAfter = staleAfter });
+    }
+
     public async Task DeleteJobAsync(Guid jobId)
     {
         using var connection = _dbConnectionFactory.CreateConnection();

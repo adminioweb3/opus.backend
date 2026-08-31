@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Citationly.Application.Interfaces;
 using Dapper;
 using Microsoft.AspNetCore.Authorization;
@@ -98,6 +99,22 @@ public class ScimController : ControllerBase
         return user == null ? NotFound() : Ok(ToScimUser(user));
     }
 
+    [HttpGet("Groups")]
+    public async Task<IActionResult> GetGroups([FromQuery] int startIndex = 1, [FromQuery] int count = 100)
+    {
+        var sso = await AuthenticateScimAsync();
+        if (sso.Result != null) return sso.Result;
+
+        return Ok(new
+        {
+            schemas = new[] { "urn:ietf:params:scim:api:messages:2.0:ListResponse" },
+            totalResults = 0,
+            startIndex = Math.Max(startIndex, 1),
+            itemsPerPage = 0,
+            Resources = Array.Empty<object>()
+        });
+    }
+
     [HttpPost("Users")]
     public async Task<IActionResult> CreateUser([FromBody] ScimUserRequest request)
     {
@@ -176,6 +193,13 @@ public class ScimController : ControllerBase
         var sso = await AuthenticateScimAsync();
         if (sso.Result != null) return sso.Result;
 
+        var activeOperation = request.Operations?
+            .FirstOrDefault(o => string.Equals(o.Path, "active", StringComparison.OrdinalIgnoreCase));
+        if (activeOperation != null && TryReadBoolean(activeOperation.Value, out var active) && !active)
+        {
+            return await DeleteUser(id);
+        }
+
         var requestedRole = request.Operations?
             .FirstOrDefault(o => string.Equals(o.Path, "role", StringComparison.OrdinalIgnoreCase))
             ?.Value?.ToString();
@@ -191,6 +215,21 @@ public class ScimController : ControllerBase
             new { Id = id, sso.Connection!.OrganizationId, Role = NormalizeRole(requestedRole) });
 
         await _auditLogService.RecordAsync("scim.user.patch", "Security", rows > 0 ? "Success" : "NotFound", sso.Connection.OrganizationId, targetType: "User", targetId: id.ToString(), actorType: "ScimClient", ipAddress: HttpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty, userAgent: Request.Headers.UserAgent.ToString(), cancellationToken: HttpContext.RequestAborted);
+        return rows == 0 ? NotFound() : NoContent();
+    }
+
+    [HttpDelete("Users/{id:guid}")]
+    public async Task<IActionResult> DeleteUser(Guid id)
+    {
+        var sso = await AuthenticateScimAsync();
+        if (sso.Result != null) return sso.Result;
+
+        using var connection = _dbConnectionFactory.CreateConnection();
+        var rows = await connection.ExecuteAsync(
+            "DELETE FROM Users WHERE Id = @Id AND OrganizationId = @OrganizationId",
+            new { Id = id, sso.Connection!.OrganizationId });
+
+        await _auditLogService.RecordAsync("scim.user.deprovision", "Security", rows > 0 ? "Success" : "NotFound", sso.Connection.OrganizationId, targetType: "User", targetId: id.ToString(), actorType: "ScimClient", ipAddress: HttpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty, userAgent: Request.Headers.UserAgent.ToString(), cancellationToken: HttpContext.RequestAborted);
         return rows == 0 ? NotFound() : NoContent();
     }
 
@@ -234,6 +273,32 @@ public class ScimController : ControllerBase
         var idx = filter.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
         if (idx < 0) return null;
         return filter[(idx + marker.Length)..].Trim().Trim('"', '\'');
+    }
+
+    private static bool TryReadBoolean(object? value, out bool result)
+    {
+        switch (value)
+        {
+            case bool direct:
+                result = direct;
+                return true;
+            case JsonElement { ValueKind: JsonValueKind.True }:
+                result = true;
+                return true;
+            case JsonElement { ValueKind: JsonValueKind.False }:
+                result = false;
+                return true;
+            case JsonElement { ValueKind: JsonValueKind.String } element
+                when bool.TryParse(element.GetString(), out var parsed):
+                result = parsed;
+                return true;
+            case string text when bool.TryParse(text, out var parsed):
+                result = parsed;
+                return true;
+            default:
+                result = false;
+                return false;
+        }
     }
 
     private static string HashToken(string token)

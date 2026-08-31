@@ -113,15 +113,15 @@ Return exactly this schema:
                     var promptEntity = batch.FirstOrDefault(p => p.Id == promptId);
                     if (promptEntity != null)
                     {
-                        promptEntity.Intent = enriched.intent;
-                        promptEntity.Persona = enriched.persona;
-                        promptEntity.Difficulty = enriched.difficulty;
-                        promptEntity.EstimatedInterestLevel = enriched.estimatedInterestLevel;
-                        promptEntity.Region = enriched.region;
-                        promptEntity.Language = enriched.language;
+                        promptEntity.Intent = enriched.intent ?? promptEntity.Intent;
+                        promptEntity.Persona = enriched.persona ?? promptEntity.Persona;
+                        promptEntity.Difficulty = enriched.difficulty ?? promptEntity.Difficulty;
+                        promptEntity.EstimatedInterestLevel = enriched.estimatedInterestLevel ?? promptEntity.EstimatedInterestLevel;
+                        promptEntity.Region = enriched.region ?? promptEntity.Region;
+                        promptEntity.Language = enriched.language ?? promptEntity.Language;
                         promptEntity.CommercialValue = enriched.commercialValue;
-                        promptEntity.TopicValidation = enriched.topicValidation;
-                        promptEntity.BuyerJourneyStage = enriched.buyerJourneyStage;
+                        promptEntity.TopicValidation = enriched.topicValidation ?? promptEntity.TopicValidation;
+                        promptEntity.BuyerJourneyStage = enriched.buyerJourneyStage ?? promptEntity.BuyerJourneyStage;
                         promptEntity.IsEnriched = true;
                         promptEntity.EnrichedAt = DateTime.UtcNow;
                         

@@ -3,21 +3,31 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Stripe;
 using Stripe.Checkout;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace Citationly.Infrastructure.Services;
 
-public sealed class StripeBillingService : IBillingService
+/// <summary>Retained only as historical migration code. CashfreeBillingService is the registered provider.</summary>
+public sealed class StripeBillingService
 {
+    private static readonly HashSet<string> SupportedPlanKeys = new(StringComparer.OrdinalIgnoreCase) { "Pro", "Enterprise" };
     private readonly IConfiguration _configuration;
     private readonly IBillingRepository _billingRepository;
+    private readonly BillingRedirectUrlValidator _redirectUrlValidator;
     private readonly ILogger<StripeBillingService> _logger;
     private readonly string? _apiKey;
     private readonly string? _webhookSecret;
 
-    public StripeBillingService(IConfiguration configuration, IBillingRepository billingRepository, ILogger<StripeBillingService> logger)
+    public StripeBillingService(
+        IConfiguration configuration,
+        IBillingRepository billingRepository,
+        BillingRedirectUrlValidator redirectUrlValidator,
+        ILogger<StripeBillingService> logger)
     {
         _configuration = configuration;
         _billingRepository = billingRepository;
+        _redirectUrlValidator = redirectUrlValidator;
         _logger = logger;
 
         _apiKey = ResolveConfigured(configuration["Stripe:ApiKey"]);
@@ -32,10 +42,15 @@ public sealed class StripeBillingService : IBillingService
     {
         if (!IsConfigured) throw new BillingNotConfiguredException();
 
+        if (!SupportedPlanKeys.Contains(planKey))
+            throw new InvalidOperationException("The selected plan is not available for Stripe checkout.");
+
         var priceId = ResolveConfigured(_configuration[$"Stripe:PriceIds:{planKey}"])
             ?? throw new InvalidOperationException($"No Stripe price configured for plan '{planKey}' (Stripe:PriceIds:{planKey}).");
 
         var customerId = await EnsureStripeCustomerAsync(organizationId, cancellationToken);
+        successUrl = _redirectUrlValidator.Validate(successUrl, "SuccessUrl");
+        cancelUrl = _redirectUrlValidator.Validate(cancelUrl, "CancelUrl");
 
         var sessionService = new SessionService(Client);
         var session = await sessionService.CreateAsync(new SessionCreateOptions
@@ -60,6 +75,7 @@ public sealed class StripeBillingService : IBillingService
 
         var customerId = await _billingRepository.GetStripeCustomerIdAsync(organizationId)
             ?? throw new InvalidOperationException("This organization has no Stripe customer yet - start a checkout session first.");
+        returnUrl = _redirectUrlValidator.Validate(returnUrl, "ReturnUrl");
 
         var portalService = new Stripe.BillingPortal.SessionService(Client);
         var portalSession = await portalService.CreateAsync(new Stripe.BillingPortal.SessionCreateOptions
@@ -76,43 +92,93 @@ public sealed class StripeBillingService : IBillingService
         if (!IsConfigured || _webhookSecret is null) throw new BillingNotConfiguredException();
 
         var stripeEvent = EventUtility.ConstructEvent(requestBody, stripeSignatureHeader, _webhookSecret);
-
-        switch (stripeEvent.Type)
+        var payloadHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(requestBody)));
+        if (!await _billingRepository.TryBeginWebhookEventAsync(stripeEvent.Id, payloadHash, stripeEvent.Type, cancellationToken))
         {
-            case "customer.subscription.created":
-            case "customer.subscription.updated":
-                if (stripeEvent.Data.Object is Subscription subscription)
-                {
-                    await UpsertSubscriptionFromStripeAsync(subscription, cancellationToken);
-                }
-                break;
-
-            case "customer.subscription.deleted":
-                if (stripeEvent.Data.Object is Subscription deletedSubscription)
-                {
-                    await UpsertSubscriptionFromStripeAsync(deletedSubscription, cancellationToken);
-                }
-                break;
-
-            case "invoice.paid":
-            case "invoice.payment_failed":
-                if (stripeEvent.Data.Object is Invoice invoice)
-                {
-                    await UpsertInvoiceFromStripeAsync(invoice, cancellationToken);
-                }
-                break;
-
-            case "payment_method.attached":
-                if (stripeEvent.Data.Object is PaymentMethod paymentMethod)
-                {
-                    await UpsertPaymentMethodFromStripeAsync(paymentMethod, cancellationToken);
-                }
-                break;
-
-            default:
-                _logger.LogInformation("StripeBillingService: unhandled webhook event type {Type}", stripeEvent.Type);
-                break;
+            _logger.LogInformation("StripeBillingService: skipped duplicate or in-progress event {EventId}", stripeEvent.Id);
+            return;
         }
+
+        try
+        {
+            switch (stripeEvent.Type)
+            {
+                case "customer.subscription.created":
+                case "customer.subscription.updated":
+                case "customer.subscription.deleted":
+                    if (stripeEvent.Data.Object is Subscription subscription)
+                    {
+                        await UpsertSubscriptionFromStripeAsync(subscription, cancellationToken);
+                    }
+                    break;
+
+                case "invoice.paid":
+                case "invoice.payment_failed":
+                    if (stripeEvent.Data.Object is Invoice invoice)
+                    {
+                        await UpsertInvoiceFromStripeAsync(invoice, cancellationToken);
+                    }
+                    break;
+
+                case "payment_method.attached":
+                    if (stripeEvent.Data.Object is PaymentMethod paymentMethod)
+                    {
+                        await UpsertPaymentMethodFromStripeAsync(paymentMethod, cancellationToken);
+                    }
+                    break;
+
+                default:
+                    _logger.LogInformation("StripeBillingService: unhandled webhook event type {Type}", stripeEvent.Type);
+                    break;
+            }
+
+            await _billingRepository.CompleteWebhookEventAsync(stripeEvent.Id, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            await _billingRepository.FailWebhookEventAsync(stripeEvent.Id, ex.Message, cancellationToken);
+            throw;
+        }
+    }
+
+    public async Task<int> ReconcileSubscriptionsAsync(CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured) return 0;
+
+        var customers = await _billingRepository.GetOrganizationsWithStripeCustomersAsync(cancellationToken);
+        var subscriptionService = new SubscriptionService(Client);
+        var reconciled = 0;
+
+        foreach (var (organizationId, customerId) in customers)
+        {
+            try
+            {
+                var subscriptions = await subscriptionService.ListAsync(new SubscriptionListOptions
+                {
+                    Customer = customerId,
+                    Status = "all",
+                    Limit = 100
+                }, cancellationToken: cancellationToken);
+                var latest = subscriptions.Data.OrderByDescending(subscription => subscription.Created).FirstOrDefault();
+
+                if (latest is null)
+                {
+                    await _billingRepository.SyncOrganizationPlanTypeAsync(organizationId, "Trial");
+                }
+                else
+                {
+                    await UpsertSubscriptionFromStripeAsync(latest, cancellationToken);
+                }
+
+                reconciled++;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "StripeBillingService: reconciliation failed for organization {OrganizationId}", organizationId);
+            }
+        }
+
+        return reconciled;
     }
 
     private async Task<string> EnsureStripeCustomerAsync(Guid organizationId, CancellationToken cancellationToken)
@@ -139,8 +205,14 @@ public sealed class StripeBillingService : IBillingService
             return;
         }
 
-        var priceId = subscription.Items?.Data?.FirstOrDefault()?.Price?.Id;
-        var planKey = ResolvePlanKeyFromPriceId(priceId) ?? "Pro";
+        var subscriptionItem = subscription.Items?.Data?.FirstOrDefault();
+        var priceId = subscriptionItem?.Price?.Id;
+        var planKey = ResolvePlanKeyFromPriceId(priceId);
+        if (planKey is null)
+        {
+            _logger.LogError("StripeBillingService: subscription {SubscriptionId} has an unrecognized price {PriceId}", subscription.Id, priceId);
+            throw new InvalidOperationException("Stripe subscription references an unrecognized price ID.");
+        }
 
         await _billingRepository.UpsertSubscriptionAsync(new Citationly.Domain.Entities.Subscription
         {
@@ -148,6 +220,8 @@ public sealed class StripeBillingService : IBillingService
             StripeSubscriptionId = subscription.Id,
             PlanKey = planKey,
             Status = subscription.Status,
+            CurrentPeriodStart = subscriptionItem?.CurrentPeriodStart,
+            CurrentPeriodEnd = subscriptionItem?.CurrentPeriodEnd,
             CancelAtPeriodEnd = subscription.CancelAtPeriodEnd,
         });
 

@@ -28,17 +28,17 @@ public class AuthController : ControllerBase
     public async Task<IActionResult> SyncUser()
     {
         var firebaseUid = User.FindFirst("user_id")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? User.FindFirst("sub")?.Value;
-        var email = User.FindFirst(ClaimTypes.Email)?.Value ?? User.FindFirst("email")?.Value ?? $"{firebaseUid}@no-email.firebase.com";
-        var displayName = User.FindFirst("name")?.Value ?? email?.Split('@').FirstOrDefault() ?? "New User";
-
-        // Determine provider from Firebase claims
-        var provider = DetermineProvider(User);
-
         if (string.IsNullOrEmpty(firebaseUid))
         {
             _logger.LogWarning("Missing user_id claim during SyncUser.");
             return BadRequest(new { message = "Invalid token claims: Missing user_id." });
         }
+
+        var email = User.FindFirst(ClaimTypes.Email)?.Value ?? User.FindFirst("email")?.Value ?? $"{firebaseUid}@no-email.firebase.com";
+        var displayName = User.FindFirst("name")?.Value ?? email.Split('@').FirstOrDefault() ?? "New User";
+
+        // Determine provider from Firebase claims
+        var provider = DetermineProvider(User);
 
         var command = new SyncUserCommand
         {

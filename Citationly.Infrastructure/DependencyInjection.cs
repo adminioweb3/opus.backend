@@ -62,8 +62,15 @@ public static class DependencyInjection
         // IDbConnectionFactory and holds no per-request state, so it can be safely injected into
         // the singleton AiUsageLimiter without becoming a captive dependency.
         services.AddSingleton<Citationly.Application.Interfaces.IEntitlementService, EntitlementService>();
+        services.AddSingleton<BillingRedirectUrlValidator>();
+        services.AddSingleton<CashfreeWebhookSignatureVerifier>();
         services.AddScoped<Citationly.Application.Interfaces.IBillingRepository, Citationly.Infrastructure.Repositories.BillingRepository>();
-        services.AddScoped<Citationly.Application.Interfaces.IBillingService, StripeBillingService>();
+        services.AddHttpClient("Cashfree", client =>
+        {
+            client.BaseAddress = new Uri("https://sandbox.cashfree.com");
+            client.Timeout = TimeSpan.FromSeconds(30);
+        });
+        services.AddScoped<Citationly.Application.Interfaces.IBillingService, CashfreeBillingService>();
         
         // Company Knowledge Graph
         services.AddTransient<ICompanyRepository, CompanyRepository>();
@@ -78,7 +85,6 @@ public static class DependencyInjection
         services.AddScoped<ICompetitorCacheService, Citationly.Infrastructure.Services.Competitors.CompetitorCacheService>();
 
         // Application Services
-        services.AddScoped<IOpenAiService, OpenAiService>();
         services.AddScoped<IEmbeddingService, OpenAiEmbeddingService>();
 
         // AI provider abstraction (Phase 2) - one real implementation per vendor. Each is
@@ -144,10 +150,6 @@ public static class DependencyInjection
         services.AddScoped<Citationly.Application.Interfaces.AnswerSimulator.IAnswerSimulatorService, Citationly.Infrastructure.Services.AnswerSimulator.AnswerSimulatorService>();
 
         services.AddHttpClient<ICmsIntegrationService, WordPressIntegrationService>();
-        services.AddHttpClient<IOpenAiService, OpenAiService>(client =>
-        {
-            client.Timeout = TimeSpan.FromMinutes(10);
-        });
         services.AddScoped<Citationly.Infrastructure.BackgroundJobs.GeoScanRecurringJob>();
         services.AddScoped<Citationly.Infrastructure.BackgroundJobs.CompetitorScanRecurringJob>();
         services.AddScoped<Citationly.Infrastructure.BackgroundJobs.VisibilityScanRecurringJob>();
@@ -157,6 +159,8 @@ public static class DependencyInjection
         services.AddScoped<Citationly.Infrastructure.BackgroundJobs.OpportunityScanRecurringJob>();
         services.AddScoped<Citationly.Infrastructure.BackgroundJobs.RecommendationImpactRecurringJob>();
         services.AddScoped<Citationly.Infrastructure.BackgroundJobs.AlertDeliveryRecurringJob>();
+        services.AddScoped<Citationly.Infrastructure.BackgroundJobs.BillingReconciliationRecurringJob>();
+        services.AddScoped<Citationly.Infrastructure.BackgroundJobs.ScrapingJobRecoveryRecurringJob>();
 
         return services;
     }

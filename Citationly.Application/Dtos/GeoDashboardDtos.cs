@@ -22,7 +22,8 @@ public record GeoDashboardHeaderDto(
     string CompositeChange,
     int EnginesScanned,
     int PromptsTracked,
-    string Status);
+    string Status,
+    string ScoringMethodVersion);
 
 // ── Pillar ──────────────────────────────────────────────────────
 public record GeoPillarDto(

@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Citationly.API.Services;
 using Citationly.Application.Features.Onboarding;
+using Citationly.Application.Interfaces.Security;
 using Microsoft.AspNetCore.RateLimiting;
 
 namespace Citationly.API.Controllers;
@@ -14,11 +15,16 @@ public class OnboardingController : ControllerBase
 {
     private readonly IMediator _mediator;
     private readonly ICurrentOrganizationAccessor _currentOrganizationAccessor;
+    private readonly IOutboundUrlSafetyValidator _urlSafetyValidator;
 
-    public OnboardingController(IMediator mediator, ICurrentOrganizationAccessor currentOrganizationAccessor)
+    public OnboardingController(
+        IMediator mediator,
+        ICurrentOrganizationAccessor currentOrganizationAccessor,
+        IOutboundUrlSafetyValidator urlSafetyValidator)
     {
         _mediator = mediator;
         _currentOrganizationAccessor = currentOrganizationAccessor;
+        _urlSafetyValidator = urlSafetyValidator;
     }
 
     private Task<Guid?> GetCurrentOrganizationIdAsync()
@@ -29,11 +35,13 @@ public class OnboardingController : ControllerBase
     {
         var organizationId = await GetCurrentOrganizationIdAsync();
         if (organizationId is null) return Unauthorized();
+        var websiteUrl = await ValidateWebsiteUrlAsync(request.WebsiteUrl);
+        if (websiteUrl.Error is not null) return websiteUrl.Error;
 
         var command = new AnalyzeOnboardingCommand
         {
             OrganizationId = organizationId.Value,
-            WebsiteUrl = request.WebsiteUrl ?? string.Empty,
+            WebsiteUrl = websiteUrl.NormalizedUrl,
             BusinessName = request.BusinessName ?? string.Empty,
             Industry = request.Industry ?? string.Empty,
             TargetAudience = request.TargetAudience ?? string.Empty,
@@ -53,11 +61,13 @@ public class OnboardingController : ControllerBase
     {
         var organizationId = await GetCurrentOrganizationIdAsync();
         if (organizationId is null) return Unauthorized();
+        var normalizedWebsiteUrl = await ValidateWebsiteUrlAsync(websiteUrl);
+        if (normalizedWebsiteUrl.Error is not null) return normalizedWebsiteUrl.Error;
 
         var command = new AnalyzeOnboardingCommand
         {
             OrganizationId = organizationId.Value,
-            WebsiteUrl = websiteUrl ?? string.Empty,
+            WebsiteUrl = normalizedWebsiteUrl.NormalizedUrl,
             BusinessName = businessName ?? string.Empty,
             Industry = industry ?? string.Empty,
             TargetAudience = targetAudience ?? string.Empty,
@@ -316,11 +326,13 @@ public class OnboardingController : ControllerBase
     {
         var organizationId = await GetCurrentOrganizationIdAsync();
         if (organizationId is null) return Unauthorized();
+        var websiteUrl = await ValidateWebsiteUrlAsync(request.WebsiteUrl);
+        if (websiteUrl.Error is not null) return websiteUrl.Error;
 
         var command = new CompleteOnboardingCommand
         {
             OrganizationId = organizationId.Value,
-            WebsiteUrl = request.WebsiteUrl ?? string.Empty,
+            WebsiteUrl = websiteUrl.NormalizedUrl,
             BusinessName = request.BusinessName ?? string.Empty,
             VisibilityScore = request.VisibilityScore,
             BrandAuthority = request.BrandAuthority,
@@ -339,11 +351,13 @@ public class OnboardingController : ControllerBase
     {
         var organizationId = await GetCurrentOrganizationIdAsync();
         if (organizationId is null) return Unauthorized();
+        var normalizedWebsiteUrl = await ValidateWebsiteUrlAsync(websiteUrl);
+        if (normalizedWebsiteUrl.Error is not null) return normalizedWebsiteUrl.Error;
 
         var command = new CompleteOnboardingCommand
         {
             OrganizationId = organizationId.Value,
-            WebsiteUrl = websiteUrl ?? string.Empty,
+            WebsiteUrl = normalizedWebsiteUrl.NormalizedUrl,
             BusinessName = businessName ?? string.Empty,
             VisibilityScore = visibilityScore,
             BrandAuthority = brandAuthority,
@@ -363,10 +377,12 @@ public class OnboardingController : ControllerBase
     {
         if (string.IsNullOrEmpty(request.WebsiteUrl) || string.IsNullOrEmpty(request.BusinessName))
             return BadRequest("WebsiteUrl and BusinessName are required.");
+        var websiteUrl = await ValidateWebsiteUrlAsync(request.WebsiteUrl);
+        if (websiteUrl.Error is not null) return websiteUrl.Error;
 
         var command = new SuggestKeywordsCommand
         {
-            WebsiteUrl = request.WebsiteUrl,
+            WebsiteUrl = websiteUrl.NormalizedUrl,
             BusinessName = request.BusinessName,
             Industry = request.Industry
         };
@@ -382,10 +398,12 @@ public class OnboardingController : ControllerBase
     {
         if (string.IsNullOrEmpty(request.WebsiteUrl) || string.IsNullOrEmpty(request.BusinessName))
             return BadRequest("WebsiteUrl and BusinessName are required.");
+        var websiteUrl = await ValidateWebsiteUrlAsync(request.WebsiteUrl);
+        if (websiteUrl.Error is not null) return websiteUrl.Error;
 
         var command = new DetectIndustryCommand
         {
-            WebsiteUrl = request.WebsiteUrl,
+            WebsiteUrl = websiteUrl.NormalizedUrl,
             BusinessName = request.BusinessName
         };
 
@@ -400,10 +418,12 @@ public class OnboardingController : ControllerBase
     {
         if (string.IsNullOrEmpty(request.WebsiteUrl) || string.IsNullOrEmpty(request.BusinessName))
             return BadRequest("WebsiteUrl and BusinessName are required.");
+        var websiteUrl = await ValidateWebsiteUrlAsync(request.WebsiteUrl);
+        if (websiteUrl.Error is not null) return websiteUrl.Error;
 
         var command = new DetectOfferingCommand
         {
-            WebsiteUrl = request.WebsiteUrl,
+            WebsiteUrl = websiteUrl.NormalizedUrl,
             BusinessName = request.BusinessName
         };
 
@@ -420,6 +440,21 @@ public class OnboardingController : ControllerBase
         var query = new GetUnifiedCompetitorsQuery { OrganizationId = organizationId.Value };
         var result = await _mediator.Send(query);
         return Ok(result);
+    }
+
+    private async Task<(string NormalizedUrl, IActionResult? Error)> ValidateWebsiteUrlAsync(string? websiteUrl)
+    {
+        var safety = await _urlSafetyValidator.ValidateForHttpFetchAsync(
+            websiteUrl ?? string.Empty,
+            allowMissingScheme: true,
+            cancellationToken: HttpContext.RequestAborted);
+
+        if (!safety.IsAllowed || string.IsNullOrWhiteSpace(safety.NormalizedUrl))
+        {
+            return (string.Empty, BadRequest(new { message = safety.Reason ?? "Website URL is not allowed." }));
+        }
+
+        return (safety.NormalizedUrl, null);
     }
 }
 

@@ -89,7 +89,18 @@ public class AgencyRepository : IAgencyRepository
     {
         using var connection = _dbConnectionFactory.CreateConnection();
         return await connection.QueryFirstOrDefaultAsync<ReportShareLink>(
-            "SELECT * FROM ReportShareLinks WHERE TokenHash = @TokenHash AND ExpiresAt > CURRENT_TIMESTAMP",
+            "SELECT * FROM ReportShareLinks WHERE TokenHash = @TokenHash AND ExpiresAt > CURRENT_TIMESTAMP AND RevokedAt IS NULL",
             new { TokenHash = tokenHash });
+    }
+
+    public async Task<bool> RevokeReportShareLinkAsync(Guid id, Guid agencyId)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        var rows = await connection.ExecuteAsync(
+            @"UPDATE ReportShareLinks
+              SET RevokedAt = CURRENT_TIMESTAMP
+              WHERE Id = @Id AND AgencyId = @AgencyId AND RevokedAt IS NULL;",
+            new { Id = id, AgencyId = agencyId });
+        return rows > 0;
     }
 }

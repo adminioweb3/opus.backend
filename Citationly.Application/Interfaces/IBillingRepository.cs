@@ -12,6 +12,7 @@ public interface IBillingRepository
     Task SetStripeCustomerIdAsync(Guid organizationId, string stripeCustomerId);
 
     Task UpsertSubscriptionAsync(Subscription subscription);
+    Task UpsertCashfreeSubscriptionAsync(Subscription subscription);
     Task UpsertInvoiceAsync(Invoice invoice);
     Task UpsertPaymentMethodAsync(PaymentMethod paymentMethod);
 
@@ -21,4 +22,19 @@ public interface IBillingRepository
     Task SyncOrganizationPlanTypeAsync(Guid organizationId, string planKey);
 
     Task<Guid?> GetOrganizationIdByStripeCustomerIdAsync(string stripeCustomerId);
+    Task<Guid?> GetOrganizationIdByCashfreeSubscriptionIdAsync(string cashfreeSubscriptionId);
+    Task<Subscription?> GetCashfreeSubscriptionAsync(string cashfreeSubscriptionId);
+    Task<Subscription?> GetCurrentCashfreeSubscriptionAsync(Guid organizationId);
+    Task<IReadOnlyList<Subscription>> GetCashfreeSubscriptionsAsync(CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<(Guid OrganizationId, string StripeCustomerId)>> GetOrganizationsWithStripeCustomersAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>Claims a Stripe event for processing. Returns false for completed, concurrent,
+    /// or payload-mismatched duplicate deliveries; failed events may be retried.</summary>
+    Task<bool> TryBeginWebhookEventAsync(string stripeEventId, string payloadHash, string eventType, CancellationToken cancellationToken = default);
+    Task CompleteWebhookEventAsync(string stripeEventId, CancellationToken cancellationToken = default);
+    Task FailWebhookEventAsync(string stripeEventId, string failureReason, CancellationToken cancellationToken = default);
+
+    Task<bool> TryBeginCashfreeWebhookEventAsync(string eventId, string payloadHash, string eventType, CancellationToken cancellationToken = default);
+    Task CompleteCashfreeWebhookEventAsync(string eventId, CancellationToken cancellationToken = default);
+    Task FailCashfreeWebhookEventAsync(string eventId, string failureReason, CancellationToken cancellationToken = default);
 }

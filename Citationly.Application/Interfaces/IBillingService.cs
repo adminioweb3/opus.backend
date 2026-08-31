@@ -1,31 +1,30 @@
 namespace Citationly.Application.Interfaces;
 
 /// <summary>
-/// Stripe-facing billing operations. Scaffolded ahead of a real Stripe account per the
-/// roadmap's Phase 1 B1 decision ("build scaffolding now, wire keys later") - IsConfigured
-/// is false until Stripe:ApiKey is a real key (not the "${STRIPE_API_KEY}" placeholder in
-/// appsettings.json), and every other method throws BillingNotConfiguredException until then.
-/// Read-only billing data (current subscription/invoices/payment methods) does not depend on
-/// this - it comes straight from the local DB via IBillingRepository regardless of whether
-/// Stripe is configured.
+/// Cashfree recurring-subscription operations. Secrets remain server-side; callers only receive
+/// the mandate session token required by Cashfree's client-side authorization flow.
 /// </summary>
 public interface IBillingService
 {
     bool IsConfigured { get; }
 
-    Task<string> CreateCheckoutSessionAsync(Guid organizationId, string planKey, string successUrl, string cancelUrl, CancellationToken cancellationToken = default);
+    Task<CashfreeSubscriptionSession> CreateSubscriptionSessionAsync(Guid organizationId, string planKey, string customerName, string customerEmail, string customerPhone, string returnUrl, CancellationToken cancellationToken = default);
 
-    Task<string> CreateBillingPortalSessionAsync(Guid organizationId, string returnUrl, CancellationToken cancellationToken = default);
+    Task CancelSubscriptionAsync(Guid organizationId, CancellationToken cancellationToken = default);
 
-    /// <summary>Verifies the Stripe webhook signature and applies the event to local billing
-    /// state (Subscriptions/Invoices/PaymentMethods, and a PlanType sync onto Organizations).</summary>
-    Task HandleWebhookEventAsync(string requestBody, string stripeSignatureHeader, CancellationToken cancellationToken = default);
+    /// <summary>Verifies a Cashfree webhook and applies subscription status changes locally.</summary>
+    Task HandleWebhookEventAsync(string requestBody, string signature, string timestamp, CancellationToken cancellationToken = default);
+
+    /// <summary>Reserved for provider reconciliation; returns zero until Cashfree bulk fetch is enabled.</summary>
+    Task<int> ReconcileSubscriptionsAsync(CancellationToken cancellationToken = default);
 }
+
+public sealed record CashfreeSubscriptionSession(string SubscriptionId, string SessionId, string Status, string Environment);
 
 public sealed class BillingNotConfiguredException : InvalidOperationException
 {
     public BillingNotConfiguredException()
-        : base("Billing is not configured yet. Set Stripe:ApiKey (and Stripe:WebhookSecret, Stripe:PriceIds) via environment variables to enable real subscriptions.")
+        : base("Billing is not configured yet. Set Cashfree:AppId, Cashfree:SecretKey, and the Cashfree plan IDs via environment variables to enable subscriptions.")
     {
     }
 }
