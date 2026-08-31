@@ -47,6 +47,10 @@ RUN curl -fsSL https://github.com/PowerShell/PowerShell/releases/download/v7.4.6
 
 WORKDIR /app
 
+# Render injects PORT; default to 8080 for local Docker / docker-compose.
+# The "+" binds to all interfaces (required in containers).
+ENV ASPNETCORE_URLS=http://+:${PORT:-8080}
+
 COPY --from=build /app/publish .
 
 RUN pwsh playwright.ps1 install --with-deps chromium

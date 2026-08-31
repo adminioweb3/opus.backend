@@ -92,9 +92,16 @@ builder.Services.AddCors(options =>
     options.AddPolicy("AllowFrontend", policy =>
     {
         var isDev = builder.Environment.IsDevelopment();
-        var allowedOrigins = isDev
+        var defaultOrigins = isDev
             ? new[] { "https://citationly.ai", "https://www.citationly.ai", "http://localhost:3000", "http://localhost:3010", "http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://localhost:5176" }
             : new[] { "https://citationly.ai", "https://www.citationly.ai" };
+
+        // Allow additional origins via env var (e.g. Render URLs) without touching code.
+        // Set CORS__AllowedOrigins to a comma-separated list of origins.
+        var extraOrigins = builder.Configuration["CORS:AllowedOrigins"];
+        var allowedOrigins = string.IsNullOrWhiteSpace(extraOrigins)
+            ? defaultOrigins
+            : defaultOrigins.Concat(extraOrigins.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)).Distinct().ToArray();
 
         policy.WithOrigins(allowedOrigins)
         .AllowAnyHeader()
