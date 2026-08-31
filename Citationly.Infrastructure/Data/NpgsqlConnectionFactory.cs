@@ -11,8 +11,9 @@ public class NpgsqlConnectionFactory : IDbConnectionFactory
 
     public NpgsqlConnectionFactory(IConfiguration configuration)
     {
-        _connectionString = configuration.GetConnectionString("DefaultConnection") 
+        var rawConnectionString = configuration.GetConnectionString("DefaultConnection") 
             ?? throw new ArgumentNullException("DefaultConnection string is missing.");
+        _connectionString = PostgresConnectionStringNormalizer.Normalize(rawConnectionString);
     }
 
     public IDbConnection CreateConnection()

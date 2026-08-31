@@ -76,7 +76,8 @@ builder.Services.AddInfrastructure();
 builder.Services.AddScoped<ICurrentOrganizationAccessor, CurrentOrganizationAccessor>();
 
 // Configure Hangfire
-var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+var rawConnectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+var connectionString = Citationly.Infrastructure.Data.PostgresConnectionStringNormalizer.Normalize(rawConnectionString);
 
 builder.Services.AddHangfire(configuration => configuration
     .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)

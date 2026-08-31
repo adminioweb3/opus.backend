@@ -49,7 +49,9 @@ WORKDIR /app
 
 # Render injects PORT; default to 8080 for local Docker / docker-compose.
 # The "+" binds to all interfaces (required in containers).
-ENV ASPNETCORE_URLS=http://+:${PORT:-8080}
+ENV ASPNETCORE_URLS=http://+:${PORT:-8080} \
+    DOTNET_HOSTBUILDER__RELOADCONFIGONCHANGE=false \
+    DOTNET_USE_POLLING_FILE_WATCHER=true
 
 COPY --from=build /app/publish .
 
