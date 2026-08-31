@@ -115,7 +115,10 @@ builder.Services.AddCors(options =>
 var firebaseProjectId = builder.Configuration["Firebase:ProjectId"];
 var adminJwtIssuer = builder.Configuration["Admin:JwtIssuer"] ?? "Citationly.Admin";
 var adminJwtAudience = builder.Configuration["Admin:JwtAudience"] ?? "Citationly.Admin.Panel";
-var adminJwtSigningKey = builder.Configuration["Admin:JwtSigningKey"] ?? string.Empty;
+var rawAdminSigningKey = builder.Configuration["Admin:JwtSigningKey"];
+var adminJwtSigningKey = !string.IsNullOrWhiteSpace(rawAdminSigningKey) && !rawAdminSigningKey.StartsWith("${", StringComparison.Ordinal)
+    ? rawAdminSigningKey
+    : "dev_jwt_fallback_key_32_bytes_long_citationly_12345!";
 ProductionConfigurationValidator.Validate(builder.Configuration, builder.Environment.EnvironmentName);
 
 builder.Services.AddAuthentication()
