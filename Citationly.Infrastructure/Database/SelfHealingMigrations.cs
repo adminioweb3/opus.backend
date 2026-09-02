@@ -747,6 +747,16 @@ public static class SelfHealingMigrations
         );
         CREATE INDEX IF NOT EXISTS idx_cashfreewebhookevents_status ON CashfreeWebhookEvents (Status, LastAttemptAt);
 
+        CREATE TABLE IF NOT EXISTS WebsiteProfiles (
+            Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            OrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,
+            WebsiteUrl VARCHAR(2048) NOT NULL,
+            BusinessName VARCHAR(255) NOT NULL,
+            RawProfileJson JSONB NOT NULL DEFAULT '{}'::jsonb,
+            CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_websiteprofiles_org_created ON WebsiteProfiles (OrganizationId, CreatedAt DESC);
+
         -- Usage metering (Phase 1) - per-org, per-metric, per-period counters so AI-cost
         -- endpoints and recurring jobs can be capped by plan instead of running unbounded.
         -- Persisted (unlike the in-process burst limiter in AiUsageLimiter) so a quota
