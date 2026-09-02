@@ -291,10 +291,142 @@ SCHEMA (Return ONLY this JSON):
         catch (Exception ex)
         {
             Console.WriteLine($"Error during AI Onboarding analysis: {ex.Message}");
-            throw;
+            return CreateFallbackAnalysisResult(request);
         }
 
-        throw new Exception("AI returned invalid data.");
+        return CreateFallbackAnalysisResult(request);
+    }
+
+    private static OnboardingAnalysisResult CreateFallbackAnalysisResult(AnalyzeOnboardingCommand request)
+    {
+        var keywords = request.Keywords
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(k => !string.IsNullOrWhiteSpace(k))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(10)
+            .ToList();
+
+        var offering = string.IsNullOrWhiteSpace(request.MainOffering)
+            ? "Core product or service"
+            : request.MainOffering.Trim();
+        var industry = string.IsNullOrWhiteSpace(request.Industry)
+            ? "Unspecified"
+            : request.Industry.Trim();
+        var audience = string.IsNullOrWhiteSpace(request.WhoDoYouSellTo)
+            ? request.TargetAudience
+            : request.WhoDoYouSellTo;
+
+        return new OnboardingAnalysisResult
+        {
+            BusinessSummary = new ConfidentString
+            {
+                Value = $"{request.BusinessName} offers {offering} for {audience}.",
+                Confidence = 45
+            },
+            CoreServices = new ConfidentList<string>
+            {
+                Value = new List<string> { offering },
+                Confidence = 45
+            },
+            Products = new ConfidentList<string>
+            {
+                Value = new List<string> { offering },
+                Confidence = 40
+            },
+            IndustriesServed = new ConfidentList<string>
+            {
+                Value = new List<string> { industry },
+                Confidence = 50
+            },
+            BusinessModel = new ConfidentString
+            {
+                Value = industry,
+                Confidence = 35
+            },
+            UniqueSellingProposition = new ConfidentString
+            {
+                Value = offering,
+                Confidence = 35
+            },
+            PrimaryTechnologies = new ConfidentList<string>
+            {
+                Value = new List<string>(),
+                Confidence = 0
+            },
+            TargetCustomers = new ConfidentList<string>
+            {
+                Value = audience.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Take(6).ToList(),
+                Confidence = 45
+            },
+            ContentCategories = new ConfidentList<string>
+            {
+                Value = keywords.Count > 0 ? keywords : new List<string> { offering },
+                Confidence = 35
+            },
+            SeoStrength = new ConfidentSeoStrength
+            {
+                Value = new SeoStrengthObj
+                {
+                    Overall = "Needs review",
+                    Score = 35,
+                    Recommendations = new List<string> { "Complete the website scan and rerun analysis for evidence-backed recommendations." }
+                },
+                Confidence = 25
+            },
+            WebsiteStructure = new ConfidentWebsiteStructure
+            {
+                Value = new WebsiteStructureObj
+                {
+                    NavigationQuality = "Unknown",
+                    ImportantPages = new List<string>(),
+                    MobileFriendlyEstimate = "Unknown",
+                    OverallArchitecture = "Website scan was unavailable during onboarding."
+                },
+                Confidence = 20
+            },
+            DomainAuthorityEstimate = new ConfidentDomainAuthority
+            {
+                Value = new DomainAuthorityObj
+                {
+                    EstimatedScore = 25,
+                    Category = "Unverified",
+                    Reason = "Fallback estimate generated because live AI analysis was unavailable."
+                },
+                Confidence = 20
+            },
+            TopicalAuthority = new ConfidentTopicalAuthority
+            {
+                Value = new TopicalAuthorityObj
+                {
+                    PrimaryTopics = keywords,
+                    AuthorityLevel = "Unverified",
+                    Reason = "Fallback topics are based on supplied onboarding keywords."
+                },
+                Confidence = 30
+            },
+            BrandPositioning = new ConfidentString
+            {
+                Value = offering,
+                Confidence = 35
+            },
+            ToneOfVoice = new ConfidentToneOfVoice
+            {
+                Value = new ToneOfVoiceObj
+                {
+                    PrimaryTone = "Unknown",
+                    SecondaryTone = new List<string>(),
+                    WritingStyle = "Unknown",
+                    ReadingLevel = "Unknown"
+                },
+                Confidence = 10
+            },
+            CompanyScale = new ConfidentString
+            {
+                Value = "Startup",
+                Confidence = 10
+            },
+            OverallConfidence = 30
+        };
     }
 }
 
