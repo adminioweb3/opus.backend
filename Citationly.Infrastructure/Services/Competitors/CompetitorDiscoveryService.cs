@@ -581,7 +581,7 @@ Return a JSON object whose ""competitors"" key holds the array:
             if (!completion.Success)
             {
                 Console.WriteLine($"[Discovery] Generation call failed: {completion.ErrorMessage}");
-                return new List<CompanyCompetitor>();
+                throw new InvalidOperationException(completion.ErrorMessage ?? "Competitor generation failed.");
             }
 
             var responseContent = completion.Content;
@@ -593,7 +593,7 @@ Return a JSON object whose ""competitors"" key holds the array:
         catch (Exception ex)
         {
             Console.WriteLine($"[Discovery] Generation call failed: {ex.Message}");
-            return new List<CompanyCompetitor>();
+            throw;
         }
 
         var edges = new List<CompanyCompetitor>();
@@ -674,6 +674,9 @@ Return a JSON object whose ""competitors"" key holds the array:
         }
 
         Console.WriteLine($"[Discovery] Generated {edges.Count} of {count} requested");
+        if (edges.Count == 0 && count > 0)
+            throw new InvalidOperationException("Competitor generation returned no usable competitors after validation.");
+
         return edges;
     }
 

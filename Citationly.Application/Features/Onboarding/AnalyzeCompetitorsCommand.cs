@@ -71,22 +71,38 @@ public class AnalyzeCompetitorsCommandHandler : IRequestHandler<AnalyzeCompetito
             return new CompetitorAnalysisResult { Success = false, Error = "No website profile found. Run analysis step first." };
         }
 
-        var company = await _companyGraphService.EnsureCompanyAsync(
-            request.OrganizationId, profile.WebsiteUrl, profile.BusinessName, profile.RawProfileJson, cancellationToken);
-
-        var edges = await _discoveryService.DiscoverCompetitorsAsync(
-            request.OrganizationId, company.Id, profile.BusinessName, profile.RawProfileJson, cancellationToken);
-
-        await _companyCompetitorRepository.ReplaceCompetitorsForCompanyAsync(company.Id, edges);
-
-        var rows = await _syncService.SyncOrgCompetitorsAsync(request.OrganizationId, company.Id);
-
-        return new CompetitorAnalysisResult
+        try
         {
-            Success = true,
-            TotalCompetitors = rows.Count,
-            Competitors = rows,
-            EnrichmentQueued = false
-        };
+            var company = await _companyGraphService.EnsureCompanyAsync(
+                request.OrganizationId, profile.WebsiteUrl, profile.BusinessName, profile.RawProfileJson, cancellationToken);
+
+            var edges = await _discoveryService.DiscoverCompetitorsAsync(
+                request.OrganizationId, company.Id, profile.BusinessName, profile.RawProfileJson, cancellationToken);
+
+            if (edges.Count == 0)
+            {
+                return new CompetitorAnalysisResult
+                {
+                    Success = false,
+                    Error = "No competitors could be identified. Check the Render OpenAI__ApiKey and AI provider logs."
+                };
+            }
+
+            await _companyCompetitorRepository.ReplaceCompetitorsForCompanyAsync(company.Id, edges);
+
+            var rows = await _syncService.SyncOrgCompetitorsAsync(request.OrganizationId, company.Id);
+
+            return new CompetitorAnalysisResult
+            {
+                Success = true,
+                TotalCompetitors = rows.Count,
+                Competitors = rows,
+                EnrichmentQueued = false
+            };
+        }
+        catch (Exception ex)
+        {
+            return new CompetitorAnalysisResult { Success = false, Error = ex.Message };
+        }
     }
 }

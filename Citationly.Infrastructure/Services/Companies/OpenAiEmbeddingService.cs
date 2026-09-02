@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Citationly.Application.Interfaces;
 using Citationly.Application.Interfaces.Companies;
+using Citationly.Infrastructure.Services;
 using Microsoft.Extensions.Configuration;
 
 namespace Citationly.Infrastructure.Services.Companies;
@@ -25,7 +26,7 @@ public class OpenAiEmbeddingService : IEmbeddingService
         IAiResilienceService aiResilience)
     {
         _httpClient = httpClient;
-        _apiKey = configuration["OpenAI:ApiKey"] ?? string.Empty;
+        _apiKey = ConfigPlaceholderHelper.Resolve(configuration["OpenAI:ApiKey"]) ?? string.Empty;
         _aiContext = aiContext;
         _aiUsageLimiter = aiUsageLimiter;
         _aiResilience = aiResilience;

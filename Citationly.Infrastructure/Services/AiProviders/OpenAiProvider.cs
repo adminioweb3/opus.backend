@@ -23,6 +23,8 @@ public sealed class OpenAiProvider : IAiProvider
     private readonly string? _apiKey;
     private readonly string _model;
     private readonly string _searchModel;
+    private readonly int _maxTokens;
+    private readonly int _searchMaxTokens;
     private readonly bool _enableWebSearch;
     private readonly IAiRequestContextAccessor _aiContext;
     private readonly IAiUsageLimiter _aiUsageLimiter;
@@ -39,6 +41,8 @@ public sealed class OpenAiProvider : IAiProvider
         _apiKey = ConfigPlaceholderHelper.Resolve(configuration["OpenAI:ApiKey"]);
         _model = ConfigPlaceholderHelper.Resolve(configuration["OpenAI:Model"]) ?? "gpt-4o-mini";
         _searchModel = ConfigPlaceholderHelper.Resolve(configuration["OpenAI:SearchModel"]) ?? "gpt-4o-mini";
+        _maxTokens = configuration.GetValue("OpenAI:MaxTokens", 4096);
+        _searchMaxTokens = configuration.GetValue("OpenAI:SearchMaxTokens", _maxTokens);
         _enableWebSearch = configuration.GetValue("OpenAI:EnableWebSearch", true);
         _aiContext = aiContext;
         _aiUsageLimiter = aiUsageLimiter;
@@ -69,7 +73,7 @@ public sealed class OpenAiProvider : IAiProvider
                 new { role = "system", content = systemPrompt },
                 new { role = "user", content = userPrompt }
             },
-            max_tokens = 700
+            max_tokens = _maxTokens
         };
 
         return await _aiResilience.ExecuteAsync("provider:openai", async ct =>
@@ -125,7 +129,7 @@ public sealed class OpenAiProvider : IAiProvider
             },
             // The "web_search" tool is no longer available on standard chat completions models.
             // tools = new[] { new { type = "web_search" } },
-            max_tokens = 700
+            max_tokens = _searchMaxTokens
         };
 
         return await _aiResilience.ExecuteAsync("provider:openai", async ct =>

@@ -98,9 +98,25 @@ public sealed class AiCompletionService : IAiCompletionService
 
     private static bool IsJsonObject(string raw)
     {
+        if (string.IsNullOrWhiteSpace(raw)) return false;
+
+        var trimmed = raw.Trim();
+        if (trimmed.StartsWith("```json", StringComparison.OrdinalIgnoreCase))
+        {
+            trimmed = trimmed[7..].Trim();
+            if (trimmed.EndsWith("```", StringComparison.Ordinal))
+                trimmed = trimmed[..^3].Trim();
+        }
+        else if (trimmed.StartsWith("```", StringComparison.Ordinal))
+        {
+            trimmed = trimmed[3..].Trim();
+            if (trimmed.EndsWith("```", StringComparison.Ordinal))
+                trimmed = trimmed[..^3].Trim();
+        }
+
         try
         {
-            using var doc = JsonDocument.Parse(raw);
+            using var doc = JsonDocument.Parse(trimmed);
             return doc.RootElement.ValueKind == JsonValueKind.Object;
         }
         catch

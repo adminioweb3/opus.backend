@@ -94,7 +94,11 @@ Return ONLY the JSON object.";
             systemPrompt,
             requireJson: true,
             preferredProviderKey: "openai");
-        if (!completion.Success) return new List<CitationSource>();
+        if (!completion.Success)
+        {
+            Console.WriteLine($"[CitationDiscovery] Discovery call failed: {completion.ErrorMessage}");
+            throw new InvalidOperationException(completion.ErrorMessage ?? "Citation discovery failed.");
+        }
 
         var responseContent = completion.Content.Trim();
         
@@ -116,7 +120,10 @@ Return ONLY the JSON object.";
         var parsed = JsonSerializer.Deserialize<CitationDiscoveryResponseDto>(responseContent, options);
 
         if (parsed == null || parsed.Sources == null)
+        {
+            Console.WriteLine("[CitationDiscovery] Discovery response did not contain a sources array.");
             return new List<CitationSource>();
+        }
 
         return parsed.Sources.Select(p => new CitationSource
         {
