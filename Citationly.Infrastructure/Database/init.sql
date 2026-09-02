@@ -1335,7 +1335,128 @@ CREATE TABLE IF NOT EXISTS CompanyCompetitor (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_companycompetitor_pair ON CompanyCompetitor (CompanyId, CompetitorCompanyId);
 CREATE INDEX IF NOT EXISTS idx_companycompetitor_company_rank ON CompanyCompetitor (CompanyId, Rank);
 
--- Links each org's own website to its Company graph node.
-ALTER TABLE Websites ADD COLUMN IF NOT EXISTS CompanyId UUID REFERENCES Company(Id) ON DELETE SET NULL;
-CREATE INDEX IF NOT EXISTS idx_websites_companyid ON Websites (CompanyId);
+-- Multi-Auth Provider Support: track all auth methods linked to each user
+CREATE TABLE IF NOT EXISTS AuthProviders (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    UserId UUID NOT NULL REFERENCES Users(Id) ON DELETE CASCADE,
+    Provider VARCHAR(50) NOT NULL,
+    ProviderUid VARCHAR(255) NOT NULL,
+    LinkedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(Provider, ProviderUid),
+    UNIQUE(UserId, Provider)
+);
+CREATE INDEX IF NOT EXISTS idx_authproviders_provideruid ON AuthProviders (Provider, ProviderUid);
+CREATE INDEX IF NOT EXISTS idx_authproviders_userid ON AuthProviders (UserId);
+
+-- Link Account API: track pending account linking requests
+CREATE TABLE IF NOT EXISTS PendingAccountLinks (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    Email VARCHAR(255) NOT NULL,
+    Provider VARCHAR(50) NOT NULL,
+    ProviderUid VARCHAR(255) NOT NULL,
+    ProviderEmail VARCHAR(255),
+    ExpiresAt TIMESTAMP WITH TIME ZONE NOT NULL,
+    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(Provider, ProviderUid)
+);
+CREATE INDEX IF NOT EXISTS idx_pendinglinks_email ON PendingAccountLinks (Email);
+CREATE INDEX IF NOT EXISTS idx_pendinglinks_expiresat ON PendingAccountLinks (ExpiresAt);
+
+-- WebsiteProfiles: org-scoped raw website extraction (onboarding completion signal)
+CREATE TABLE IF NOT EXISTS WebsiteProfiles (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,
+    WebsiteUrl VARCHAR(2048) NOT NULL,
+    BusinessName VARCHAR(255) NOT NULL,
+    RawProfileJson JSONB NOT NULL DEFAULT '{}'::jsonb,
+    CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_websiteprofiles_org_created ON WebsiteProfiles (OrganizationId, CreatedAt DESC);
+
+-- Enhanced user creation/lookup with multi-auth provider support
+CREATE OR REPLACE FUNCTION sp_CreateOrGetUserV2(
+    p_FirebaseUid VARCHAR,
+    p_Provider VARCHAR,
+    p_ProviderUid VARCHAR,
+    p_Email VARCHAR,
+    p_DisplayName VARCHAR
+)
+RETURNS TABLE (
+    UserId UUID,
+    OrganizationId UUID,
+    Role VARCHAR,
+    IsNewUser BOOLEAN
+) AS $$
+DECLARE
+    v_UserId UUID;
+    v_OrganizationId UUID;
+    v_Role VARCHAR;
+    v_IsNewUser BOOLEAN := FALSE;
+BEGIN
+    p_Email := LOWER(TRIM(p_Email));
+    PERFORM pg_advisory_xact_lock(hashtext(p_Email));
+
+    -- 1. Check if this provider+uid combo is already linked
+    SELECT ap.UserId INTO v_UserId FROM AuthProviders ap WHERE ap.Provider = p_Provider AND ap.ProviderUid = p_ProviderUid;
+
+    IF v_UserId IS NOT NULL THEN
+        SELECT u.OrganizationId, u.Role INTO v_OrganizationId, v_Role FROM Users u WHERE u.Id = v_UserId;
+        RETURN QUERY SELECT v_UserId AS UserId, v_OrganizationId AS OrganizationId, v_Role AS Role, FALSE AS IsNewUser;
+        RETURN;
+    END IF;
+
+    -- 2. Check if email already exists
+    SELECT u.Id, u.OrganizationId, u.Role INTO v_UserId, v_OrganizationId, v_Role
+    FROM Users u WHERE LOWER(u.Email) = p_Email;
+
+    IF v_UserId IS NOT NULL THEN
+        INSERT INTO AuthProviders (UserId, Provider, ProviderUid) VALUES (v_UserId, p_Provider, p_ProviderUid)
+        ON CONFLICT (UserId, Provider) DO NOTHING;
+        RETURN QUERY SELECT v_UserId AS UserId, v_OrganizationId AS OrganizationId, v_Role AS Role, FALSE AS IsNewUser;
+        RETURN;
+    END IF;
+
+    -- 3. New user: check for team invite
+    DECLARE
+        v_InviteId UUID;
+        v_InviteOrgId UUID;
+        v_InviteRole VARCHAR;
+    BEGIN
+        SELECT i.Id, i.OrganizationId, i.Role INTO v_InviteId, v_InviteOrgId, v_InviteRole
+        FROM Invites i
+        WHERE LOWER(i.Email) = p_Email AND i.AcceptedAt IS NULL AND i.ExpiresAt > CURRENT_TIMESTAMP
+        ORDER BY i.CreatedAt DESC LIMIT 1;
+
+        IF v_InviteId IS NOT NULL THEN
+            INSERT INTO Users (OrganizationId, FirebaseUid, Email, DisplayName, Role)
+            VALUES (v_InviteOrgId, p_FirebaseUid, p_Email, p_DisplayName, v_InviteRole)
+            RETURNING Id INTO v_UserId;
+
+            INSERT INTO AuthProviders (UserId, Provider, ProviderUid) VALUES (v_UserId, p_Provider, p_ProviderUid);
+            UPDATE Invites SET AcceptedAt = CURRENT_TIMESTAMP WHERE Id = v_InviteId;
+
+            v_OrganizationId := v_InviteOrgId;
+            v_Role := v_InviteRole;
+            v_IsNewUser := TRUE;
+            RETURN QUERY SELECT v_UserId AS UserId, v_OrganizationId AS OrganizationId, v_Role AS Role, v_IsNewUser AS IsNewUser;
+            RETURN;
+        END IF;
+    END;
+
+    -- 4. Brand new user: create organization and user
+    INSERT INTO Organizations (Name, PlanType, TrialEndsAt)
+    VALUES (p_DisplayName || '''s Org', 'Trial', CURRENT_TIMESTAMP + INTERVAL '7 days')
+    RETURNING Id INTO v_OrganizationId;
+
+    INSERT INTO Users (OrganizationId, FirebaseUid, Email, DisplayName, Role)
+    VALUES (v_OrganizationId, p_FirebaseUid, p_Email, p_DisplayName, 'Admin')
+    RETURNING Id INTO v_UserId;
+
+    INSERT INTO AuthProviders (UserId, Provider, ProviderUid) VALUES (v_UserId, p_Provider, p_ProviderUid);
+
+    v_Role := 'Admin';
+    v_IsNewUser := TRUE;
+    RETURN QUERY SELECT v_UserId AS UserId, v_OrganizationId AS OrganizationId, v_Role AS Role, v_IsNewUser AS IsNewUser;
+END;
+$$ LANGUAGE plpgsql;
 
