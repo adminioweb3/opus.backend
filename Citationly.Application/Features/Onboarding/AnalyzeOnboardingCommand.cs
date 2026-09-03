@@ -99,15 +99,22 @@ public class AnalyzeOnboardingCommandHandler : IRequestHandler<AnalyzeOnboarding
         // 0. Check if WebsiteProfile already exists
         if (request.OrganizationId != Guid.Empty)
         {
-            var existingProfile = await _websiteRepository.GetLatestWebsiteProfileAsync(request.OrganizationId);
-            if (existingProfile != null && (existingProfile.WebsiteUrl.Contains(request.WebsiteUrl) || request.WebsiteUrl.Contains(existingProfile.WebsiteUrl)))
+            try
             {
-                try
+                var existingProfile = await _websiteRepository.GetLatestWebsiteProfileAsync(request.OrganizationId);
+                if (existingProfile != null && (existingProfile.WebsiteUrl.Contains(request.WebsiteUrl) || request.WebsiteUrl.Contains(existingProfile.WebsiteUrl)))
                 {
-                    var cachedResult = JsonSerializer.Deserialize<OnboardingAnalysisResult>(existingProfile.RawProfileJson, CreateJsonSerializerOptions());
-                    if (cachedResult != null) return cachedResult;
+                    try
+                    {
+                        var cachedResult = JsonSerializer.Deserialize<OnboardingAnalysisResult>(existingProfile.RawProfileJson, CreateJsonSerializerOptions());
+                        if (cachedResult != null) return cachedResult;
+                    }
+                    catch { }
                 }
-                catch { }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error fetching cached onboarding profile: {ex.Message}");
             }
         }
 
@@ -250,7 +257,7 @@ SCHEMA (Return ONLY this JSON):
             var result = JsonSerializer.Deserialize<OnboardingAnalysisResult>(responseContent, CreateJsonSerializerOptions());
             if (result != null)
             {
-                await PersistAnalysisResultAsync(request, responseContent);
+                await TryPersistAnalysisResultAsync(request, responseContent);
 
                 return result;
             }
@@ -267,8 +274,20 @@ SCHEMA (Return ONLY this JSON):
     {
         var result = CreateFallbackAnalysisResult(request);
         var json = JsonSerializer.Serialize(result, CreateJsonSerializerOptions());
-        await PersistAnalysisResultAsync(request, json);
+        await TryPersistAnalysisResultAsync(request, json);
         return result;
+    }
+
+    private async Task TryPersistAnalysisResultAsync(AnalyzeOnboardingCommand request, string rawProfileJson)
+    {
+        try
+        {
+            await PersistAnalysisResultAsync(request, rawProfileJson);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error persisting onboarding analysis: {ex.Message}");
+        }
     }
 
     private async Task PersistAnalysisResultAsync(AnalyzeOnboardingCommand request, string rawProfileJson)

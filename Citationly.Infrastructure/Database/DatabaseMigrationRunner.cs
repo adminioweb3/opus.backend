@@ -85,6 +85,25 @@ internal static class DatabaseMigrations
     [
         new("202608260001_self_healing_baseline", "Apply current idempotent production schema baseline", SelfHealingMigrations.Sql),
         new(
+            "202609030002_onboarding_profile_schema",
+            "Ensure onboarding analysis profile persistence schema exists",
+            """
+            ALTER TABLE Organizations ADD COLUMN IF NOT EXISTS Industry VARCHAR(255);
+            ALTER TABLE Organizations ADD COLUMN IF NOT EXISTS WhoDoYouSellTo TEXT;
+            ALTER TABLE Organizations ADD COLUMN IF NOT EXISTS KnownCompetitors TEXT;
+            ALTER TABLE Organizations ADD COLUMN IF NOT EXISTS MainOffering TEXT;
+
+            CREATE TABLE IF NOT EXISTS WebsiteProfiles (
+                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                OrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,
+                WebsiteUrl VARCHAR(2048) NOT NULL,
+                BusinessName VARCHAR(255) NOT NULL,
+                RawProfileJson JSONB NOT NULL,
+                CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_websiteprofiles_org_created ON WebsiteProfiles (OrganizationId, CreatedAt DESC);
+            """),
+        new(
             "202609030001_aisearchprompts_prompt_class_backfill",
             "Backfill AiSearchPrompts prompt classification columns added after the baseline migration",
             """
