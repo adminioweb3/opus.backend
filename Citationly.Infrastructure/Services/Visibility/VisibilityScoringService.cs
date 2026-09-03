@@ -15,14 +15,15 @@ public class VisibilityScoringService : IVisibilityScoringService
     public List<PlatformVisibility> CalculatePlatformScores(Guid organizationId, List<AiSearchPrompt> prompts)
     {
         var results = new List<PlatformVisibility>();
+        var scoringPrompts = GetOrganicVisibilityPrompts(prompts);
 
         // Base metrics from prompts
-        double avgBrandStrength = prompts.Any() ? prompts.Average(p => p.BrandStrength) : 0;
-        double avgContentStrength = prompts.Any() ? prompts.Average(p => p.ContentStrength) : 0;
-        double avgCitationStrength = prompts.Any() ? prompts.Average(p => p.CitationStrength) : 0;
+        double avgBrandStrength = scoringPrompts.Any() ? scoringPrompts.Average(p => p.BrandStrength) : 0;
+        double avgContentStrength = scoringPrompts.Any() ? scoringPrompts.Average(p => p.ContentStrength) : 0;
+        double avgCitationStrength = scoringPrompts.Any() ? scoringPrompts.Average(p => p.CitationStrength) : 0;
         
-        double overallPromptCoverage = prompts.Any() ? (prompts.Count(p => p.AppearsInAnswer) / (double)prompts.Count) * 100 : 0;
-        double overallMentionRate = prompts.Any() ? (prompts.Sum(p => p.MentionProbability) / (double)prompts.Count) : 0;
+        double overallPromptCoverage = scoringPrompts.Any() ? (scoringPrompts.Count(p => p.AppearsInAnswer) / (double)scoringPrompts.Count) * 100 : 0;
+        double overallMentionRate = scoringPrompts.Any() ? scoringPrompts.Sum(p => p.MentionProbability) / (double)scoringPrompts.Count : 0;
 
         foreach (var platform in Platforms)
         {
@@ -51,7 +52,7 @@ public class VisibilityScoringService : IVisibilityScoringService
             // the output should be identical too.
             int mentionRate = (int)Math.Clamp(overallMentionRate, 0, 100);
             int promptCoverage = (int)Math.Clamp(overallPromptCoverage, 0, 100);
-            int confidence = CalculateEvidenceConfidence(prompts);
+            int confidence = CalculateEvidenceConfidence(scoringPrompts);
 
             // Determine average rank bucket based on visibility score
             string avgRank = score >= 80 ? "1–3" :
@@ -78,6 +79,21 @@ public class VisibilityScoringService : IVisibilityScoringService
         }
 
         return results;
+    }
+
+    private static List<AiSearchPrompt> GetOrganicVisibilityPrompts(List<AiSearchPrompt> prompts)
+    {
+        var hasClassification = prompts.Any(p =>
+            !string.IsNullOrWhiteSpace(p.PromptClass)
+            || !string.IsNullOrWhiteSpace(p.MetricBucket));
+
+        if (!hasClassification) return prompts;
+
+        return prompts
+            .Where(p => p.IsOrganicVisibilityEligible
+                        && !p.IsBranded
+                        && string.Equals(p.MetricBucket, "OrganicVisibility", StringComparison.OrdinalIgnoreCase))
+            .ToList();
     }
 
     /// <summary>

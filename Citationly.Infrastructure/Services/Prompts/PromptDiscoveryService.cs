@@ -60,19 +60,19 @@ public class PromptDiscoveryService : IPromptDiscoveryService
         // business directly — that's the entire point of a comparison prompt.
         var comparisonTopic = $"{businessName} vs Competitors";
         var comparisonItems = await DiscoverComparisonBatchAsync(organizationId, businessName, competitorNames, ctx, systemPrompt);
-        AppendTopic(entities, seen, organizationId, comparisonTopic, comparisonItems);
+        AppendTopic(entities, seen, organizationId, businessName, comparisonTopic, comparisonItems);
 
         // Topics 2-5: real business/service lines, generic non-branded prompts.
         var batchTasks = topicNames.Select(name => DiscoverBusinessLineBatchAsync(organizationId, businessName, name, ctx, systemPrompt));
         var batchResults = await Task.WhenAll(batchTasks);
 
         for (int i = 0; i < topicNames.Count; i++)
-            AppendTopic(entities, seen, organizationId, topicNames[i], batchResults[i]);
+            AppendTopic(entities, seen, organizationId, businessName, topicNames[i], batchResults[i]);
 
         return entities;
     }
 
-    private static void AppendTopic(List<AiSearchPrompt> entities, HashSet<string> seen, Guid organizationId, string topicName, List<DiscoveryPromptItem> items)
+    private static void AppendTopic(List<AiSearchPrompt> entities, HashSet<string> seen, Guid organizationId, string businessName, string topicName, List<DiscoveryPromptItem> items)
     {
         var kept = 0;
         foreach (var p in items)
@@ -82,7 +82,7 @@ public class PromptDiscoveryService : IPromptDiscoveryService
             var text = (p.prompt ?? "").Trim();
             if (text.Length == 0 || !seen.Add(text)) continue;
 
-            entities.Add(new AiSearchPrompt
+            var promptEntity = new AiSearchPrompt
             {
                 Id = Guid.NewGuid(),
                 OrganizationId = organizationId,
@@ -92,12 +92,102 @@ public class PromptDiscoveryService : IPromptDiscoveryService
                 IsEnriched = false,
                 GeneratedAt = DateTime.UtcNow,
                 RawJson = JsonSerializer.Serialize(p, JsonOptions),
-            });
+            };
+
+            ApplyInitialClassification(promptEntity, businessName);
+            entities.Add(promptEntity);
             kept++;
         }
 
         if (kept < PromptsPerTopic)
             Console.WriteLine($"[Discovery] Topic '{topicName}' only yielded {kept}/{PromptsPerTopic} prompts after generation + dedup.");
+    }
+
+    private static void ApplyInitialClassification(AiSearchPrompt prompt, string businessName)
+    {
+        var text = prompt.QueryString;
+        var isBranded = Contains(text, businessName);
+        prompt.IsBranded = isBranded;
+
+        if (isBranded)
+        {
+            prompt.PromptClass = LooksComparative(text) ? "BrandedComparison" : "BrandedResearch";
+            prompt.MetricBucket = "BrandedPresence";
+            prompt.IsOrganicVisibilityEligible = false;
+            prompt.ExpectsProviderRecommendations = false;
+            prompt.ExpectsBrandMention = true;
+            prompt.VisibilityWeight = 0;
+            prompt.ClassificationConfidence = 1;
+            prompt.ScoringReason = "Prompt explicitly contains the target brand, so it belongs in branded presence instead of organic visibility.";
+            return;
+        }
+
+        if (LooksLikeProviderEvaluation(text))
+        {
+            prompt.PromptClass = "ProviderEvaluation";
+            prompt.MetricBucket = "AnswerReadiness";
+            prompt.IsOrganicVisibilityEligible = false;
+            prompt.ExpectsProviderRecommendations = false;
+            prompt.ExpectsBrandMention = false;
+            prompt.VisibilityWeight = 0;
+            prompt.ClassificationConfidence = 0.8m;
+            prompt.ScoringReason = "Prompt asks how to evaluate or budget for providers rather than asking AI to name providers.";
+            return;
+        }
+
+        prompt.PromptClass = LooksLikeRecommendation(text) ? "Recommendation" : "Discovery";
+        prompt.MetricBucket = "OrganicVisibility";
+        prompt.IsOrganicVisibilityEligible = true;
+        prompt.ExpectsProviderRecommendations = true;
+        prompt.ExpectsBrandMention = true;
+        prompt.VisibilityWeight = 1;
+        prompt.ClassificationConfidence = 0.8m;
+        prompt.ScoringReason = "Prompt creates a neutral provider-discovery situation where named providers are expected.";
+    }
+
+    private static bool LooksLikeProviderEvaluation(string text)
+    {
+        return ContainsAny(text,
+            "what should i look for",
+            "what should we look for",
+            "how should i evaluate",
+            "how should we evaluate",
+            "what factors",
+            "selection criteria",
+            "reasonable budget",
+            "typically cost",
+            "how much does",
+            "pricing model");
+    }
+
+    private static bool LooksLikeRecommendation(string text)
+    {
+        return ContainsAny(text,
+            "best",
+            "top",
+            "leading",
+            "should i consider",
+            "should we consider",
+            "shortlist",
+            "recommend",
+            "cost-effective");
+    }
+
+    private static bool LooksComparative(string text)
+    {
+        return ContainsAny(text, " vs ", " versus ", "compare", "better than", "alternative");
+    }
+
+    private static bool ContainsAny(string text, params string[] needles)
+    {
+        return needles.Any(needle => Contains(text, needle));
+    }
+
+    private static bool Contains(string text, string value)
+    {
+        return !string.IsNullOrWhiteSpace(text)
+               && !string.IsNullOrWhiteSpace(value)
+               && text.Contains(value, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

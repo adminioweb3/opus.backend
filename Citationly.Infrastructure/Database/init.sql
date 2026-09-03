@@ -895,6 +895,15 @@ CREATE TABLE IF NOT EXISTS AiSearchPrompts (
     ContentStrength INTEGER DEFAULT 0,
     CitationStrength INTEGER DEFAULT 0,
     VisibilityReason TEXT,
+    PromptClass VARCHAR(50),
+    IsBranded BOOLEAN NOT NULL DEFAULT FALSE,
+    IsOrganicVisibilityEligible BOOLEAN NOT NULL DEFAULT FALSE,
+    ExpectsProviderRecommendations BOOLEAN NOT NULL DEFAULT FALSE,
+    ExpectsBrandMention BOOLEAN NOT NULL DEFAULT FALSE,
+    MetricBucket VARCHAR(50),
+    VisibilityWeight NUMERIC(5,2) NOT NULL DEFAULT 0,
+    ScoringReason TEXT,
+    ClassificationConfidence NUMERIC(5,2) NOT NULL DEFAULT 0,
     GeneratedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 

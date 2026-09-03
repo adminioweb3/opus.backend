@@ -357,8 +357,16 @@ public class WebsiteRepository : IWebsiteRepository
             foreach (var prompt in prompts)
             {
                 await connection.ExecuteAsync(@"
-                    INSERT INTO AiSearchPrompts (OrganizationId, QueryString, SearchEngine, Topic, Intent, Difficulty, Persona, CommercialValue, RawJson, GeneratedAt)
-                    VALUES (@OrganizationId, @QueryString, @SearchEngine, @Topic, @Intent, @Difficulty, @Persona, @CommercialValue, @RawJson::jsonb, @GeneratedAt)",
+                    INSERT INTO AiSearchPrompts (
+                        OrganizationId, QueryString, SearchEngine, Topic, Intent, Difficulty, Persona,
+                        CommercialValue, RawJson, PromptClass, IsBranded, IsOrganicVisibilityEligible,
+                        ExpectsProviderRecommendations, ExpectsBrandMention, MetricBucket, VisibilityWeight,
+                        ScoringReason, ClassificationConfidence, GeneratedAt)
+                    VALUES (
+                        @OrganizationId, @QueryString, @SearchEngine, @Topic, @Intent, @Difficulty, @Persona,
+                        @CommercialValue, @RawJson::jsonb, @PromptClass, @IsBranded, @IsOrganicVisibilityEligible,
+                        @ExpectsProviderRecommendations, @ExpectsBrandMention, @MetricBucket, @VisibilityWeight,
+                        @ScoringReason, @ClassificationConfidence, @GeneratedAt)",
                     new {
                         prompt.OrganizationId,
                         prompt.QueryString,
@@ -369,6 +377,15 @@ public class WebsiteRepository : IWebsiteRepository
                         prompt.Persona,
                         prompt.CommercialValue,
                         prompt.RawJson,
+                        prompt.PromptClass,
+                        prompt.IsBranded,
+                        prompt.IsOrganicVisibilityEligible,
+                        prompt.ExpectsProviderRecommendations,
+                        prompt.ExpectsBrandMention,
+                        prompt.MetricBucket,
+                        prompt.VisibilityWeight,
+                        prompt.ScoringReason,
+                        prompt.ClassificationConfidence,
                         GeneratedAt = prompt.GeneratedAt == default ? DateTime.UtcNow : prompt.GeneratedAt
                     }, transaction: transaction);
             }
@@ -459,6 +476,15 @@ public class WebsiteRepository : IWebsiteRepository
                         CommercialValue = @CommercialValue,
                         TopicValidation = @TopicValidation,
                         BuyerJourneyStage = @BuyerJourneyStage,
+                        PromptClass = @PromptClass,
+                        IsBranded = @IsBranded,
+                        IsOrganicVisibilityEligible = @IsOrganicVisibilityEligible,
+                        ExpectsProviderRecommendations = @ExpectsProviderRecommendations,
+                        ExpectsBrandMention = @ExpectsBrandMention,
+                        MetricBucket = @MetricBucket,
+                        VisibilityWeight = @VisibilityWeight,
+                        ScoringReason = @ScoringReason,
+                        ClassificationConfidence = @ClassificationConfidence,
                         IsEnriched = @IsEnriched,
                         RawJson = @RawJson::jsonb,
                         EnrichedAt = @EnrichedAt

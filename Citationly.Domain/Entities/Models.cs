@@ -534,6 +534,15 @@ public class AiSearchPrompt
     public int ContentStrength { get; set; }
     public int CitationStrength { get; set; }
     public string? VisibilityReason { get; set; }
+    public string? PromptClass { get; set; }
+    public bool IsBranded { get; set; }
+    public bool IsOrganicVisibilityEligible { get; set; }
+    public bool ExpectsProviderRecommendations { get; set; }
+    public bool ExpectsBrandMention { get; set; }
+    public string? MetricBucket { get; set; }
+    public decimal VisibilityWeight { get; set; }
+    public string? ScoringReason { get; set; }
+    public decimal ClassificationConfidence { get; set; }
 
     /// <summary>An LLM's qualitative guess at how much search interest this prompt might have
     /// (Very Low..Very High) - NOT sourced from any real search-volume API (no such integration

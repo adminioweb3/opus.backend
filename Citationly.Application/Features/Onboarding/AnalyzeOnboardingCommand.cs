@@ -102,14 +102,9 @@ public class AnalyzeOnboardingCommandHandler : IRequestHandler<AnalyzeOnboarding
             var existingProfile = await _websiteRepository.GetLatestWebsiteProfileAsync(request.OrganizationId);
             if (existingProfile != null && (existingProfile.WebsiteUrl.Contains(request.WebsiteUrl) || request.WebsiteUrl.Contains(existingProfile.WebsiteUrl)))
             {
-                var options = new JsonSerializerOptions
-                {
-                    PropertyNameCaseInsensitive = true,
-                    NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
-                };
                 try
                 {
-                    var cachedResult = JsonSerializer.Deserialize<OnboardingAnalysisResult>(existingProfile.RawProfileJson, options);
+                    var cachedResult = JsonSerializer.Deserialize<OnboardingAnalysisResult>(existingProfile.RawProfileJson, CreateJsonSerializerOptions());
                     if (cachedResult != null) return cachedResult;
                 }
                 catch { }
@@ -171,6 +166,9 @@ Business Name: {request.BusinessName}
 Industry: {request.Industry}
 Keywords: {request.Keywords}
 Target Audience: {request.TargetAudience}
+Main Offering: {request.MainOffering}
+Who They Sell To: {request.WhoDoYouSellTo}
+Known Competitors: {request.KnownCompetitors}
 
 [Website Content]
 {websiteContent}
@@ -178,10 +176,10 @@ Target Audience: {request.TargetAudience}
 
 INSTRUCTIONS:
 1. Populate all fields with rich, accurate insights.
-2. Infer missing information only if there is strong evidence.
+2. Use the submitted business inputs as authoritative when website crawl content is sparse or unavailable.
 3. Every object needs a 'value' and 'confidence' (0-100).
 4. Include deeper SEO (metadata, headings, internal links), structural (nav, UX), brand (mission, values), and market (ICP, pain points, tech stack) insights in the relevant fields (e.g. SEO recommendations, Brand Positioning, Strengths).
-5. Only detect technologies explicitly found. Do not hallucinate.
+5. Only detect technologies explicitly found in crawl content or supplied business inputs. Do not hallucinate.
 6. For companyScale, judge from real signals on the site — team/about page size, number of case
    studies or logos, funding/press mentions, pricing tier language (built for small teams vs
    enterprise-grade). Value must be exactly one of: ""Startup"", ""SMB"", ""Mid-Market"", ""Enterprise"".
@@ -209,9 +207,10 @@ SCHEMA (Return ONLY this JSON):
   ""overallConfidence"": 0
 }}";
 
+        AiCompletionResult completion;
         try
         {
-            var completion = await _aiCompletionService.CompleteAsync(
+            completion = await _aiCompletionService.CompleteAsync(
                 request.OrganizationId == Guid.Empty ? null : request.OrganizationId,
                 "onboarding.website_analysis",
                 userPrompt,
@@ -219,83 +218,96 @@ SCHEMA (Return ONLY this JSON):
                 requireJson: true,
                 preferredProviderKey: "openai",
                 cancellationToken);
-            if (!completion.Success)
-            {
-                return new OnboardingAnalysisResult { OverallConfidence = 0 };
-            }
-
-            // Clean up markdown just in case the LLM disobeys "no markdown wrapper"
-            var responseContent = completion.Content.Trim();
-            if (responseContent.StartsWith("```json"))
-            {
-                responseContent = responseContent.Substring(7);
-                if (responseContent.EndsWith("```"))
-                    responseContent = responseContent.Substring(0, responseContent.Length - 3);
-            }
-            if (responseContent.StartsWith("```"))
-            {
-                responseContent = responseContent.Substring(3);
-                if (responseContent.EndsWith("```"))
-                    responseContent = responseContent.Substring(0, responseContent.Length - 3);
-            }
-
-            var options = new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true,
-                NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
-            };
-            var result = JsonSerializer.Deserialize<OnboardingAnalysisResult>(responseContent, options);
-            if (result != null)
-            {
-                // Save to database
-                if (request.OrganizationId != Guid.Empty)
-                {
-                    try
-                    {
-                        var profile = new WebsiteProfile
-                        {
-                            OrganizationId = request.OrganizationId,
-                            WebsiteUrl = request.WebsiteUrl,
-                            BusinessName = request.BusinessName,
-                            RawProfileJson = responseContent
-                        };
-                        await _websiteRepository.InsertWebsiteProfileAsync(profile);
-
-                        // Also update the Organization name, Industry, and the competitor-derivation fields
-                        using var connection = _dbConnectionFactory.CreateConnection();
-                        await Dapper.SqlMapper.ExecuteAsync(
-                            connection,
-                            @"UPDATE Organizations SET Name = @Name, Industry = @Industry,
-                              WhoDoYouSellTo = @WhoDoYouSellTo, KnownCompetitors = @KnownCompetitors, MainOffering = @MainOffering
-                              WHERE Id = @Id",
-                            new
-                            {
-                                Name = request.BusinessName,
-                                Industry = request.Industry,
-                                WhoDoYouSellTo = request.WhoDoYouSellTo,
-                                KnownCompetitors = request.KnownCompetitors,
-                                MainOffering = request.MainOffering,
-                                Id = request.OrganizationId
-                            }
-                        );
-                    }
-                    catch (Exception dbEx)
-                    {
-                        Console.WriteLine($"Failed to save WebsiteProfile: {dbEx.Message}");
-                    }
-                }
-
-                return result;
-            }
         }
         catch (Exception ex)
         {
             Console.WriteLine($"Error during AI Onboarding analysis: {ex.Message}");
-            return CreateFallbackAnalysisResult(request);
+            return await PersistFallbackAnalysisResultAsync(request);
         }
 
-        return CreateFallbackAnalysisResult(request);
+        if (!completion.Success)
+        {
+            return await PersistFallbackAnalysisResultAsync(request);
+        }
+
+        // Clean up markdown just in case the LLM disobeys "no markdown wrapper"
+        var responseContent = completion.Content.Trim();
+        if (responseContent.StartsWith("```json"))
+        {
+            responseContent = responseContent.Substring(7);
+            if (responseContent.EndsWith("```"))
+                responseContent = responseContent.Substring(0, responseContent.Length - 3);
+        }
+        if (responseContent.StartsWith("```"))
+        {
+            responseContent = responseContent.Substring(3);
+            if (responseContent.EndsWith("```"))
+                responseContent = responseContent.Substring(0, responseContent.Length - 3);
+        }
+
+        try
+        {
+            var result = JsonSerializer.Deserialize<OnboardingAnalysisResult>(responseContent, CreateJsonSerializerOptions());
+            if (result != null)
+            {
+                await PersistAnalysisResultAsync(request, responseContent);
+
+                return result;
+            }
+        }
+        catch (JsonException ex)
+        {
+            Console.WriteLine($"Invalid AI Onboarding analysis JSON: {ex.Message}");
+        }
+
+        return await PersistFallbackAnalysisResultAsync(request);
     }
+
+    private async Task<OnboardingAnalysisResult> PersistFallbackAnalysisResultAsync(AnalyzeOnboardingCommand request)
+    {
+        var result = CreateFallbackAnalysisResult(request);
+        var json = JsonSerializer.Serialize(result, CreateJsonSerializerOptions());
+        await PersistAnalysisResultAsync(request, json);
+        return result;
+    }
+
+    private async Task PersistAnalysisResultAsync(AnalyzeOnboardingCommand request, string rawProfileJson)
+    {
+        if (request.OrganizationId == Guid.Empty) return;
+
+        var profile = new WebsiteProfile
+        {
+            OrganizationId = request.OrganizationId,
+            WebsiteUrl = request.WebsiteUrl,
+            BusinessName = request.BusinessName,
+            RawProfileJson = rawProfileJson
+        };
+        await _websiteRepository.InsertWebsiteProfileAsync(profile);
+
+        using var connection = _dbConnectionFactory.CreateConnection();
+        await Dapper.SqlMapper.ExecuteAsync(
+            connection,
+            @"UPDATE Organizations SET Name = @Name, Industry = @Industry,
+              WhoDoYouSellTo = @WhoDoYouSellTo, KnownCompetitors = @KnownCompetitors, MainOffering = @MainOffering
+              WHERE Id = @Id",
+            new
+            {
+                Name = request.BusinessName,
+                Industry = request.Industry,
+                WhoDoYouSellTo = request.WhoDoYouSellTo,
+                KnownCompetitors = request.KnownCompetitors,
+                MainOffering = request.MainOffering,
+                Id = request.OrganizationId
+            }
+        );
+    }
+
+    private static JsonSerializerOptions CreateJsonSerializerOptions() => new()
+    {
+        PropertyNameCaseInsensitive = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
+    };
 
     private static OnboardingAnalysisResult CreateFallbackAnalysisResult(AnalyzeOnboardingCommand request)
     {
