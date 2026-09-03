@@ -25,7 +25,7 @@ public class ProductionConfigurationValidatorTests
         Assert.Contains("ConnectionStrings:DefaultConnection", ex.Message);
         Assert.Contains("Firebase:ProjectId", ex.Message);
         Assert.Contains("Admin:JwtSigningKey", ex.Message);
-        Assert.Contains("Admin:PasswordHash", ex.Message);
+        Assert.DoesNotContain("Admin:PasswordHash", ex.Message);
     }
 
     [Fact]
@@ -38,7 +38,6 @@ public class ProductionConfigurationValidatorTests
                 ["Firebase:ProjectId"] = "${FIREBASE_PROJECT_ID}",
                 ["Admin:JwtSigningKey"] = "${ADMIN_JWT_SIGNING_KEY}",
                 ["Admin:Username"] = "${ADMIN_USERNAME}",
-                ["Admin:PasswordHash"] = "${ADMIN_PASSWORD_HASH}",
             })
             .Build();
 
@@ -49,7 +48,6 @@ public class ProductionConfigurationValidatorTests
         Assert.Contains("Firebase:ProjectId", ex.Message);
         Assert.Contains("Admin:JwtSigningKey", ex.Message);
         Assert.Contains("Admin:Username", ex.Message);
-        Assert.Contains("Admin:PasswordHash", ex.Message);
     }
 
     [Fact]
@@ -67,27 +65,6 @@ public class ProductionConfigurationValidatorTests
             .Build();
 
         ProductionConfigurationValidator.Validate(config, "Production");
-    }
-
-    [Fact]
-    public void Validate_RejectsMalformedAdminPasswordHash()
-    {
-        var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["ConnectionStrings:DefaultConnection"] = "Host=db;Database=citationly",
-                ["Firebase:ProjectId"] = "citationly-prod",
-                ["Admin:JwtSigningKey"] = "01234567890123456789012345678901",
-                ["Admin:Username"] = "admin",
-                ["Admin:PasswordHash"] = "$2a$11$truncated-by-compose",
-            })
-            .Build();
-
-        var ex = Assert.Throws<InvalidOperationException>(() =>
-            ProductionConfigurationValidator.Validate(config, "Production"));
-
-        Assert.Contains("Admin:PasswordHash", ex.Message);
-        Assert.Contains("valid bcrypt hash", ex.Message);
     }
 
     [Fact]
