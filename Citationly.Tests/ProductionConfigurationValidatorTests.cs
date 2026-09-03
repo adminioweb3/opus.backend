@@ -70,6 +70,27 @@ public class ProductionConfigurationValidatorTests
     }
 
     [Fact]
+    public void Validate_RejectsMalformedAdminPasswordHash()
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:DefaultConnection"] = "Host=db;Database=citationly",
+                ["Firebase:ProjectId"] = "citationly-prod",
+                ["Admin:JwtSigningKey"] = "01234567890123456789012345678901",
+                ["Admin:Username"] = "admin",
+                ["Admin:PasswordHash"] = "$2a$11$truncated-by-compose",
+            })
+            .Build();
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            ProductionConfigurationValidator.Validate(config, "Production"));
+
+        Assert.Contains("Admin:PasswordHash", ex.Message);
+        Assert.Contains("valid bcrypt hash", ex.Message);
+    }
+
+    [Fact]
     public void Validate_RequiresCashfreeConfigurationAndRedirectOriginsWhenBillingIsRequired()
     {
         var config = new ConfigurationBuilder()

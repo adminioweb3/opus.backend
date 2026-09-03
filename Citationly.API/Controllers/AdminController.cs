@@ -74,8 +74,24 @@ public class AdminController : ControllerBase
         if (string.IsNullOrWhiteSpace(configuredUsername) || string.IsNullOrWhiteSpace(configuredPasswordHash) || string.IsNullOrWhiteSpace(signingKey))
             return StatusCode(500, new { message = "Admin authentication is not configured on the server." });
 
-        if (!string.Equals(request.Username?.Trim(), configuredUsername.Trim(), StringComparison.OrdinalIgnoreCase) ||
-            !BCrypt.Net.BCrypt.Verify(request.Password, configuredPasswordHash))
+        if (!string.Equals(request.Username?.Trim(), configuredUsername.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            _cache.Set(cacheKey, attempts + 1, TimeSpan.FromMinutes(15));
+            return Unauthorized(new { message = "Invalid admin credentials." });
+        }
+
+        bool passwordMatches;
+        try
+        {
+            passwordMatches = BCrypt.Net.BCrypt.Verify(request.Password, configuredPasswordHash);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Admin password hash is invalid or unreadable.");
+            return StatusCode(500, new { message = "Admin password hash is invalid on the server." });
+        }
+
+        if (!passwordMatches)
         {
             _cache.Set(cacheKey, attempts + 1, TimeSpan.FromMinutes(15));
             return Unauthorized(new { message = "Invalid admin credentials." });
