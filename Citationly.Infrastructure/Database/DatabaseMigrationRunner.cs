@@ -104,6 +104,44 @@ internal static class DatabaseMigrations
             CREATE INDEX IF NOT EXISTS idx_websiteprofiles_org_created ON WebsiteProfiles (OrganizationId, CreatedAt DESC);
             """),
         new(
+            "202609030003_alerts_and_competitor_discovery_schema",
+            "Ensure alerts and competitor discovery schema added after the baseline exists",
+            """
+            CREATE TABLE IF NOT EXISTS Alerts (
+                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+                DedupKey VARCHAR(255) NOT NULL,
+                Type VARCHAR(100) NOT NULL DEFAULT '',
+                Title VARCHAR(255) NOT NULL DEFAULT '',
+                Message TEXT NOT NULL DEFAULT '',
+                Severity VARCHAR(50) NOT NULL DEFAULT 'Info',
+                Source VARCHAR(100) NOT NULL DEFAULT '',
+                ActionUrl TEXT NOT NULL DEFAULT '',
+                EvidenceJson JSONB NOT NULL DEFAULT '{}'::jsonb,
+                IsRead BOOLEAN NOT NULL DEFAULT FALSE,
+                CreatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                DeliveredAt TIMESTAMP WITH TIME ZONE NULL,
+                DeliveryStatus VARCHAR(50) NOT NULL DEFAULT 'Pending',
+                UNIQUE (OrganizationId, DedupKey)
+            );
+            CREATE INDEX IF NOT EXISTS idx_alerts_org_created ON Alerts (OrganizationId, CreatedAt DESC);
+            CREATE INDEX IF NOT EXISTS idx_alerts_delivery ON Alerts (DeliveryStatus, CreatedAt);
+
+            CREATE TABLE IF NOT EXISTS AlertThresholds (
+                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
+                AlertType VARCHAR(100) NOT NULL,
+                ThresholdValue INT NOT NULL DEFAULT 5,
+                EmailEnabled BOOLEAN NOT NULL DEFAULT TRUE,
+                WebhookEnabled BOOLEAN NOT NULL DEFAULT FALSE,
+                WebhookUrl TEXT NOT NULL DEFAULT '',
+                UpdatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (OrganizationId, AlertType)
+            );
+
+            ALTER TABLE CompanyCompetitor ADD COLUMN IF NOT EXISTS DiscoverySource VARCHAR(20) NOT NULL DEFAULT 'graph';
+            """),
+        new(
             "202609030001_aisearchprompts_prompt_class_backfill",
             "Backfill AiSearchPrompts prompt classification columns added after the baseline migration",
             """
