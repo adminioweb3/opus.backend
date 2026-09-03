@@ -25,6 +25,7 @@ public class ProductionConfigurationValidatorTests
         Assert.Contains("ConnectionStrings:DefaultConnection", ex.Message);
         Assert.Contains("Firebase:ProjectId", ex.Message);
         Assert.Contains("Admin:JwtSigningKey", ex.Message);
+        Assert.Contains("Admin:PasswordHash", ex.Message);
     }
 
     [Fact]
@@ -36,6 +37,8 @@ public class ProductionConfigurationValidatorTests
                 ["ConnectionStrings:DefaultConnection"] = "${DATABASE_URL}",
                 ["Firebase:ProjectId"] = "${FIREBASE_PROJECT_ID}",
                 ["Admin:JwtSigningKey"] = "${ADMIN_JWT_SIGNING_KEY}",
+                ["Admin:Username"] = "${ADMIN_USERNAME}",
+                ["Admin:PasswordHash"] = "${ADMIN_PASSWORD_HASH}",
             })
             .Build();
 
@@ -45,6 +48,8 @@ public class ProductionConfigurationValidatorTests
         Assert.Contains("ConnectionStrings:DefaultConnection", ex.Message);
         Assert.Contains("Firebase:ProjectId", ex.Message);
         Assert.Contains("Admin:JwtSigningKey", ex.Message);
+        Assert.Contains("Admin:Username", ex.Message);
+        Assert.Contains("Admin:PasswordHash", ex.Message);
     }
 
     [Fact]
@@ -56,6 +61,8 @@ public class ProductionConfigurationValidatorTests
                 ["ConnectionStrings:DefaultConnection"] = "Host=db;Database=citationly",
                 ["Firebase:ProjectId"] = "citationly-prod",
                 ["Admin:JwtSigningKey"] = "01234567890123456789012345678901",
+                ["Admin:Username"] = "admin",
+                ["Admin:PasswordHash"] = "$2a$11$nnWYKUGCGO6B4xRYg8nQwOpvnzF4uBweGM5KPuzTpNOQlDgFi4fIW",
             })
             .Build();
 
@@ -71,6 +78,8 @@ public class ProductionConfigurationValidatorTests
                 ["ConnectionStrings:DefaultConnection"] = "Host=db;Database=citationly",
                 ["Firebase:ProjectId"] = "citationly-prod",
                 ["Admin:JwtSigningKey"] = "01234567890123456789012345678901",
+                ["Admin:Username"] = "admin",
+                ["Admin:PasswordHash"] = "$2a$11$nnWYKUGCGO6B4xRYg8nQwOpvnzF4uBweGM5KPuzTpNOQlDgFi4fIW",
                 ["Billing:RequireCashfree"] = "true",
                 ["Cashfree:AppId"] = "${CASHFREE_APP_ID}",
                 ["Cashfree:SecretKey"] = "${CASHFREE_SECRET_KEY}"

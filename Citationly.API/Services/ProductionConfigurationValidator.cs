@@ -14,6 +14,8 @@ public static class ProductionConfigurationValidator
         Require(configuration.GetConnectionString("DefaultConnection"), "ConnectionStrings:DefaultConnection", missing);
         Require(configuration["Firebase:ProjectId"], "Firebase:ProjectId", missing);
         Require(configuration["Admin:JwtSigningKey"], "Admin:JwtSigningKey", missing, minLength: 32);
+        Require(configuration["Admin:Username"], "Admin:Username", missing);
+        Require(configuration["Admin:PasswordHash"], "Admin:PasswordHash", missing);
 
         if (configuration.GetValue<bool>("Billing:RequireCashfree"))
         {
