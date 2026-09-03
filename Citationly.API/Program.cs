@@ -95,7 +95,7 @@ builder.Services.AddCors(options =>
         var isDev = builder.Environment.IsDevelopment();
         var defaultOrigins = isDev
             ? new[] { "https://citationly.ai", "https://www.citationly.ai", "http://localhost:3000", "http://localhost:3010", "http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://localhost:5176" }
-            : new[] { "https://citationly.ai", "https://www.citationly.ai" };
+            : new[] { "https://citationly.ai", "https://www.citationly.ai", "http://localhost:5173", "http://localhost:5174" };
 
         // Allow additional origins via env var (e.g. Render URLs) without touching code.
         // Set CORS__AllowedOrigins to a comma-separated list of origins.
