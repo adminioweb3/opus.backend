@@ -16,6 +16,19 @@ using Citationly.Application;
 using Citationly.Infrastructure;
 using Citationly.API.Services;
 
+if (TryGetAdminPasswordHashInput(args, out var adminPasswordToHash))
+{
+    if (string.IsNullOrWhiteSpace(adminPasswordToHash))
+    {
+        Console.Error.WriteLine("Provide the password at the prompt, as ADMIN_PASSWORD, or as --hash-admin-password <password>.");
+        Environment.ExitCode = 1;
+        return;
+    }
+
+    Console.WriteLine(BCrypt.Net.BCrypt.HashPassword(adminPasswordToHash, workFactor: 11));
+    return;
+}
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Keep local/hosted startup independent of Windows Event Log permissions. In restricted
@@ -381,4 +394,61 @@ static async Task RunDatabaseMigrationsAsync(IServiceProvider services, Cancella
     using var migrationScope = services.CreateScope();
     var migrationRunner = migrationScope.ServiceProvider.GetRequiredService<Citationly.Infrastructure.Database.DatabaseMigrationRunner>();
     await migrationRunner.RunPendingAsync(cancellationToken);
+}
+
+static bool TryGetAdminPasswordHashInput(string[] args, out string? password)
+{
+    password = null;
+
+    for (var i = 0; i < args.Length; i++)
+    {
+        var arg = args[i];
+        if (arg.StartsWith("--hash-admin-password=", StringComparison.OrdinalIgnoreCase))
+        {
+            password = arg["--hash-admin-password=".Length..];
+            return true;
+        }
+
+        if (string.Equals(arg, "--hash-admin-password", StringComparison.OrdinalIgnoreCase))
+        {
+            password = i + 1 < args.Length ? args[i + 1] : Environment.GetEnvironmentVariable("ADMIN_PASSWORD");
+            if (string.IsNullOrWhiteSpace(password) && !Console.IsInputRedirected)
+            {
+                password = ReadPasswordFromConsole();
+            }
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static string ReadPasswordFromConsole()
+{
+    Console.Error.Write("Admin password: ");
+    var password = new StringBuilder();
+
+    while (true)
+    {
+        var key = Console.ReadKey(intercept: true);
+        if (key.Key == ConsoleKey.Enter)
+        {
+            Console.Error.WriteLine();
+            return password.ToString();
+        }
+
+        if (key.Key == ConsoleKey.Backspace)
+        {
+            if (password.Length > 0)
+            {
+                password.Length--;
+            }
+            continue;
+        }
+
+        if (!char.IsControl(key.KeyChar))
+        {
+            password.Append(key.KeyChar);
+        }
+    }
 }
