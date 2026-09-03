@@ -83,6 +83,57 @@ internal static class DatabaseMigrations
 {
     public static readonly IReadOnlyList<DatabaseMigration> All =
     [
-        new("202608260001_self_healing_baseline", "Apply current idempotent production schema baseline", SelfHealingMigrations.Sql)
+        new("202608260001_self_healing_baseline", "Apply current idempotent production schema baseline", SelfHealingMigrations.Sql),
+        new(
+            "202609030001_aisearchprompts_prompt_class_backfill",
+            "Backfill AiSearchPrompts prompt classification columns added after the baseline migration",
+            """
+            DO $rename$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'aisearchprompts' AND column_name = 'monthlysearchestimate'
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'aisearchprompts' AND column_name = 'estimatedinterestlevel'
+                ) THEN
+                    ALTER TABLE AiSearchPrompts RENAME COLUMN MonthlySearchEstimate TO EstimatedInterestLevel;
+                END IF;
+            END;
+            $rename$;
+
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Topic VARCHAR(255);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Intent VARCHAR(100);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Difficulty VARCHAR(50);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Persona VARCHAR(255);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS CommercialValue INTEGER DEFAULT 0;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS RawJson JSONB DEFAULT '{}'::jsonb;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Region VARCHAR(100);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Language VARCHAR(50);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS TopicValidation VARCHAR(255);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS BuyerJourneyStage VARCHAR(100);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS IsEnriched BOOLEAN DEFAULT FALSE;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS EnrichedAt TIMESTAMP WITH TIME ZONE;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS EstimatedInterestLevel VARCHAR(50);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS VisibilityScore INTEGER DEFAULT 0;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS EstimatedRank VARCHAR(50);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Confidence INTEGER DEFAULT 0;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS AppearsInAnswer BOOLEAN DEFAULT FALSE;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS ShareOfVoiceContribution INTEGER DEFAULT 0;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS MentionProbability INTEGER DEFAULT 0;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS BrandStrength INTEGER DEFAULT 0;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS ContentStrength INTEGER DEFAULT 0;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS CitationStrength INTEGER DEFAULT 0;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS VisibilityReason TEXT;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS PromptClass VARCHAR(50);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS IsBranded BOOLEAN NOT NULL DEFAULT FALSE;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS IsOrganicVisibilityEligible BOOLEAN NOT NULL DEFAULT FALSE;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS ExpectsProviderRecommendations BOOLEAN NOT NULL DEFAULT FALSE;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS ExpectsBrandMention BOOLEAN NOT NULL DEFAULT FALSE;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS MetricBucket VARCHAR(50);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS VisibilityWeight NUMERIC(5,2) NOT NULL DEFAULT 0;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS ScoringReason TEXT;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS ClassificationConfidence NUMERIC(5,2) NOT NULL DEFAULT 0;
+            """)
     ];
 }
