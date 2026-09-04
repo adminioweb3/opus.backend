@@ -20,6 +20,9 @@ public class CompanyCompetitorRepository : ICompanyCompetitorRepository
         using var connection = _dbConnectionFactory.CreateConnection();
         if (connection.State != System.Data.ConnectionState.Open) connection.Open();
 
+        await connection.ExecuteAsync(
+            "ALTER TABLE CompanyCompetitor ADD COLUMN IF NOT EXISTS DiscoverySource VARCHAR(20) NOT NULL DEFAULT 'graph'");
+
         using var transaction = connection.BeginTransaction();
         try
         {

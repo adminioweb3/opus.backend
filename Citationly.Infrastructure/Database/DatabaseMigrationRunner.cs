@@ -191,6 +191,12 @@ internal static class DatabaseMigrations
             ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS VisibilityWeight NUMERIC(5,2) NOT NULL DEFAULT 0;
             ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS ScoringReason TEXT;
             ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS ClassificationConfidence NUMERIC(5,2) NOT NULL DEFAULT 0;
+            """),
+        new(
+            "202609040001_companycompetitor_discoverysource_repair",
+            "Ensure CompanyCompetitor discovery source exists on databases that already applied older migrations",
+            """
+            ALTER TABLE CompanyCompetitor ADD COLUMN IF NOT EXISTS DiscoverySource VARCHAR(20) NOT NULL DEFAULT 'graph';
             """)
     ];
 }

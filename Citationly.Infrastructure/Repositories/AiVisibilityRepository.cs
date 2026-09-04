@@ -59,7 +59,7 @@ public class AiVisibilityRepository : IAiVisibilityRepository
                     ROUND(cc.Similarity)::int AS SimilarityScore,
                     jsonb_build_object(
                         'source', 'CompanyCompetitor',
-                        'discoverySource', cc.DiscoverySource,
+                        'discoverySource', 'graph',
                         'similarity', cc.Similarity,
                         'confidence', cc.Confidence,
                         'reason', cc.Reason,
