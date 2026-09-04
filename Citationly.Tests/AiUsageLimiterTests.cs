@@ -14,7 +14,7 @@ public class AiUsageLimiterTests
             TryConsumeResult = new UsageQuotaStatus(false, 50, 50),
             SpendQuotaResult = new UsageQuotaStatus(false, 100000, 100000)
         };
-        var limiter = new AiUsageLimiter(entitlements);
+        var limiter = new AiUsageLimiter();
 
         await limiter.EnsureWithinLimitsAsync(Guid.NewGuid(), "test.operation");
 
@@ -24,21 +24,21 @@ public class AiUsageLimiterTests
     }
 
     [Fact]
-    public async Task RecordEstimatedCostAsync_RecordsSpendForReporting()
+    public async Task RecordEstimatedCostAsync_DoesNotDependOnUsageCounterTables()
     {
         var entitlements = new StubEntitlementService();
-        var limiter = new AiUsageLimiter(entitlements);
+        var limiter = new AiUsageLimiter();
 
         await limiter.RecordEstimatedCostAsync(Guid.NewGuid(), 0.000123m, "test.operation");
 
-        Assert.Equal(1, entitlements.ConsumeCalls);
+        Assert.Equal(0, entitlements.ConsumeCalls);
     }
 
     [Fact]
     public async Task RecordEstimatedCostAsync_IgnoresMissingOrganizationOrCost()
     {
         var entitlements = new StubEntitlementService();
-        var limiter = new AiUsageLimiter(entitlements);
+        var limiter = new AiUsageLimiter();
 
         await limiter.RecordEstimatedCostAsync(null, 0.000123m, "test.operation");
         await limiter.RecordEstimatedCostAsync(Guid.NewGuid(), null, "test.operation");
