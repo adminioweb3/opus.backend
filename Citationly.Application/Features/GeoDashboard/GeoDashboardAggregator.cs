@@ -4,6 +4,7 @@ using Citationly.Application.Helpers;
 using Citationly.Application.Features.Metrics;
 using Citationly.Application.Interfaces;
 using Citationly.Application.Interfaces.GeoDashboard;
+using Citationly.Domain.Entities;
 
 namespace Citationly.Application.Features.GeoDashboard;
 
@@ -41,8 +42,8 @@ public class GeoDashboardAggregator
         // First-ever visit for this org: no scan has run yet. Try to bootstrap real data
         // from whatever onboarding analysis already exists (persona/region/executive summary,
         // website profile, competitors) instead of showing fabricated numbers.
-        var hasAnyScan = (await _visibilityRepo.GetHistoricalScansByOrgAsync(organizationId)).Count > 0;
-        if (!hasAnyScan)
+        var initialScans = await _visibilityRepo.GetHistoricalScansByOrgAsync(organizationId);
+        if (!initialScans.Any(IsUsableScan))
         {
             await _mediator.Send(new RunScanCommand { OrganizationId = organizationId });
         }
@@ -58,7 +59,7 @@ public class GeoDashboardAggregator
 
         await Task.WhenAll(scansTask, sovTask, competitorsTask, pillarsTask, coverageTask, activityTask, engineTask);
 
-        var scans       = scansTask.Result;
+        var scans       = scansTask.Result.Where(IsUsableScan).ToList();
         var sovDb       = sovTask.Result;
         var competitors = competitorsTask.Result;
         var pillars     = pillarsTask.Result;
@@ -100,10 +101,14 @@ public class GeoDashboardAggregator
 
         // ── Share of voice ────────────────────────────────────────────
         List<ShareOfVoiceEntryDto> shareOfVoice;
-        var latestScanDate = sovDb.OrderByDescending(s => s.ScanDate).FirstOrDefault()?.ScanDate;
+        var usableScanDates = scans.Select(s => s.ScanDate).ToHashSet();
+        var usableSovRows = sovDb
+            .Where(s => s.SharePercentage > 0 && usableScanDates.Contains(s.ScanDate))
+            .ToList();
+        var latestScanDate = usableSovRows.OrderByDescending(s => s.ScanDate).FirstOrDefault()?.ScanDate;
 
         shareOfVoice = latestScanDate != null
-            ? sovDb.Where(s => s.ScanDate == latestScanDate)
+            ? usableSovRows.Where(s => s.ScanDate == latestScanDate)
                    .Select(s => new ShareOfVoiceEntryDto(s.CompetitorName, s.SharePercentage, s.ColorCode))
                    .ToList()
             : new List<ShareOfVoiceEntryDto>();
@@ -200,5 +205,20 @@ public class GeoDashboardAggregator
     {
         if (prev == null) return "up";
         return current >= prev.Value ? "up" : "down";
+    }
+
+    private static bool IsUsableScan(HistoricalScan scan)
+    {
+        return new[]
+        {
+            scan.VisibilityScore,
+            scan.CitationScore,
+            scan.SentimentScore,
+            scan.CompetitorScore,
+            scan.HallucinationRisk,
+            scan.SeoHealth,
+            scan.AeoReadiness,
+            scan.GeoReadiness
+        }.Any(score => score > 0);
     }
 }

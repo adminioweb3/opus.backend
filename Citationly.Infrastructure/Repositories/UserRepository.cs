@@ -26,7 +26,22 @@ public class UserRepository : IUserRepository
     {
         using var connection = _dbConnectionFactory.CreateConnection();
         var result = await connection.QuerySingleOrDefaultAsync<(Guid UserId, Guid OrganizationId, string Role)>(
-            "SELECT Id as UserId, OrganizationId, Role FROM Users WHERE FirebaseUid = @FirebaseUid",
+            @"
+            SELECT UserId, OrganizationId, Role
+            FROM (
+                SELECT Id as UserId, OrganizationId, Role, 0 as SourcePriority
+                FROM Users
+                WHERE FirebaseUid = @FirebaseUid
+
+                UNION ALL
+
+                SELECT u.Id as UserId, u.OrganizationId, u.Role, 1 as SourcePriority
+                FROM AuthProviders ap
+                JOIN Users u ON u.Id = ap.UserId
+                WHERE ap.ProviderUid = @FirebaseUid
+            ) matches
+            ORDER BY SourcePriority
+            LIMIT 1",
             new { FirebaseUid = firebaseUid });
 
         if (result.UserId == Guid.Empty) return null;

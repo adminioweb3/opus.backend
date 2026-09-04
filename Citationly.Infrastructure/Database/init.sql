@@ -1411,6 +1411,14 @@ BEGIN
 
     IF v_UserId IS NOT NULL THEN
         SELECT u.OrganizationId, u.Role INTO v_OrganizationId, v_Role FROM Users u WHERE u.Id = v_UserId;
+        UPDATE Users
+        SET FirebaseUid = p_FirebaseUid
+        WHERE Id = v_UserId
+          AND FirebaseUid IS DISTINCT FROM p_FirebaseUid
+          AND NOT EXISTS (
+              SELECT 1 FROM Users other
+              WHERE other.FirebaseUid = p_FirebaseUid AND other.Id <> v_UserId
+          );
         RETURN QUERY SELECT v_UserId AS UserId, v_OrganizationId AS OrganizationId, v_Role AS Role, FALSE AS IsNewUser;
         RETURN;
     END IF;
@@ -1422,6 +1430,14 @@ BEGIN
     IF v_UserId IS NOT NULL THEN
         INSERT INTO AuthProviders (UserId, Provider, ProviderUid) VALUES (v_UserId, p_Provider, p_ProviderUid)
         ON CONFLICT (UserId, Provider) DO NOTHING;
+        UPDATE Users
+        SET FirebaseUid = p_FirebaseUid
+        WHERE Id = v_UserId
+          AND FirebaseUid IS DISTINCT FROM p_FirebaseUid
+          AND NOT EXISTS (
+              SELECT 1 FROM Users other
+              WHERE other.FirebaseUid = p_FirebaseUid AND other.Id <> v_UserId
+          );
         RETURN QUERY SELECT v_UserId AS UserId, v_OrganizationId AS OrganizationId, v_Role AS Role, FALSE AS IsNewUser;
         RETURN;
     END IF;

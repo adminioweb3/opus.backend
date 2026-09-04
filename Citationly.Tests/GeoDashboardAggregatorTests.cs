@@ -12,8 +12,13 @@ namespace Citationly.Tests;
 
 internal class StubMediator : IMediator
 {
-    public Task<TResponse> Send<TResponse>(IRequest<TResponse> request, CancellationToken cancellationToken = default) =>
-        Task.FromResult(default(TResponse)!);
+    public int SendCount { get; private set; }
+
+    public Task<TResponse> Send<TResponse>(IRequest<TResponse> request, CancellationToken cancellationToken = default)
+    {
+        SendCount++;
+        return Task.FromResult(default(TResponse)!);
+    }
     public Task Send<TRequest>(TRequest request, CancellationToken cancellationToken = default) where TRequest : IRequest =>
         Task.CompletedTask;
     public Task<object?> Send(object request, CancellationToken cancellationToken = default) =>
@@ -95,7 +100,8 @@ public class GeoDashboardAggregatorTests
     private GeoDashboardAggregator CreateAggregator(
         StubPillarService? pillarService = null,
         StubPromptCoverageService? coverageService = null,
-        StubVisibilityRepository? visibilityRepo = null)
+        StubVisibilityRepository? visibilityRepo = null,
+        StubMediator? mediator = null)
     {
         return new GeoDashboardAggregator(
             visibilityRepo ?? new StubVisibilityRepository(),
@@ -119,7 +125,7 @@ public class GeoDashboardAggregatorTests
             },
             new StubActivityFeedService(),
             new StubEngineScanService(),
-            new StubMediator());
+            mediator ?? new StubMediator());
     }
 
     [Fact]
@@ -238,5 +244,36 @@ public class GeoDashboardAggregatorTests
         Assert.NotNull(result.Scores);
         Assert.NotNull(result.Trend);
         Assert.NotNull(result.ShareOfVoice);
+    }
+
+    [Fact]
+    public async Task AllZeroHistoricalScan_IsIgnoredAndRebuildIsAttempted()
+    {
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var mediator = new StubMediator();
+        var visibilityRepo = new StubVisibilityRepository
+        {
+            Scans = new List<HistoricalScan>
+            {
+                new()
+                {
+                    OrganizationId = _orgId,
+                    ScanDate = today
+                }
+            },
+            ShareOfVoice = new List<ShareOfVoice>
+            {
+                new() { OrganizationId = _orgId, ScanDate = today, CompetitorName = "Toptal", SharePercentage = 0, ColorCode = "#B485DB" },
+                new() { OrganizationId = _orgId, ScanDate = today, CompetitorName = "Intellectsoft", SharePercentage = 0, ColorCode = "#3D7732" }
+            }
+        };
+
+        var aggregator = CreateAggregator(visibilityRepo: visibilityRepo, mediator: mediator);
+        var result = await aggregator.BuildAsync(_orgId, "30D");
+
+        Assert.Equal(1, mediator.SendCount);
+        Assert.False(result.HasData);
+        Assert.Empty(result.Trend);
+        Assert.Empty(result.ShareOfVoice);
     }
 }
