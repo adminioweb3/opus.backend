@@ -358,8 +358,7 @@ public class WebsiteRepository : IWebsiteRepository
             connection.Open();
         }
 
-        // Schema for these columns lives in SelfHealingMigrations.cs (runs once at boot) - see
-        // the note in UpdateAiSearchPromptsAsync below for why this per-call ALTER TABLE was removed.
+        await EnsureAiSearchPromptColumnsAsync(connection);
 
         using var transaction = connection.BeginTransaction();
 
@@ -426,6 +425,8 @@ public class WebsiteRepository : IWebsiteRepository
             connection.Open();
         }
 
+        await EnsureAiSearchPromptColumnsAsync(connection);
+
         using var transaction = connection.BeginTransaction();
 
         try
@@ -465,10 +466,7 @@ public class WebsiteRepository : IWebsiteRepository
             connection.Open();
         }
 
-        // Schema for these columns lives in SelfHealingMigrations.cs (runs once at boot), not
-        // here - this method used to run the same ALTER TABLE on every single call, which is the
-        // request-time-DDL anti-pattern the roadmap's Phase 1 A2 already removed from
-        // DashboardController; this was the other instance of it.
+        await EnsureAiSearchPromptColumnsAsync(connection);
 
         using var transaction = connection.BeginTransaction();
 
@@ -515,6 +513,58 @@ public class WebsiteRepository : IWebsiteRepository
     {
         using var connection = _dbConnectionFactory.CreateConnection();
         await connection.ExecuteAsync("DELETE FROM AiSearchPrompts WHERE OrganizationId = @OrganizationId", new { OrganizationId = organizationId });
+    }
+
+    private static Task EnsureAiSearchPromptColumnsAsync(System.Data.IDbConnection connection)
+    {
+        return connection.ExecuteAsync("""
+            DO $rename$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'aisearchprompts' AND column_name = 'monthlysearchestimate'
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'aisearchprompts' AND column_name = 'estimatedinterestlevel'
+                ) THEN
+                    ALTER TABLE AiSearchPrompts RENAME COLUMN MonthlySearchEstimate TO EstimatedInterestLevel;
+                END IF;
+            END;
+            $rename$;
+
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Topic VARCHAR(255);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Intent VARCHAR(100);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Difficulty VARCHAR(50);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Persona VARCHAR(255);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS CommercialValue INTEGER DEFAULT 0;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS RawJson JSONB DEFAULT '{}'::jsonb;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Region VARCHAR(100);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Language VARCHAR(50);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS TopicValidation VARCHAR(255);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS BuyerJourneyStage VARCHAR(100);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS IsEnriched BOOLEAN DEFAULT FALSE;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS EnrichedAt TIMESTAMP WITH TIME ZONE;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS EstimatedInterestLevel VARCHAR(50);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS VisibilityScore INTEGER DEFAULT 0;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS EstimatedRank VARCHAR(50);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS Confidence INTEGER DEFAULT 0;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS AppearsInAnswer BOOLEAN DEFAULT FALSE;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS ShareOfVoiceContribution INTEGER DEFAULT 0;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS MentionProbability INTEGER DEFAULT 0;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS BrandStrength INTEGER DEFAULT 0;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS ContentStrength INTEGER DEFAULT 0;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS CitationStrength INTEGER DEFAULT 0;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS VisibilityReason TEXT;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS PromptClass VARCHAR(50);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS IsBranded BOOLEAN NOT NULL DEFAULT FALSE;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS IsOrganicVisibilityEligible BOOLEAN NOT NULL DEFAULT FALSE;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS ExpectsProviderRecommendations BOOLEAN NOT NULL DEFAULT FALSE;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS ExpectsBrandMention BOOLEAN NOT NULL DEFAULT FALSE;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS MetricBucket VARCHAR(50);
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS VisibilityWeight NUMERIC(5,2) NOT NULL DEFAULT 0;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS ScoringReason TEXT;
+            ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS ClassificationConfidence NUMERIC(5,2) NOT NULL DEFAULT 0;
+            """);
     }
 
     public async Task InsertPlatformVisibilityAsync(VisibilitySummary summary, IEnumerable<PlatformVisibility> visibilities)
