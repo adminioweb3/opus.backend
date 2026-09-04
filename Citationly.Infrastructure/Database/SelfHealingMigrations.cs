@@ -766,6 +766,8 @@ public static class SelfHealingMigrations
         );
         CREATE INDEX IF NOT EXISTS idx_websiteprofiles_org_created ON WebsiteProfiles (OrganizationId, CreatedAt DESC);
 
+        ALTER TABLE CompetitorSnapshots ADD COLUMN IF NOT EXISTS WebsiteUrl VARCHAR(2048);
+
         -- Usage metering (Phase 1) - per-org, per-metric, per-period counters so AI-cost
         -- endpoints and recurring jobs can be capped by plan instead of running unbounded.
         -- Persisted (unlike the in-process burst limiter in AiUsageLimiter) so a quota
@@ -803,14 +805,14 @@ public static class SelfHealingMigrations
             PRIMARY KEY (PlanKey, FeatureKey)
         );
         INSERT INTO PlanLimits (PlanKey, FeatureKey, LimitValue) VALUES
-            ('Trial', 'ai_calls_per_day', 50),
-            ('Trial', 'ai_spend_micro_usd_per_day', 100000),
+            ('Trial', 'ai_calls_per_day', NULL),
+            ('Trial', 'ai_spend_micro_usd_per_day', NULL),
             ('Trial', 'recurring_scan_interval_days', 7),
             ('Trial', 'public_api_calls_per_day', 100),
             ('Trial', 'regions_summary', 0),
             ('Trial', 'personas_summary', 0),
-            ('Pro', 'ai_calls_per_day', 1000),
-            ('Pro', 'ai_spend_micro_usd_per_day', 5000000),
+            ('Pro', 'ai_calls_per_day', NULL),
+            ('Pro', 'ai_spend_micro_usd_per_day', NULL),
             ('Pro', 'recurring_scan_interval_days', 1),
             ('Pro', 'public_api_calls_per_day', 5000),
             ('Pro', 'regions_summary', 0),
@@ -822,6 +824,10 @@ public static class SelfHealingMigrations
             ('Enterprise', 'regions_summary', 1),
             ('Enterprise', 'personas_summary', 1)
         ON CONFLICT (PlanKey, FeatureKey) DO NOTHING;
+
+        UPDATE PlanLimits
+        SET LimitValue = NULL
+        WHERE FeatureKey IN ('ai_calls_per_day', 'ai_spend_micro_usd_per_day');
 
         CREATE TABLE IF NOT EXISTS ContentDrafts (
             Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -7,80 +7,44 @@ namespace Citationly.Tests;
 public class AiUsageLimiterTests
 {
     [Fact]
-    public async Task EnsureWithinLimitsAsync_UsesAtomicUsageReservation()
+    public async Task EnsureWithinLimitsAsync_DoesNotBlockWhenQuotaWouldBeExceeded()
     {
         var entitlements = new StubEntitlementService
         {
-            TryConsumeResult = new UsageQuotaStatus(true, 1, 10),
-            SpendQuotaResult = new UsageQuotaStatus(true, 0, 10_000_000)
+            TryConsumeResult = new UsageQuotaStatus(false, 50, 50),
+            SpendQuotaResult = new UsageQuotaStatus(false, 100000, 100000)
         };
-        var rateLimits = new StubAiRateLimitStore();
-        var limiter = new AiUsageLimiter(entitlements, rateLimits);
+        var limiter = new AiUsageLimiter(entitlements);
 
         await limiter.EnsureWithinLimitsAsync(Guid.NewGuid(), "test.operation");
 
-        Assert.Equal(2, rateLimits.TryConsumeCalls);
-        Assert.Equal(1, entitlements.TryConsumeCalls);
         Assert.Equal(0, entitlements.ConsumeCalls);
-        Assert.Equal(1, entitlements.CheckQuotaCalls);
-    }
-
-    [Fact]
-    public async Task EnsureWithinLimitsAsync_ThrowsWhenAtomicUsageReservationFails()
-    {
-        var entitlements = new StubEntitlementService
-        {
-            TryConsumeResult = new UsageQuotaStatus(false, 10, 10),
-            SpendQuotaResult = new UsageQuotaStatus(true, 0, 10_000_000)
-        };
-        var limiter = new AiUsageLimiter(entitlements, new StubAiRateLimitStore());
-
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            limiter.EnsureWithinLimitsAsync(Guid.NewGuid(), "test.operation"));
-
-        Assert.Contains("Daily AI usage limit reached", ex.Message);
-        Assert.Equal(1, entitlements.TryConsumeCalls);
-        Assert.Equal(0, entitlements.ConsumeCalls);
-    }
-
-    [Fact]
-    public async Task EnsureWithinLimitsAsync_ThrowsWhenSharedHourlyLimitFails()
-    {
-        var entitlements = new StubEntitlementService
-        {
-            TryConsumeResult = new UsageQuotaStatus(true, 1, 10),
-            SpendQuotaResult = new UsageQuotaStatus(true, 0, 10_000_000)
-        };
-        var rateLimits = new StubAiRateLimitStore
-        {
-            TryConsumeResult = new UsageQuotaStatus(false, 80, 80)
-        };
-        var limiter = new AiUsageLimiter(entitlements, rateLimits);
-
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            limiter.EnsureWithinLimitsAsync(Guid.NewGuid(), "test.operation"));
-
-        Assert.Contains("AI usage limit exceeded", ex.Message);
-        Assert.Equal(1, rateLimits.TryConsumeCalls);
         Assert.Equal(0, entitlements.TryConsumeCalls);
+        Assert.Equal(0, entitlements.CheckQuotaCalls);
     }
 
-    private sealed class StubAiRateLimitStore : IAiRateLimitStore
+    [Fact]
+    public async Task RecordEstimatedCostAsync_RecordsSpendForReporting()
     {
-        public UsageQuotaStatus TryConsumeResult { get; init; } = new(true, 1, 80);
-        public int TryConsumeCalls { get; private set; }
+        var entitlements = new StubEntitlementService();
+        var limiter = new AiUsageLimiter(entitlements);
 
-        public Task<UsageQuotaStatus> TryConsumeAsync(
-            string scopeKey,
-            DateTime periodStartUtc,
-            DateTime periodEndUtc,
-            long limit,
-            long amount = 1,
-            CancellationToken cancellationToken = default)
-        {
-            TryConsumeCalls++;
-            return Task.FromResult(TryConsumeResult);
-        }
+        await limiter.RecordEstimatedCostAsync(Guid.NewGuid(), 0.000123m, "test.operation");
+
+        Assert.Equal(1, entitlements.ConsumeCalls);
+    }
+
+    [Fact]
+    public async Task RecordEstimatedCostAsync_IgnoresMissingOrganizationOrCost()
+    {
+        var entitlements = new StubEntitlementService();
+        var limiter = new AiUsageLimiter(entitlements);
+
+        await limiter.RecordEstimatedCostAsync(null, 0.000123m, "test.operation");
+        await limiter.RecordEstimatedCostAsync(Guid.NewGuid(), null, "test.operation");
+        await limiter.RecordEstimatedCostAsync(Guid.NewGuid(), 0, "test.operation");
+
+        Assert.Equal(0, entitlements.ConsumeCalls);
     }
 
     private sealed class StubEntitlementService : IEntitlementService

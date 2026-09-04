@@ -586,6 +586,7 @@ CREATE TABLE IF NOT EXISTS CompetitorSnapshots (
     Threat VARCHAR(10) NOT NULL DEFAULT 'low',
     ModelsJson JSONB NOT NULL DEFAULT '{}'::jsonb,
     Tagline VARCHAR(512),
+    WebsiteUrl VARCHAR(2048),
     CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_competitorsnapshots_org_scandate ON CompetitorSnapshots (OrganizationId, ScanDate);
@@ -1301,14 +1302,14 @@ CREATE TABLE IF NOT EXISTS PlanLimits (
     PRIMARY KEY (PlanKey, FeatureKey)
 );
 INSERT INTO PlanLimits (PlanKey, FeatureKey, LimitValue) VALUES
-    ('Trial', 'ai_calls_per_day', 50),
-    ('Trial', 'ai_spend_micro_usd_per_day', 100000),
+    ('Trial', 'ai_calls_per_day', NULL),
+    ('Trial', 'ai_spend_micro_usd_per_day', NULL),
     ('Trial', 'recurring_scan_interval_days', 7),
     ('Trial', 'public_api_calls_per_day', 100),
     ('Trial', 'regions_summary', 0),
     ('Trial', 'personas_summary', 0),
-    ('Pro', 'ai_calls_per_day', 1000),
-    ('Pro', 'ai_spend_micro_usd_per_day', 5000000),
+    ('Pro', 'ai_calls_per_day', NULL),
+    ('Pro', 'ai_spend_micro_usd_per_day', NULL),
     ('Pro', 'recurring_scan_interval_days', 1),
     ('Pro', 'public_api_calls_per_day', 5000),
     ('Pro', 'regions_summary', 0),

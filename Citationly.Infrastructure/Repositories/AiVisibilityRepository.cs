@@ -44,7 +44,7 @@ public class AiVisibilityRepository : IAiVisibilityRepository
                     LIMIT 1
                 )
                 SELECT
-                    cc.Id AS Id,
+                    comp.Id AS Id,
                     @OrganizationId AS OrganizationId,
                     c.CompanyName AS Name,
                     c.Website AS WebsiteUrl,
@@ -75,6 +75,17 @@ public class AiVisibilityRepository : IAiVisibilityRepository
                 FROM org_company oc
                 JOIN CompanyCompetitor cc ON cc.CompanyId = oc.CompanyId
                 JOIN Company c ON c.Id = cc.CompetitorCompanyId
+                JOIN LATERAL (
+                    SELECT Id
+                    FROM Competitors comp
+                    WHERE comp.OrganizationId = @OrganizationId
+                      AND (
+                          (NULLIF(c.Website, '') IS NOT NULL AND LOWER(COALESCE(comp.WebsiteUrl, '')) = LOWER(c.Website))
+                          OR LOWER(comp.Name) = LOWER(c.CompanyName)
+                      )
+                    ORDER BY comp.CreatedAt DESC
+                    LIMIT 1
+                ) comp ON TRUE
                 ORDER BY cc.Rank, cc.Similarity DESC
                 LIMIT @Limit",
                 new { OrganizationId = organizationId, Limit = limit })).ToList();

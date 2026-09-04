@@ -153,7 +153,7 @@ public class DashboardController : ControllerBase
         await _snapshotRepository.EnsureTableCreatedAsync();
 
         var latestScanDate = await _snapshotRepository.GetLatestScanDateAsync(orgGuid.Value);
-        if (latestScanDate == null)
+        if (latestScanDate == null || await CompetitorSnapshotIsStaleAsync(orgGuid.Value, latestScanDate.Value))
         {
             await _mediator.Send(new RunCompetitorScanCommand { OrganizationId = orgGuid.Value });
         }
@@ -194,7 +194,7 @@ public class DashboardController : ControllerBase
         // 4 before it ever reached the client. Match CompetitorDiscoveryService's TopSelectionCount
         // (40) so Competitor Watch reflects the same competitor set as the rest of the product, and
         // so there's actually more than a page's worth for the frontend's "More" modal to reveal.
-        var compSnaps = latest.Where(s => !s.IsYou).OrderBy(s => s.Rank).Take(40).ToList();
+        var compSnaps = latest.Where(s => !s.IsYou).OrderBy(s => s.Rank).ToList();
 
         var history = await _snapshotRepository.GetRecentHistoryAsync(orgGuid, 12);
 
@@ -271,6 +271,21 @@ public class DashboardController : ControllerBase
         }).ToList();
 
         return Ok(new { you, comps = compsList });
+    }
+
+    private async Task<bool> CompetitorSnapshotIsStaleAsync(Guid organizationId, DateOnly scanDate)
+    {
+        var trackedCompetitors = await _visibilityRepository.GetCompetitorsByOrgAsync(organizationId, 500);
+        if (trackedCompetitors.Count == 0) return false;
+
+        var snapshots = await _snapshotRepository.GetSnapshotsByScanDateAsync(organizationId, scanDate);
+        var snapshotCompetitorIds = snapshots
+            .Where(s => !s.IsYou && s.CompetitorId.HasValue)
+            .Select(s => s.CompetitorId!.Value)
+            .ToHashSet();
+
+        return trackedCompetitors.Count != snapshotCompetitorIds.Count
+            || trackedCompetitors.Any(c => !snapshotCompetitorIds.Contains(c.Id));
     }
 
     [HttpGet("geo-dashboard")]
