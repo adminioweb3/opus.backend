@@ -76,6 +76,91 @@ public partial class ProductTruthRegressionTests
         Assert.Empty(missingRoutes);
     }
 
+    [Fact]
+    public void CustomerFacingControllers_DoNotAcceptClientSuppliedOrganizationIds()
+    {
+        var repoRoot = FindRepoRoot();
+        var controllersRoot = Path.Combine(repoRoot, "backend", "Citationly.API", "Controllers");
+        var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "AdminController.cs"
+        };
+
+        var offenders = Directory.EnumerateFiles(controllersRoot, "*Controller.cs", SearchOption.TopDirectoryOnly)
+            .Where(path => !allowed.Contains(Path.GetFileName(path)))
+            .Where(path =>
+            {
+                var text = File.ReadAllText(path);
+                return ClientSuppliedOrganizationIdRegex().IsMatch(text);
+            })
+            .Select(path => Path.GetRelativePath(repoRoot, path))
+            .ToList();
+
+        Assert.Empty(offenders);
+    }
+
+    [Fact]
+    public void PublicDocs_DoNotOverPromiseUnavailableIntegrationsOrEngineCoverage()
+    {
+        var repoRoot = FindRepoRoot();
+        var publicRoot = Path.Combine(repoRoot, "frontend", "src", "app", "(public)");
+        var files = new[]
+        {
+            Path.Combine(publicRoot, "integrations", "content.tsx"),
+            Path.Combine(publicRoot, "integrations", "page.tsx"),
+            Path.Combine(publicRoot, "resources", "content.tsx"),
+            Path.Combine(publicRoot, "docs", "content.tsx")
+        };
+
+        var forbiddenClaims = new[]
+        {
+            "connects to Google Analytics, Google Search Console, Slack, Zapier, and CRM platforms today",
+            "Connect Citationly to Google Analytics, Search Console, Slack, Zapier, and your CRM",
+            "Visibility Radar runs across 6 engines",
+            "query six major engines",
+            "continuously monitors six major AI engines",
+            "starts working immediately",
+            "Zapier alone opens the door"
+        };
+
+        var offenders = files
+            .Where(File.Exists)
+            .SelectMany(path => forbiddenClaims
+                .Where(claim => File.ReadAllText(path).Contains(claim, StringComparison.OrdinalIgnoreCase))
+                .Select(claim => $"{Path.GetRelativePath(repoRoot, path)} contains over-promising claim: {claim}"))
+            .ToList();
+
+        Assert.Empty(offenders);
+    }
+
+    [Fact]
+    public void SensitiveCustomerControllers_KeepRoleAndAuditGuards()
+    {
+        var repoRoot = FindRepoRoot();
+        var required = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["AlertsController.cs"] = new[] { "[RequireOrgRole(\"Manager\")", "[AuditAction(\"alerts.threshold.update\"" },
+            ["ApiKeysController.cs"] = new[] { "[RequireOrgRole(\"Admin\")", "[AuditAction(\"api_key.create\"", "[AuditAction(\"api_key.revoke\"" },
+            ["BillingController.cs"] = new[] { "[RequireOrgRole(\"Admin\")", "[AuditAction(\"billing.subscription_session.create\"", "[AuditAction(\"billing.subscription.cancel\"" },
+            ["TeamController.cs"] = new[] { "[RequireOrgRole(\"Admin\")", "[AuditAction(\"team.member.role_update\"", "[AuditAction(\"team.member.remove\"", "[AuditAction(\"team.invite.create\"", "[AuditAction(\"team.invite.revoke\"" },
+            ["DataLifecycleController.cs"] = new[] { "[RequireOrgRole(\"Admin\")", "[RequireOrgRole(\"Owner\")", "[AuditAction(\"data_lifecycle.deletion_request.create\"" },
+            ["EnterpriseSsoController.cs"] = new[] { "[RequireOrgRole(\"Admin\")", "[AuditAction(\"enterprise.sso.upsert\"", "[AuditAction(\"enterprise.scim_token.rotate\"" },
+            ["AgencyController.cs"] = new[] { "[RequireOrgRole(\"Admin\")", "[RequireOrgRole(\"Manager\")", "[AuditAction(\"agency.report_link.create\"", "[AuditAction(\"agency.report_link.revoke\"" },
+        };
+
+        var missing = new List<string>();
+        foreach (var (fileName, markers) in required)
+        {
+            var path = Path.Combine(repoRoot, "backend", "Citationly.API", "Controllers", fileName);
+            var text = File.ReadAllText(path);
+            missing.AddRange(markers
+                .Where(marker => !text.Contains(marker, StringComparison.Ordinal))
+                .Select(marker => $"{Path.GetRelativePath(repoRoot, path)} missing {marker}"));
+        }
+
+        Assert.Empty(missing);
+    }
+
     private static bool DashboardRouteExists(string appRoot, string route)
     {
         var segments = route.Trim('/').Split('/');
@@ -109,4 +194,7 @@ public partial class ProductTruthRegressionTests
 
     [System.Text.RegularExpressions.GeneratedRegex("/dashboard[/A-Za-z0-9?=\\-]*")]
     private static partial System.Text.RegularExpressions.Regex DashboardRouteRegex();
+
+    [System.Text.RegularExpressions.GeneratedRegex("public\\s+(async\\s+)?(Task<[^>]+>|Task|IActionResult)\\s+\\w+\\s*\\([^)]*(Guid\\??|string)\\s+organizationId\\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase)]
+    private static partial System.Text.RegularExpressions.Regex ClientSuppliedOrganizationIdRegex();
 }

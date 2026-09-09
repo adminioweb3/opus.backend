@@ -76,7 +76,7 @@ public class PromptExecutionService : IPromptExecutionService
             "objectively — recommend whichever real companies or products genuinely fit the question best.";
 
         // Run LLMs
-        var responses = (await _llmRunner.RunPromptAcrossModelsAsync(analysisId, question.PromptText, ct, personaSystemPrompt)).ToList();
+        var responses = (await _llmRunner.RunPromptAcrossModelsAsync(organizationId, analysisId, question.PromptText, ct, personaSystemPrompt)).ToList();
         
         await _repo.InsertResponsesAsync(responses);
 

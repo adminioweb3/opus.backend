@@ -5,13 +5,19 @@ namespace Citationly.Application.Services;
 
 public sealed class AiCompletionService : IAiCompletionService
 {
+    private static readonly TimeSpan CacheFreshness = TimeSpan.FromHours(6);
     private readonly IAiProviderRegistry _providerRegistry;
     private readonly IAiRequestContextAccessor _aiContext;
+    private readonly IAiCompletionCache _completionCache;
 
-    public AiCompletionService(IAiProviderRegistry providerRegistry, IAiRequestContextAccessor aiContext)
+    public AiCompletionService(
+        IAiProviderRegistry providerRegistry,
+        IAiRequestContextAccessor aiContext,
+        IAiCompletionCache completionCache)
     {
         _providerRegistry = providerRegistry;
         _aiContext = aiContext;
+        _completionCache = completionCache;
     }
 
     public async Task<AiCompletionResult> CompleteAsync(
@@ -36,7 +42,36 @@ public sealed class AiCompletionService : IAiCompletionService
         _aiContext.OrganizationId = organizationId;
         try
         {
-            var result = await provider.CompleteAsync(systemPrompt, userPrompt, cancellationToken);
+            var result = await _completionCache.TryGetAsync(
+                organizationId,
+                operationName,
+                provider.ProviderKey,
+                systemPrompt,
+                userPrompt,
+                CacheFreshness,
+                cancellationToken);
+            var cacheHit = result != null;
+
+            if (!cacheHit)
+            {
+                result = await provider.CompleteAsync(systemPrompt, userPrompt, cancellationToken);
+            }
+
+            if (result is null)
+            {
+                return new AiCompletionResult(
+                    false,
+                    string.Empty,
+                    provider.ProviderKey,
+                    provider.PlatformName,
+                    null,
+                    null,
+                    null,
+                    null,
+                    false,
+                    $"{provider.PlatformName} returned no result for {operationName}.");
+            }
+
             if (requireJson && !IsJsonObject(result.Content))
             {
                 return new AiCompletionResult(
@@ -50,6 +85,19 @@ public sealed class AiCompletionService : IAiCompletionService
                     result.CostUsd,
                     result.WasSearchGrounded,
                     $"{provider.PlatformName} returned invalid JSON for {operationName}.");
+            }
+
+            if (!cacheHit)
+            {
+                await _completionCache.StoreAsync(
+                    organizationId,
+                    operationName,
+                    provider.ProviderKey,
+                    systemPrompt,
+                    userPrompt,
+                    result,
+                    CacheFreshness,
+                    cancellationToken);
             }
 
             return new AiCompletionResult(

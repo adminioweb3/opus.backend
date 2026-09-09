@@ -366,6 +366,22 @@ CREATE TABLE IF NOT EXISTS AuditLogs (
 CREATE INDEX IF NOT EXISTS idx_auditlogs_org_created ON AuditLogs (OrganizationId, CreatedAt DESC);
 CREATE INDEX IF NOT EXISTS idx_auditlogs_action_created ON AuditLogs (Action, CreatedAt DESC);
 
+CREATE TABLE IF NOT EXISTS BetaFeedback (
+    Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    OrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,
+    UserId UUID NULL REFERENCES Users(Id) ON DELETE SET NULL,
+    PagePath TEXT NOT NULL DEFAULT '',
+    FeedbackType VARCHAR(50) NOT NULL DEFAULT 'General',
+    Rating INT NULL,
+    Message TEXT NOT NULL DEFAULT '',
+    ContextId VARCHAR(100) NOT NULL DEFAULT '',
+    Status VARCHAR(50) NOT NULL DEFAULT 'Open',
+    CreatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_betafeedback_org_created ON BetaFeedback (OrganizationId, CreatedAt DESC);
+CREATE INDEX IF NOT EXISTS idx_betafeedback_status_created ON BetaFeedback (Status, CreatedAt DESC);
+
 CREATE TABLE IF NOT EXISTS SsoConnections (
     Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     OrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,

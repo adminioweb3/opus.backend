@@ -82,6 +82,25 @@ public class ScrapingJobRepository : IScrapingJobRepository
         await connection.ExecuteAsync("DELETE FROM ScrapingJobs WHERE Id = @Id;", new { Id = jobId });
     }
 
+    public async Task<List<ScrapingJob>> GetOperatorJobsAsync(Guid? organizationId = null, string? status = null, int limit = 100, int offset = 0)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        limit = Math.Clamp(limit, 1, 500);
+        offset = Math.Max(offset, 0);
+        var normalizedStatus = string.IsNullOrWhiteSpace(status) ? null : status.Trim();
+        var results = await connection.QueryAsync<ScrapingJob>(
+            """
+            SELECT *
+            FROM ScrapingJobs
+            WHERE (@OrganizationId IS NULL OR OrganizationId = @OrganizationId)
+              AND (@Status IS NULL OR Status = @Status)
+            ORDER BY CreatedAt DESC
+            LIMIT @Limit OFFSET @Offset;
+            """,
+            new { OrganizationId = organizationId, Status = normalizedStatus, Limit = limit, Offset = offset });
+        return results.ToList();
+    }
+
     public async Task<List<ScrapingJob>> GetAllJobsByOrgAsync(Guid organizationId, int limit = 100)
     {
         using var connection = _dbConnectionFactory.CreateConnection();

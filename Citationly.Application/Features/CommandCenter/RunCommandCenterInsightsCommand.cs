@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using MediatR;
 using Citationly.Application.Interfaces;
+using Citationly.Domain.Entities;
 
 namespace Citationly.Application.Features.CommandCenter;
 
@@ -55,7 +56,10 @@ public class RunCommandCenterInsightsCommandHandler : IRequestHandler<RunCommand
             return new RunCommandCenterInsightsResult(false, "No analyzed data found yet for this organization.");
         }
 
-        var scans = (await _visibilityRepo.GetHistoricalScansByOrgAsync(orgId)).OrderBy(s => s.ScanDate).ToList();
+        var scans = (await _visibilityRepo.GetHistoricalScansByOrgAsync(orgId))
+            .Where(IsUsableScan)
+            .OrderBy(s => s.ScanDate)
+            .ToList();
         var latestScan = scans.LastOrDefault();
         var previousScan = scans.Count > 1 ? scans[^2] : null;
 
@@ -141,5 +145,20 @@ public class RunCommandCenterInsightsCommandHandler : IRequestHandler<RunCommand
         });
 
         return new RunCommandCenterInsightsResult(true, "Command center insights generated.");
+    }
+
+    private static bool IsUsableScan(HistoricalScan scan)
+    {
+        return new[]
+        {
+            scan.VisibilityScore,
+            scan.CitationScore,
+            scan.SentimentScore,
+            scan.CompetitorScore,
+            scan.HallucinationRisk,
+            scan.SeoHealth,
+            scan.AeoReadiness,
+            scan.GeoReadiness
+        }.Any(score => score > 0);
     }
 }

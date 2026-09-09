@@ -6,9 +6,11 @@ using Citationly.API.Services;
 using Citationly.Application.Features.Onboarding;
 using Citationly.Application.Features.PromptIntelligence.Services;
 using Citationly.Application.Interfaces;
+using Citationly.Domain.Entities;
 using Citationly.Infrastructure.Database;
 using Dapper;
 using FirebaseAdmin.Auth;
+using Hangfire;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -23,12 +25,52 @@ namespace Citationly.API.Controllers;
 [Route("api/[controller]")]
 public class AdminController : ControllerBase
 {
+    private const string ClearDatabaseConfirmation = "CLEAR_DATABASE";
+    private const string ResetDatabaseConfirmation = "RESET_DATABASE";
+    private const string DeleteOrganizationConfirmation = "DELETE_ORGANIZATION_DATA";
+    private const string RetryFailedJobConfirmation = "RETRY_FAILED_JOB";
+    private static readonly string[] OrganizationDeletionTables =
+    {
+        "AlertThresholds",
+        "Alerts",
+        "ApiKeys",
+        "AuditLogs",
+        "BrandClaims",
+        "BrandFactChecks",
+        "BrandPulseScanSummaries",
+        "CitationScanSummaries",
+        "CitationSourceSnapshots",
+        "Competitors",
+        "CompetitorSnapshots",
+        "ContentDrafts",
+        "ContentOptimizations",
+        "CrossEngineConsensusInsights",
+        "DashboardSnapshots",
+        "DataDeletionRequests",
+        "Embeddings",
+        "GeoPillars",
+        "HistoricalScans",
+        "Invites",
+        "KnowledgeBases",
+        "OpportunitySnapshots",
+        "PromptTopics",
+        "RecommendationImplementations",
+        "Reports",
+        "RetentionPolicies",
+        "SsoConnections",
+        "UsageCounters",
+        "Websites",
+        "WebsiteProfiles"
+    };
+
     private readonly IDbConnectionFactory _dbConnectionFactory;
     private readonly IConfiguration _configuration;
     private readonly ILogger<AdminController> _logger;
     private readonly IPromptIntelligenceFirstRunService _firstRunService;
     private readonly IMediator _mediator;
     private readonly IMemoryCache _cache;
+    private readonly IScrapingJobRepository _scrapingJobRepository;
+    private readonly IBackgroundJobClient _backgroundJobClient;
 
     public AdminController(
         IDbConnectionFactory dbConnectionFactory,
@@ -36,7 +78,9 @@ public class AdminController : ControllerBase
         ILogger<AdminController> logger,
         IPromptIntelligenceFirstRunService firstRunService,
         IMediator mediator,
-        IMemoryCache cache)
+        IMemoryCache cache,
+        IScrapingJobRepository scrapingJobRepository,
+        IBackgroundJobClient backgroundJobClient)
     {
         _dbConnectionFactory = dbConnectionFactory;
         _configuration = configuration;
@@ -44,6 +88,8 @@ public class AdminController : ControllerBase
         _firstRunService = firstRunService;
         _mediator = mediator;
         _cache = cache;
+        _scrapingJobRepository = scrapingJobRepository;
+        _backgroundJobClient = backgroundJobClient;
     }
 
     [AllowAnonymous]
@@ -147,6 +193,10 @@ public class AdminController : ControllerBase
         {
             return StatusCode(403, new { message = "Destructive database actions are disabled in production." });
         }
+        if (!HasDestructiveConfirmation(ClearDatabaseConfirmation))
+        {
+            return StatusCode(428, new { message = $"Missing X-Admin-Confirm: {ClearDatabaseConfirmation}." });
+        }
 
         using var connection = _dbConnectionFactory.CreateConnection();
 
@@ -176,6 +226,10 @@ public class AdminController : ControllerBase
         if (IsProductionDestructiveDatabaseActionDisabled())
         {
             return StatusCode(403, new { message = "Destructive database actions are disabled in production." });
+        }
+        if (!HasDestructiveConfirmation(ResetDatabaseConfirmation))
+        {
+            return StatusCode(428, new { message = $"Missing X-Admin-Confirm: {ResetDatabaseConfirmation}." });
         }
 
         var assembly = typeof(SelfHealingMigrations).Assembly;
@@ -342,11 +396,144 @@ public class AdminController : ControllerBase
         return Ok(allUsers.OrderByDescending(u => u.UserCreatedAt).Take(limit));
     }
 
+    [HttpGet("support/organizations")]
+    public async Task<IActionResult> GetSupportOrganizations([FromQuery] int limit = 100)
+    {
+        limit = Math.Clamp(limit, 1, 500);
+        using var connection = _dbConnectionFactory.CreateConnection();
+        var rows = await connection.QueryAsync<AdminSupportOrganizationRow>(
+            """
+            WITH user_counts AS (
+                SELECT OrganizationId, COUNT(*)::int AS UserCount
+                FROM Users
+                GROUP BY OrganizationId
+            ),
+            website_counts AS (
+                SELECT OrganizationId, COUNT(*)::int AS WebsiteCount
+                FROM Websites
+                GROUP BY OrganizationId
+            ),
+            latest_subscriptions AS (
+                SELECT DISTINCT ON (OrganizationId)
+                    OrganizationId,
+                    Status
+                FROM Subscriptions
+                WHERE Status IN ('active', 'trialing', 'past_due', 'ACTIVE', 'TRIALING', 'PAST_DUE')
+                ORDER BY OrganizationId, UpdatedAt DESC NULLS LAST, CreatedAt DESC
+            ),
+            usage_today AS (
+                SELECT OrganizationId, SUM(Count)::bigint AS UsageToday
+                FROM UsageCounters
+                WHERE PeriodStart >= CURRENT_DATE
+                GROUP BY OrganizationId
+            ),
+            scraping_job_counts AS (
+                SELECT
+                    OrganizationId,
+                    COUNT(*) FILTER (WHERE Status IN ('Pending', 'Processing'))::int AS ActiveJobCount,
+                    COUNT(*) FILTER (WHERE Status = 'Failed')::int AS FailedJobCount
+                FROM ScrapingJobs
+                GROUP BY OrganizationId
+            ),
+            provider_failures AS (
+                SELECT
+                    pt.OrganizationId,
+                    COUNT(pr.Id)::int AS ProviderFailureCount,
+                    MAX(pr.CreatedAt) AS LastProviderFailureAt
+                FROM PromptResponses pr
+                JOIN PromptAnalysis pa ON pa.Id = pr.PromptAnalysisId
+                JOIN PromptQuestions pq ON pq.Id = pa.PromptQuestionId
+                JOIN PromptTopics pt ON pt.Id = pq.PromptTopicId
+                WHERE pr.IsError = TRUE
+                GROUP BY pt.OrganizationId
+            )
+            SELECT
+                o.Id AS OrganizationId,
+                o.Name AS OrganizationName,
+                o.PlanType,
+                o.CreatedAt AS OrganizationCreatedAt,
+                COALESCE(uc.UserCount, 0) AS UserCount,
+                COALESCE(wc.WebsiteCount, 0) AS WebsiteCount,
+                COALESCE(ls.Status, 'none') AS SubscriptionStatus,
+                COALESCE(ut.UsageToday, 0)::bigint AS UsageToday,
+                COALESCE(sjc.ActiveJobCount, 0) AS ActiveJobCount,
+                COALESCE(sjc.FailedJobCount, 0) AS FailedJobCount,
+                COALESCE(pf.ProviderFailureCount, 0) AS ProviderFailureCount,
+                pf.LastProviderFailureAt
+            FROM Organizations o
+            LEFT JOIN user_counts uc ON uc.OrganizationId = o.Id
+            LEFT JOIN website_counts wc ON wc.OrganizationId = o.Id
+            LEFT JOIN latest_subscriptions ls ON ls.OrganizationId = o.Id
+            LEFT JOIN usage_today ut ON ut.OrganizationId = o.Id
+            LEFT JOIN scraping_job_counts sjc ON sjc.OrganizationId = o.Id
+            LEFT JOIN provider_failures pf ON pf.OrganizationId = o.Id
+            ORDER BY o.CreatedAt DESC
+            LIMIT @Limit
+            """,
+            new { Limit = limit });
+
+        return Ok(rows);
+    }
+
+    [HttpGet("support/scraping-jobs")]
+    public async Task<IActionResult> GetSupportScrapingJobs(
+        [FromQuery] Guid? organizationId = null,
+        [FromQuery] string? status = null,
+        [FromQuery] int limit = 100,
+        [FromQuery] int offset = 0)
+    {
+        var jobs = await _scrapingJobRepository.GetOperatorJobsAsync(
+            organizationId,
+            status,
+            Math.Clamp(limit, 1, 500),
+            Math.Max(offset, 0));
+
+        return Ok(jobs.Select(SupportScrapingJobRow.FromJob));
+    }
+
+    [HttpPost("support/scraping-jobs/{id}/retry")]
+    [AuditAction("admin.scraping-job.retry", "Operations", "ScrapingJob")]
+    public async Task<IActionResult> RetryFailedScrapingJob(Guid id)
+    {
+        if (!HasDestructiveConfirmation(RetryFailedJobConfirmation))
+        {
+            return StatusCode(428, new { message = $"Missing X-Admin-Confirm: {RetryFailedJobConfirmation}." });
+        }
+
+        var job = await _scrapingJobRepository.GetJobAsync(id);
+        if (job is null)
+        {
+            return NotFound(new { message = "Scraping job not found." });
+        }
+
+        if (!string.Equals(job.Status, "Failed", StringComparison.OrdinalIgnoreCase))
+        {
+            return BadRequest(new { message = "Only failed scraping jobs can be manually retried." });
+        }
+
+        job.Status = "Pending";
+        job.StartedAt = null;
+        job.CompletedAt = null;
+        await _scrapingJobRepository.UpdateJobAsync(job);
+        var hangfireJobId = _backgroundJobClient.Enqueue<IScrapingJobService>(svc => svc.ProcessJobAsync(id));
+
+        return Ok(new { job.Id, job.OrganizationId, job.Status, HangfireJobId = hangfireJobId });
+    }
+
     [HttpDelete("users/{id}")]
     [AuditAction("admin.user.delete", "Destructive", "User")]
     public async Task<IActionResult> DeleteUser(Guid id)
     {
+        if (!HasDestructiveConfirmation(DeleteOrganizationConfirmation))
+        {
+            return StatusCode(428, new { message = $"Missing X-Admin-Confirm: {DeleteOrganizationConfirmation}." });
+        }
+
         using var connection = _dbConnectionFactory.CreateConnection();
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+            connection.Open();
+        }
 
         // Find the organization this user belongs to
         var orgId = await connection.QuerySingleOrDefaultAsync<Guid>(
@@ -359,43 +546,19 @@ public class AdminController : ControllerBase
 
         try
         {
-            // Delete in order to respect foreign key constraints
-            // Only delete from tables that exist and have OrganizationId
+            using var transaction = connection.BeginTransaction();
+            foreach (var table in await GetExistingOrganizationScopedTablesAsync(connection, transaction))
+            {
+                var quotedTable = "\"" + table.Replace("\"", "\"\"") + "\"";
+                await connection.ExecuteAsync(
+                    $"DELETE FROM {quotedTable} WHERE OrganizationId = @OrgId",
+                    new { OrgId = orgId },
+                    transaction);
+            }
 
-            // 1. Delete competitor snapshots
-            try { await connection.ExecuteAsync("DELETE FROM CompetitorSnapshots WHERE OrganizationId = @OrgId", new { OrgId = orgId }); } catch { }
-
-            // 2. Delete competitors
-            try { await connection.ExecuteAsync("DELETE FROM Competitors WHERE OrganizationId = @OrgId", new { OrgId = orgId }); } catch { }
-
-            // 3. Delete websites and related data
-            try { await connection.ExecuteAsync("DELETE FROM Websites WHERE OrganizationId = @OrgId", new { OrgId = orgId }); } catch { }
-            try { await connection.ExecuteAsync("DELETE FROM WebsiteProfiles WHERE OrganizationId = @OrgId", new { OrgId = orgId }); } catch { }
-
-            // 4. Delete content studio data
-            try { await connection.ExecuteAsync("DELETE FROM ContentDrafts WHERE OrganizationId = @OrgId", new { OrgId = orgId }); } catch { }
-            try { await connection.ExecuteAsync("DELETE FROM ContentOptimizations WHERE OrganizationId = @OrgId", new { OrgId = orgId }); } catch { }
-            try { await connection.ExecuteAsync("DELETE FROM KnowledgeBases WHERE OrganizationId = @OrgId", new { OrgId = orgId }); } catch { }
-            try { await connection.ExecuteAsync("DELETE FROM SourceFolders WHERE OrganizationId = @OrgId", new { OrgId = orgId }); } catch { }
-
-            // 5. Delete reports, prompts, and other data
-            try { await connection.ExecuteAsync("DELETE FROM Reports WHERE OrganizationId = @OrgId", new { OrgId = orgId }); } catch { }
-            try { await connection.ExecuteAsync("DELETE FROM Prompts WHERE OrganizationId = @OrgId", new { OrgId = orgId }); } catch { }
-            try { await connection.ExecuteAsync("DELETE FROM CompetitorComparisons WHERE OrganizationId = @OrgId", new { OrgId = orgId }); } catch { }
-
-            // 6. Delete geo/visibility data
-            try { await connection.ExecuteAsync("DELETE FROM GeoPillars WHERE OrganizationId = @OrgId", new { OrgId = orgId }); } catch { }
-            try { await connection.ExecuteAsync("DELETE FROM PromptCoverages WHERE OrganizationId = @OrgId", new { OrgId = orgId }); } catch { }
-            try { await connection.ExecuteAsync("DELETE FROM WinLossEvents WHERE OrganizationId = @OrgId", new { OrgId = orgId }); } catch { }
-
-            // 7. Delete team invites
-            try { await connection.ExecuteAsync("DELETE FROM Invites WHERE OrganizationId = @OrgId", new { OrgId = orgId }); } catch { }
-
-            // 8. Delete all users in this organization
-            await connection.ExecuteAsync("DELETE FROM Users WHERE OrganizationId = @OrgId", new { OrgId = orgId });
-
-            // 9. Finally delete the organization itself
-            await connection.ExecuteAsync("DELETE FROM Organizations WHERE Id = @OrgId", new { OrgId = orgId });
+            await connection.ExecuteAsync("DELETE FROM Users WHERE OrganizationId = @OrgId", new { OrgId = orgId }, transaction);
+            await connection.ExecuteAsync("DELETE FROM Organizations WHERE Id = @OrgId", new { OrgId = orgId }, transaction);
+            transaction.Commit();
 
             _logger.LogWarning("Admin API deleted user {UserId} and wiped their organization {OrgId} with all related data", id, orgId);
             return Ok(new { message = "User and all associated organization data wiped successfully." });
@@ -413,6 +576,31 @@ public class AdminController : ControllerBase
         var isProduction = string.Equals(environmentName, "Production", StringComparison.OrdinalIgnoreCase);
         return isProduction && !_configuration.GetValue<bool>("Admin:AllowDestructiveDatabaseActions");
     }
+
+    private bool HasDestructiveConfirmation(string expected)
+    {
+        return string.Equals(Request.Headers["X-Admin-Confirm"].ToString(), expected, StringComparison.Ordinal);
+    }
+
+    private static async Task<IReadOnlyList<string>> GetExistingOrganizationScopedTablesAsync(System.Data.IDbConnection connection, System.Data.IDbTransaction transaction)
+    {
+        var existing = await connection.QueryAsync<string>(
+            """
+            SELECT table_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND LOWER(column_name) = 'organizationid'
+              AND table_name = ANY(@Tables)
+            """,
+            new { Tables = OrganizationDeletionTables },
+            transaction);
+
+        return existing
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(table => table.Equals("PromptTopics", StringComparison.OrdinalIgnoreCase))
+            .ThenBy(table => table)
+            .ToList();
+    }
 }
 
 file class AdminUserRow
@@ -426,6 +614,57 @@ file class AdminUserRow
     public string OrganizationName { get; set; } = string.Empty;
     public string PlanType { get; set; } = string.Empty;
     public DateTime OrganizationCreatedAt { get; set; }
+}
+
+file class AdminSupportOrganizationRow
+{
+    public Guid OrganizationId { get; set; }
+    public string OrganizationName { get; set; } = string.Empty;
+    public string PlanType { get; set; } = string.Empty;
+    public DateTime OrganizationCreatedAt { get; set; }
+    public int UserCount { get; set; }
+    public int WebsiteCount { get; set; }
+    public string SubscriptionStatus { get; set; } = string.Empty;
+    public long UsageToday { get; set; }
+    public int ActiveJobCount { get; set; }
+    public int FailedJobCount { get; set; }
+    public int ProviderFailureCount { get; set; }
+    public DateTime? LastProviderFailureAt { get; set; }
+}
+
+file record SupportScrapingJobRow(
+    Guid Id,
+    Guid OrganizationId,
+    Guid? WebsiteId,
+    Guid? KnowledgeBaseId,
+    string Url,
+    string Status,
+    string ScrapeType,
+    int ProcessedPages,
+    int SuccessfulPages,
+    int FailedPages,
+    int TotalPages,
+    int MaxPages,
+    DateTime? StartedAt,
+    DateTime? CompletedAt,
+    DateTime CreatedAt)
+{
+    public static SupportScrapingJobRow FromJob(ScrapingJob job) => new(
+        job.Id,
+        job.OrganizationId,
+        job.WebsiteId,
+        job.KnowledgeBaseId,
+        job.Url,
+        job.Status,
+        job.ScrapeType,
+        job.ProcessedPages,
+        job.SuccessfulPages,
+        job.FailedPages,
+        job.TotalPages,
+        job.MaxPages,
+        job.StartedAt,
+        job.CompletedAt,
+        job.CreatedAt);
 }
 
 public class AdminLoginRequest

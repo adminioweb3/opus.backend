@@ -5,7 +5,7 @@ namespace Citationly.Application.Features.PromptIntelligence.Services;
 
 public interface ILLMRunnerService
 {
-    Task<IEnumerable<PromptResponse>> RunPromptAcrossModelsAsync(Guid analysisId, string promptText, CancellationToken ct, string? personaSystemPrompt = null);
+    Task<IEnumerable<PromptResponse>> RunPromptAcrossModelsAsync(Guid organizationId, Guid analysisId, string promptText, CancellationToken ct, string? personaSystemPrompt = null);
 }
 
 /// <summary>
@@ -18,14 +18,17 @@ public interface ILLMRunnerService
 /// </summary>
 public class LLMRunnerService : ILLMRunnerService
 {
+    private static readonly TimeSpan CacheFreshness = TimeSpan.FromHours(6);
     private readonly IAiProviderRegistry _providerRegistry;
+    private readonly IAiCompletionCache _completionCache;
 
-    public LLMRunnerService(IAiProviderRegistry providerRegistry)
+    public LLMRunnerService(IAiProviderRegistry providerRegistry, IAiCompletionCache completionCache)
     {
         _providerRegistry = providerRegistry;
+        _completionCache = completionCache;
     }
 
-    public async Task<IEnumerable<PromptResponse>> RunPromptAcrossModelsAsync(Guid analysisId, string promptText, CancellationToken ct, string? personaSystemPrompt = null)
+    public async Task<IEnumerable<PromptResponse>> RunPromptAcrossModelsAsync(Guid organizationId, Guid analysisId, string promptText, CancellationToken ct, string? personaSystemPrompt = null)
     {
         var providers = _providerRegistry.GetConfiguredProviders();
 
@@ -47,11 +50,12 @@ public class LLMRunnerService : ILLMRunnerService
             };
         }
 
-        var tasks = providers.Select(provider => ExecuteProviderAsync(analysisId, provider, promptText, ct, personaSystemPrompt));
+        var tasks = providers.Select(provider => ExecuteProviderAsync(organizationId, analysisId, provider, promptText, ct, personaSystemPrompt));
         return await Task.WhenAll(tasks);
     }
 
-    private static async Task<PromptResponse> ExecuteProviderAsync(
+    private async Task<PromptResponse> ExecuteProviderAsync(
+        Guid organizationId,
         Guid analysisId,
         IAiProvider provider,
         string promptText,
@@ -64,7 +68,29 @@ public class LLMRunnerService : ILLMRunnerService
 
         try
         {
-            var result = await provider.CompleteAsync(systemPrompt, promptText, ct);
+            var result = await _completionCache.TryGetAsync(
+                organizationId,
+                operationName: "prompt-intelligence.analysis",
+                provider.ProviderKey,
+                systemPrompt,
+                promptText,
+                CacheFreshness,
+                ct);
+
+            if (result == null)
+            {
+                result = await provider.CompleteAsync(systemPrompt, promptText, ct);
+                await _completionCache.StoreAsync(
+                    organizationId,
+                    operationName: "prompt-intelligence.analysis",
+                    provider.ProviderKey,
+                    systemPrompt,
+                    promptText,
+                    result,
+                    CacheFreshness,
+                    ct);
+            }
+
             return new PromptResponse
             {
                 PromptAnalysisId = analysisId,

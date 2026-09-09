@@ -112,6 +112,21 @@ public class AuditLog
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
 
+public class BetaFeedback
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public Guid? UserId { get; set; }
+    public string PagePath { get; set; } = string.Empty;
+    public string FeedbackType { get; set; } = "General";
+    public int? Rating { get; set; }
+    public string Message { get; set; } = string.Empty;
+    public string ContextId { get; set; } = string.Empty;
+    public string Status { get; set; } = "Open";
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+}
+
 public class SsoConnection
 {
     public Guid Id { get; set; }

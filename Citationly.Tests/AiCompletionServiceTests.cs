@@ -9,7 +9,7 @@ public class AiCompletionServiceTests
     [Fact]
     public async Task CompleteAsync_ReturnsUnavailable_WhenNoProvidersAreConfigured()
     {
-        var service = new AiCompletionService(new StubProviderRegistry(), new StubAiRequestContextAccessor());
+        var service = new AiCompletionService(new StubProviderRegistry(), new StubAiRequestContextAccessor(), new InMemoryAiCompletionCache());
 
         var result = await service.CompleteAsync(Guid.NewGuid(), "test.operation", "user", "system");
 
@@ -22,7 +22,7 @@ public class AiCompletionServiceTests
     {
         var context = new StubAiRequestContextAccessor();
         var provider = new StubAiProvider(context) { Result = new AiProviderResult("not json", "test-model", 1, 2, 0.01m, false) };
-        var service = new AiCompletionService(new StubProviderRegistry(provider), context);
+        var service = new AiCompletionService(new StubProviderRegistry(provider), context, new InMemoryAiCompletionCache());
 
         var result = await service.CompleteAsync(Guid.NewGuid(), "json.operation", "user", "system", requireJson: true);
 
@@ -32,19 +32,55 @@ public class AiCompletionServiceTests
     }
 
     [Fact]
+    public async Task CompleteAsync_DoesNotCacheInvalidJson_ForJsonRequiredOperations()
+    {
+        var context = new StubAiRequestContextAccessor();
+        var provider = new StubAiProvider(context) { Result = new AiProviderResult("not json", "test-model", 1, 2, 0.01m, false) };
+        var service = new AiCompletionService(new StubProviderRegistry(provider), context, new InMemoryAiCompletionCache());
+        var orgId = Guid.NewGuid();
+
+        await service.CompleteAsync(orgId, "json.operation", "same user", "same system", requireJson: true);
+        provider.Result = new AiProviderResult("{\"ok\":true}", "test-model", 1, 2, 0.01m, false);
+        var second = await service.CompleteAsync(orgId, "json.operation", "same user", "same system", requireJson: true);
+
+        Assert.True(second.Success);
+        Assert.Equal(2, provider.CallCount);
+    }
+
+    [Fact]
     public async Task CompleteAsync_SetsAndRestoresOrganizationContext()
     {
         var originalOrgId = Guid.NewGuid();
         var callOrgId = Guid.NewGuid();
         var context = new StubAiRequestContextAccessor { OrganizationId = originalOrgId };
         var provider = new StubAiProvider(context) { Result = new AiProviderResult("{\"ok\":true}", "test-model", 1, 2, 0.01m, false) };
-        var service = new AiCompletionService(new StubProviderRegistry(provider), context);
+        var service = new AiCompletionService(new StubProviderRegistry(provider), context, new InMemoryAiCompletionCache());
 
         var result = await service.CompleteAsync(callOrgId, "json.operation", "user", "system", requireJson: true);
 
         Assert.True(result.Success);
         Assert.Equal(callOrgId, provider.ObservedOrganizationId);
         Assert.Equal(originalOrgId, context.OrganizationId);
+    }
+
+    [Fact]
+    public async Task CompleteAsync_ReusesFreshCachedCompletion_ForSamePromptAndProvider()
+    {
+        var context = new StubAiRequestContextAccessor();
+        var provider = new StubAiProvider(context) { Result = new AiProviderResult("{\"ok\":true}", "test-model", 11, 22, 0.03m, true) };
+        var service = new AiCompletionService(new StubProviderRegistry(provider), context, new InMemoryAiCompletionCache());
+        var orgId = Guid.NewGuid();
+
+        var first = await service.CompleteAsync(orgId, "cache.operation", "same user", "same system", requireJson: true);
+        var second = await service.CompleteAsync(orgId, "cache.operation", "same user", "same system", requireJson: true);
+
+        Assert.True(first.Success);
+        Assert.True(second.Success);
+        Assert.Equal(1, provider.CallCount);
+        Assert.Equal(first.Content, second.Content);
+        Assert.Null(second.CostUsd);
+        Assert.Null(second.PromptTokens);
+        Assert.Null(second.CompletionTokens);
     }
 
     private sealed class StubProviderRegistry : IAiProviderRegistry
@@ -75,8 +111,9 @@ public class AiCompletionServiceTests
             _context = context;
         }
 
-        public AiProviderResult Result { get; init; } = new("{\"ok\":true}", "test-model", null, null, null, false);
+        public AiProviderResult Result { get; set; } = new("{\"ok\":true}", "test-model", null, null, null, false);
         public Guid? ObservedOrganizationId { get; private set; }
+        public int CallCount { get; private set; }
         public string PlatformName => "Stub";
         public string ProviderKey => "stub";
         public bool IsConfigured => true;
@@ -84,6 +121,7 @@ public class AiCompletionServiceTests
 
         public Task<AiProviderResult> CompleteAsync(string systemPrompt, string userPrompt, CancellationToken cancellationToken = default)
         {
+            CallCount++;
             ObservedOrganizationId = _context.OrganizationId;
             return Task.FromResult(Result);
         }

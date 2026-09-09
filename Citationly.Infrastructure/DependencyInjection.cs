@@ -29,6 +29,7 @@ public static class DependencyInjection
         services.AddTransient<IApiKeyRepository, ApiKeyRepository>();
         services.AddTransient<IAlertRepository, AlertRepository>();
         services.AddTransient<IAuditLogRepository, AuditLogRepository>();
+        services.AddTransient<IBetaFeedbackRepository, BetaFeedbackRepository>();
         services.AddTransient<IAgencyRepository, AgencyRepository>();
         services.AddTransient<ISsoRepository, SsoRepository>();
         services.AddTransient<IDataLifecycleRepository, DataLifecycleRepository>();

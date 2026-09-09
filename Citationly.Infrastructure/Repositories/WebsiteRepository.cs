@@ -1,6 +1,7 @@
 using Dapper;
 using Citationly.Application.Interfaces;
 using Citationly.Domain.Entities;
+using System.Data;
 
 namespace Citationly.Infrastructure.Repositories;
 
@@ -199,6 +200,8 @@ public class WebsiteRepository : IWebsiteRepository
 
         if (graphTablesExist)
         {
+            await EnsureGraphCompetitorsMaterializedAsync(connection, organizationId);
+
             var graphRows = (await connection.QueryAsync<Competitor>(@"
                 WITH org_company AS (
                     SELECT CompanyId
@@ -262,7 +265,90 @@ public class WebsiteRepository : IWebsiteRepository
         if (!exists) return Enumerable.Empty<Competitor>();
 
         return await connection.QueryAsync<Competitor>(
-            "SELECT * FROM Competitors WHERE OrganizationId = @OrganizationId ORDER BY SimilarityScore DESC",
+            @"
+            WITH latest_profile AS (
+                SELECT NULLIF(BusinessName, '') AS BusinessName, NULLIF(WebsiteUrl, '') AS WebsiteUrl
+                FROM WebsiteProfiles
+                WHERE OrganizationId = @OrganizationId
+                ORDER BY CreatedAt DESC
+                LIMIT 1
+            )
+            SELECT comp.*
+            FROM Competitors comp
+            LEFT JOIN latest_profile p ON TRUE
+            WHERE comp.OrganizationId = @OrganizationId
+              AND (
+                  p.BusinessName IS NULL
+                  OR LOWER(comp.Name) <> LOWER(p.BusinessName)
+              )
+              AND (
+                  p.WebsiteUrl IS NULL
+                  OR LOWER(TRIM(TRAILING '/' FROM COALESCE(comp.WebsiteUrl, ''))) <> LOWER(TRIM(TRAILING '/' FROM p.WebsiteUrl))
+              )
+            ORDER BY comp.SimilarityScore DESC",
+            new { OrganizationId = organizationId });
+    }
+
+    private static Task EnsureGraphCompetitorsMaterializedAsync(IDbConnection connection, Guid organizationId)
+    {
+        return connection.ExecuteAsync(@"
+            WITH org_company AS (
+                SELECT CompanyId
+                FROM Websites
+                WHERE OrganizationId = @OrganizationId AND CompanyId IS NOT NULL
+                ORDER BY CreatedAt DESC
+                LIMIT 1
+            ),
+            graph_competitors AS (
+                SELECT
+                    @OrganizationId AS OrganizationId,
+                    c.CompanyName AS Name,
+                    c.Website AS WebsiteUrl,
+                    COALESCE(c.Industry, '') AS Industry,
+                    cc.Reason AS Description,
+                    'Direct' AS Category,
+                    0 AS Authority,
+                    0 AS Popularity,
+                    cc.Rank AS Rank,
+                    ROUND(cc.Similarity)::int AS SimilarityScore,
+                    jsonb_build_object(
+                        'source', 'CompanyCompetitor',
+                        'discoverySource', cc.DiscoverySource,
+                        'similarity', cc.Similarity,
+                        'confidence', cc.Confidence,
+                        'reason', cc.Reason,
+                        'strength', cc.Strength,
+                        'weakness', cc.Weakness
+                    ) AS RawJson,
+                    'Completed' AS EnrichmentStatus,
+                    c.BusinessProfileJson AS EnrichedJson,
+                    c.LastAnalyzedAt AS EnrichedAt,
+                    'Direct' AS CompetitorType,
+                    cc.Confidence AS Confidence,
+                    cc.CreatedAt AS CreatedAt
+                FROM org_company oc
+                JOIN CompanyCompetitor cc ON cc.CompanyId = oc.CompanyId
+                JOIN Company c ON c.Id = cc.CompetitorCompanyId
+            )
+            INSERT INTO Competitors (
+                OrganizationId, Name, WebsiteUrl, Industry, Description, Category, Authority, Popularity,
+                Rank, SimilarityScore, RawJson, EnrichmentStatus, EnrichedJson, EnrichedAt,
+                CompetitorType, Confidence, CreatedAt)
+            SELECT
+                gc.OrganizationId, gc.Name, gc.WebsiteUrl, gc.Industry, gc.Description, gc.Category,
+                gc.Authority, gc.Popularity, gc.Rank, gc.SimilarityScore, gc.RawJson,
+                gc.EnrichmentStatus, gc.EnrichedJson, gc.EnrichedAt, gc.CompetitorType,
+                gc.Confidence, gc.CreatedAt
+            FROM graph_competitors gc
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM Competitors existing
+                WHERE existing.OrganizationId = @OrganizationId
+                  AND (
+                      (NULLIF(gc.WebsiteUrl, '') IS NOT NULL AND LOWER(COALESCE(existing.WebsiteUrl, '')) = LOWER(gc.WebsiteUrl))
+                      OR LOWER(existing.Name) = LOWER(gc.Name)
+                  )
+            );",
             new { OrganizationId = organizationId });
     }
 

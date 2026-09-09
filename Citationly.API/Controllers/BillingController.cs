@@ -13,12 +13,18 @@ public class BillingController : ControllerBase
     private readonly ICurrentOrganizationAccessor _currentOrg;
     private readonly IBillingRepository _billingRepository;
     private readonly IBillingService _billingService;
+    private readonly IEntitlementService _entitlementService;
 
-    public BillingController(ICurrentOrganizationAccessor currentOrg, IBillingRepository billingRepository, IBillingService billingService)
+    public BillingController(
+        ICurrentOrganizationAccessor currentOrg,
+        IBillingRepository billingRepository,
+        IBillingService billingService,
+        IEntitlementService entitlementService)
     {
         _currentOrg = currentOrg;
         _billingRepository = billingRepository;
         _billingService = billingService;
+        _entitlementService = entitlementService;
     }
 
     // Real DB reads regardless of whether Cashfree is configured yet - an org's PlanType and
@@ -35,6 +41,31 @@ public class BillingController : ControllerBase
             billingConfigured = _billingService.IsConfigured,
             subscription
         });
+    }
+
+    [HttpGet("usage")]
+    public async Task<IActionResult> GetUsage()
+    {
+        var orgId = await _currentOrg.GetOrganizationIdAsync(User);
+        if (orgId == null) return Unauthorized();
+
+        var planKey = await _entitlementService.GetPlanKeyAsync(orgId.Value, HttpContext.RequestAborted);
+        var aiCalls = await _entitlementService.CheckQuotaAsync(orgId.Value, "ai_calls_per_day", HttpContext.RequestAborted);
+        var aiSpend = await _entitlementService.CheckQuotaAsync(orgId.Value, "ai_spend_micro_usd_per_day", HttpContext.RequestAborted);
+        var publicApiCalls = await _entitlementService.CheckQuotaAsync(orgId.Value, "public_api_calls_per_day", HttpContext.RequestAborted);
+        var recurringScanInterval = await _entitlementService.GetPlanLimitValueAsync(orgId.Value, "recurring_scan_interval_days", HttpContext.RequestAborted);
+
+        var periodStart = DateTime.UtcNow.Date;
+        var periodEnd = periodStart.AddDays(1);
+
+        return Ok(new BillingUsageResponse(
+            planKey,
+            periodStart,
+            periodEnd,
+            new BillingUsageMetric("AI calls", "ai_calls_per_day", aiCalls.CurrentUsage, aiCalls.Limit, "calls today"),
+            new BillingUsageMetric("Estimated AI spend", "ai_spend_micro_usd_per_day", aiSpend.CurrentUsage, aiSpend.Limit, "micro-USD today"),
+            new BillingUsageMetric("Public API calls", "public_api_calls_per_day", publicApiCalls.CurrentUsage, publicApiCalls.Limit, "calls today"),
+            recurringScanInterval));
     }
 
     [HttpGet("invoices")]
@@ -137,3 +168,19 @@ public class CreateSubscriptionSessionRequest
     public string CustomerPhone { get; set; } = string.Empty;
     public string ReturnUrl { get; set; } = string.Empty;
 }
+
+public sealed record BillingUsageResponse(
+    string PlanKey,
+    DateTime PeriodStart,
+    DateTime PeriodEnd,
+    BillingUsageMetric AiCalls,
+    BillingUsageMetric EstimatedAiSpend,
+    BillingUsageMetric PublicApiCalls,
+    long? RecurringScanIntervalDays);
+
+public sealed record BillingUsageMetric(
+    string Label,
+    string MetricKey,
+    long CurrentUsage,
+    long? Limit,
+    string Unit);

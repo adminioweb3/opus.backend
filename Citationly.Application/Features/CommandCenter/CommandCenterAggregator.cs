@@ -1,5 +1,6 @@
 using System.Text.Json;
 using MediatR;
+using Citationly.Application.Features.Metrics;
 using Citationly.Application.Interfaces;
 using Citationly.Domain.Entities;
 
@@ -50,13 +51,25 @@ public class CommandCenterAggregator
         var lookbackDays = range switch { "7D" => 7, "90D" => 90, _ => 30 };
         var cutoff = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-lookbackDays);
 
+        var scans = (await _visibilityRepo.GetHistoricalScansByOrgAsync(organizationId))
+            .Where(IsUsableScan)
+            .OrderBy(s => s.ScanDate)
+            .ToList();
+        if (scans.Count == 0)
+        {
+            await _mediator.Send(new RunScanCommand { OrganizationId = organizationId });
+            scans = (await _visibilityRepo.GetHistoricalScansByOrgAsync(organizationId))
+                .Where(IsUsableScan)
+                .OrderBy(s => s.ScanDate)
+                .ToList();
+        }
+
         await _insightRepo.EnsureTableCreatedAsync();
         if (await _insightRepo.GetLatestScanDateAsync(organizationId) == null)
         {
             await _mediator.Send(new RunCommandCenterInsightsCommand { OrganizationId = organizationId });
         }
 
-        var scans = (await _visibilityRepo.GetHistoricalScansByOrgAsync(organizationId)).OrderBy(s => s.ScanDate).ToList();
         var latestScan = scans.LastOrDefault();
         var previousScan = scans.Count > 1 ? scans[^2] : null;
 
@@ -231,5 +244,20 @@ public class CommandCenterAggregator
             alerts,
             insights
         };
+    }
+
+    private static bool IsUsableScan(HistoricalScan scan)
+    {
+        return new[]
+        {
+            scan.VisibilityScore,
+            scan.CitationScore,
+            scan.SentimentScore,
+            scan.CompetitorScore,
+            scan.HallucinationRisk,
+            scan.SeoHealth,
+            scan.AeoReadiness,
+            scan.GeoReadiness
+        }.Any(score => score > 0);
     }
 }

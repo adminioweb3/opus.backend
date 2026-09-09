@@ -25,6 +25,11 @@ public class UpsertIntegrationCommandHandler : IRequestHandler<UpsertIntegration
 
     public async Task<Guid> Handle(UpsertIntegrationCommand request, CancellationToken cancellationToken)
     {
+        if (LooksLikePlaceholder(request.ApiUrl) || LooksLikePlaceholder(request.ApiKey))
+        {
+            throw new InvalidOperationException("Integration credentials must be real values, not placeholders or demo configuration.");
+        }
+
         // 1. Validate credentials with the appropriate CMS service
         var cmsService = _cmsServices.FirstOrDefault(s => s.PlatformName.Equals(request.PlatformName, StringComparison.OrdinalIgnoreCase));
         
@@ -52,5 +57,22 @@ public class UpsertIntegrationCommandHandler : IRequestHandler<UpsertIntegration
 
         var id = await _repository.UpsertIntegrationAsync(integration);
         return id;
+    }
+
+    private static bool LooksLikePlaceholder(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return true;
+
+        var normalized = value.Trim().ToLowerInvariant();
+        if (normalized.StartsWith("${", StringComparison.Ordinal) && normalized.EndsWith("}", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return normalized is "demo" or "dummy" or "test" or "placeholder" or "changeme" or "change-me" or "your-api-key" or "api-key"
+            || normalized.Contains("your_", StringComparison.Ordinal)
+            || normalized.Contains("your-", StringComparison.Ordinal)
+            || normalized.Contains("example_", StringComparison.Ordinal)
+            || normalized.Contains("example-", StringComparison.Ordinal);
     }
 }

@@ -1,22 +1,31 @@
 using Citationly.Application.Interfaces;
 using Dapper;
+using Microsoft.Extensions.Logging;
+using Npgsql;
+using System.Data;
 
 namespace Citationly.Infrastructure.Database;
 
 public sealed class DatabaseMigrationRunner
 {
     private const long MigrationLockKey = 78219360420501;
-    private readonly IDbConnectionFactory _dbConnectionFactory;
+    private const int MaxConnectionAttempts = 12;
+    private static readonly TimeSpan ConnectionRetryDelay = TimeSpan.FromSeconds(5);
 
-    public DatabaseMigrationRunner(IDbConnectionFactory dbConnectionFactory)
+    private readonly IDbConnectionFactory _dbConnectionFactory;
+    private readonly ILogger<DatabaseMigrationRunner> _logger;
+
+    public DatabaseMigrationRunner(
+        IDbConnectionFactory dbConnectionFactory,
+        ILogger<DatabaseMigrationRunner> logger)
     {
         _dbConnectionFactory = dbConnectionFactory;
+        _logger = logger;
     }
 
     public async Task<IReadOnlyList<AppliedDatabaseMigration>> RunPendingAsync(CancellationToken cancellationToken = default)
     {
-        using var connection = _dbConnectionFactory.CreateConnection();
-        connection.Open();
+        using var connection = await OpenConnectionWithRetryAsync(cancellationToken);
 
         await connection.ExecuteAsync(
             """
@@ -72,6 +81,46 @@ public sealed class DatabaseMigrationRunner
         {
             await connection.ExecuteAsync("SELECT pg_advisory_unlock(@LockKey);", new { LockKey = MigrationLockKey });
         }
+    }
+
+    private async Task<IDbConnection> OpenConnectionWithRetryAsync(CancellationToken cancellationToken)
+    {
+        for (var attempt = 1; attempt <= MaxConnectionAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var connection = _dbConnectionFactory.CreateConnection();
+            try
+            {
+                connection.Open();
+                return connection;
+            }
+            catch (Exception ex) when (IsStartupConnectionFailure(ex))
+            {
+                connection.Dispose();
+
+                if (attempt >= MaxConnectionAttempts)
+                {
+                    throw;
+                }
+
+                _logger.LogWarning(
+                    ex,
+                    "Database was not ready for migrations on attempt {Attempt}/{MaxAttempts}. Retrying in {RetryDelaySeconds} seconds.",
+                    attempt,
+                    MaxConnectionAttempts,
+                    ConnectionRetryDelay.TotalSeconds);
+
+                await Task.Delay(ConnectionRetryDelay, cancellationToken);
+            }
+        }
+
+        throw new InvalidOperationException("Database connection retry loop exited unexpectedly.");
+    }
+
+    private static bool IsStartupConnectionFailure(Exception exception)
+    {
+        return exception is NpgsqlException or TimeoutException or InvalidOperationException;
     }
 }
 

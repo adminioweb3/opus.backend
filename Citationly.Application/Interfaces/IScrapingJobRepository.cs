@@ -10,6 +10,7 @@ public interface IScrapingJobRepository
     Task<ScrapingJob?> GetActiveJobForUrlAsync(Guid organizationId, string url);
     Task<int> MarkStaleProcessingJobsFailedAsync(TimeSpan staleAfter);
     Task DeleteJobAsync(Guid jobId);
+    Task<List<ScrapingJob>> GetOperatorJobsAsync(Guid? organizationId = null, string? status = null, int limit = 100, int offset = 0);
     Task<List<ScrapingJob>> GetAllJobsByOrgAsync(Guid organizationId, int limit = 100);
     Task<List<ScrapingJob>> GetJobsByOrgAndKbAsync(Guid organizationId, Guid knowledgeBaseId, int limit = 100);
     Task<Guid> InsertScrapedPageAsync(ScrapedPage page);

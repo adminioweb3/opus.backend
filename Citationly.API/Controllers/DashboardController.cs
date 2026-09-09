@@ -1,6 +1,7 @@
 using Citationly.Application.Interfaces;
 using Citationly.Application.Features.GeoDashboard;
 using Citationly.Application.Features.Competitors;
+using Citationly.Application.Features.Onboarding;
 using Citationly.Application.Features.Visibility;
 using Citationly.Application.Features.Citations;
 using Citationly.Application.Features.BrandPulse;
@@ -152,6 +153,18 @@ public class DashboardController : ControllerBase
 
         await _snapshotRepository.EnsureTableCreatedAsync();
 
+        var discoveryResult = await EnsureTrackedCompetitorsAsync(orgGuid.Value);
+        if (!discoveryResult.Success)
+        {
+            var existingScanDate = await _snapshotRepository.GetLatestScanDateAsync(orgGuid.Value);
+            if (existingScanDate.HasValue && await CompetitorSnapshotHasCompetitorsAsync(orgGuid.Value, existingScanDate.Value))
+            {
+                return await BuildCompetitorWatchResponseAsync(orgGuid.Value);
+            }
+
+            return Ok(new { you = (object?)null, comps = Array.Empty<object>(), message = discoveryResult.Message });
+        }
+
         var latestScanDate = await _snapshotRepository.GetLatestScanDateAsync(orgGuid.Value);
         if (latestScanDate == null || await CompetitorSnapshotIsStaleAsync(orgGuid.Value, latestScanDate.Value))
         {
@@ -169,6 +182,12 @@ public class DashboardController : ControllerBase
 
         await _snapshotRepository.EnsureTableCreatedAsync();
 
+        var discoveryResult = await EnsureTrackedCompetitorsAsync(orgGuid.Value);
+        if (!discoveryResult.Success)
+        {
+            return BadRequest(new { message = discoveryResult.Message });
+        }
+
         var result = await _mediator.Send(new RunCompetitorScanCommand { OrganizationId = orgGuid.Value });
         if (!result.Success)
         {
@@ -177,6 +196,25 @@ public class DashboardController : ControllerBase
 
         return await BuildCompetitorWatchResponseAsync(orgGuid.Value);
     }
+
+    private async Task<EnsureTrackedCompetitorsResult> EnsureTrackedCompetitorsAsync(Guid organizationId)
+    {
+        var trackedCompetitors = await _visibilityRepository.GetCompetitorsByOrgAsync(organizationId, 500);
+        if (trackedCompetitors.Count > 0)
+        {
+            return new EnsureTrackedCompetitorsResult(true, null);
+        }
+
+        var result = await _mediator.Send(
+            new AnalyzeCompetitorsCommand { OrganizationId = organizationId },
+            HttpContext.RequestAborted);
+
+        return result.Success && result.TotalCompetitors > 0
+            ? new EnsureTrackedCompetitorsResult(true, null)
+            : new EnsureTrackedCompetitorsResult(false, result.Error ?? "No competitors could be identified for this organization.");
+    }
+
+    private sealed record EnsureTrackedCompetitorsResult(bool Success, string? Message);
 
     private async Task<IActionResult> BuildCompetitorWatchResponseAsync(Guid orgGuid)
     {
@@ -286,6 +324,12 @@ public class DashboardController : ControllerBase
 
         return trackedCompetitors.Count != snapshotCompetitorIds.Count
             || trackedCompetitors.Any(c => !snapshotCompetitorIds.Contains(c.Id));
+    }
+
+    private async Task<bool> CompetitorSnapshotHasCompetitorsAsync(Guid organizationId, DateOnly scanDate)
+    {
+        var snapshots = await _snapshotRepository.GetSnapshotsByScanDateAsync(organizationId, scanDate);
+        return snapshots.Any(s => !s.IsYou);
     }
 
     [HttpGet("geo-dashboard")]

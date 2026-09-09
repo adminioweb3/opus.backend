@@ -27,6 +27,7 @@ public static class DependencyInjection
         services.AddScoped<AnalyticsEngineService>();
         services.AddScoped<PromptBuilderService>();
         services.AddScoped<AgentOrchestrator>();
+        services.AddSingleton<IAiCompletionCache, InMemoryAiCompletionCache>();
         services.AddScoped<IAiCompletionService, AiCompletionService>();
         
         // Prompt Intelligence Services
