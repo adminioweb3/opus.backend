@@ -40,10 +40,6 @@ public class CompetitorDiscoveryService : ICompetitorDiscoveryService
     /// </summary>
     private const double MinCosineSimilarity = 0.70;
 
-    /// <summary>Top of the synthetic similarity band used for generated entries, and the step between them.</summary>
-    private const decimal GeneratedTopSimilarity = 80m;
-    private const decimal SimilarityStep = 0.5m;
-
     /// <summary>
     /// The model under-delivers on "exactly N" — asked for 20, it returns 18 — and the code-side
     /// dedup and self-checks can drop more on top of that. The scale filter below adds a third
@@ -78,17 +74,20 @@ public class CompetitorDiscoveryService : ICompetitorDiscoveryService
     private readonly IAiCompletionService _aiCompletionService;
     private readonly ICompanyRepository _companyRepository;
     private readonly IPromptIntelligenceRepository _promptIntelligenceRepository;
+    private readonly ICompanyRealityVerifier _companyRealityVerifier;
 
     public CompetitorDiscoveryService(
         ICompanySimilarityService similarityService,
         IAiCompletionService aiCompletionService,
         ICompanyRepository companyRepository,
-        IPromptIntelligenceRepository promptIntelligenceRepository)
+        IPromptIntelligenceRepository promptIntelligenceRepository,
+        ICompanyRealityVerifier companyRealityVerifier)
     {
         _similarityService = similarityService;
         _aiCompletionService = aiCompletionService;
         _companyRepository = companyRepository;
         _promptIntelligenceRepository = promptIntelligenceRepository;
+        _companyRealityVerifier = companyRealityVerifier;
     }
 
     public async Task<List<CompanyCompetitor>> DiscoverCompetitorsAsync(
@@ -117,18 +116,10 @@ public class CompetitorDiscoveryService : ICompetitorDiscoveryService
             var shortfall = TopSelectionCount - graphEdges.Count;
             Console.WriteLine($"[Discovery] Graph supplied {graphEdges.Count}/{TopSelectionCount}; generating {shortfall} to top up.");
 
-            var usedIds = graphEdges.Select(e => e.CompetitorCompanyId).ToHashSet();
             var excludeDomains = candidates
-                .Where(c => usedIds.Contains(c.Company.Id))
                 .Select(c => c.Company.NormalizedDomain)
+                .Where(domain => !string.IsNullOrWhiteSpace(domain))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-            // Generated entries rank below every real match, so their synthetic similarity has to sit
-            // below the weakest real score too — otherwise the table shows a generated row at 80%
-            // ranked underneath a real row at 72%.
-            var startSimilarity = graphEdges.Count > 0
-                ? Math.Min(graphEdges.Min(e => e.Similarity) - SimilarityStep, GeneratedTopSimilarity)
-                : GeneratedTopSimilarity;
 
             var generated = await GenerateCompetitorsAsync(
                 organizationId,
@@ -137,7 +128,6 @@ public class CompetitorDiscoveryService : ICompetitorDiscoveryService
                 rawProfileJson,
                 count: shortfall,
                 startRank: graphEdges.Count + 1,
-                startSimilarity: startSimilarity,
                 excludeDomains: excludeDomains,
                 cancellationToken);
             foreach (var edge in generated) edge.DiscoverySource = "generated";
@@ -520,15 +510,19 @@ Return a JSON object whose ""selections"" key holds the array, with companyId co
         string rawProfileJson,
         int count,
         int startRank,
-        decimal startSimilarity,
         HashSet<string> excludeDomains,
         CancellationToken cancellationToken)
     {
         var ctx = CompanyProfileSummarizer.ExtractContext(rawProfileJson);
 
         const string systemPrompt =
-            "You are a competitive intelligence analyst. Name only real, existing companies with real " +
-            "websites — never invent a company. Output a single JSON object, nothing else.";
+            "You are a competitive intelligence analyst. " +
+            "Only return established, real companies with an official company-owned website. " +
+            "Never invent a company, brand, domain, or URL. " +
+            "Do not return directories, social profiles, review sites, company databases, " +
+            "fictional companies, placeholder domains, parked domains, or companies with no active website. " +
+            "If you cannot provide enough verified companies, return fewer results. " +
+            "Output a single JSON object, nothing else.";
 
         var exclusions = excludeDomains.Count > 0
             ? $"\nAlready covered, do NOT repeat: {string.Join(", ", excludeDomains)}"
@@ -551,7 +545,7 @@ Products: {ctx.Products}
 Target customers: {ctx.TargetAudience}
 Business model: {ctx.BusinessModel}{exclusions}
 
-List {count + GenerationHeadroom} real companies that are FAIR, comparable competitors to this
+List {count + GenerationHeadroom} real companies you are confident have an official active website. They must be FAIR, comparable competitors to this
 business — similar in scale, maturity, and market position, actually competing for the same
 customers. This business's own scale is {ctx.Scale}: do NOT default to broad category-dominating
 giants (e.g. Microsoft, Google, Amazon, NVIDIA, Salesforce) unless that genuinely matches — a
@@ -611,6 +605,15 @@ Return a JSON object whose ""competitors"" key holds the array:
                 continue;
             }
 
+            if (string.Equals(
+                    competitor.Name.Trim(),
+                    businessName.Trim(),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine($"[Discovery] Skipping {competitor.Name}: same as business");
+                continue;
+            }
+
             // Enforced in code, not just requested in the prompt — a famous giant offered despite
             // the instructions gets rejected here regardless of how the model justified it. Only
             // filters when both scales are known, and only rejects when the competitor is MORE than
@@ -624,7 +627,22 @@ Return a JSON object whose ""competitors"" key holds the array:
                 continue;
             }
 
-            var normalizedDomain = DomainNormalizer.Normalize(competitor.Website);
+            var verification = await _companyRealityVerifier.VerifyAsync(
+                competitor.Name,
+                competitor.Website,
+                cancellationToken);
+
+            if (!verification.IsVerified ||
+                string.IsNullOrWhiteSpace(verification.NormalizedDomain))
+            {
+                Console.WriteLine(
+                    $"[Discovery] Skipping {competitor.Name}: " +
+                    $"{verification.Reason ?? "website verification failed"}");
+
+                continue;
+            }
+
+            var normalizedDomain = verification.NormalizedDomain;
 
             // Enforce the exclusion list in code, not just in the prompt — same reason the ranking
             // path re-checks ids: the model does not reliably honour it.
@@ -659,7 +677,8 @@ Return a JSON object whose ""competitors"" key holds the array:
                 {
                     CompanyId = companyId,
                     CompetitorCompanyId = upserted.Id,
-                    Similarity = Math.Max(startSimilarity - (edges.Count * SimilarityStep), 0m),
+                    // Website verification confirms existence, not measured similarity.
+                    Similarity = 0,
                     Confidence = ConfidenceFromGeneratedCandidate(competitor),
                     Rank = startRank + edges.Count,
                     Reason = competitor.Reason,

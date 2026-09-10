@@ -10,9 +10,9 @@ public interface ITopicPromptGeneratorService
 }
 
 /// <summary>
-/// Generates brand-aware prompts that real prospects would ask AI search engines — scoped to one
-/// topic and the organization's own brand context, so analysis runs return meaningful visibility
-/// scores instead of 0 for every generic SaaS/tech question.
+/// Generates a stable mixed prompt panel: roughly 20% brand-aware validation questions and 80%
+/// brand-neutral questions that real prospects would ask. The two kinds answer different product
+/// questions: named-brand understanding versus organic discovery.
 ///
 /// Phase 3 B2: exact-string dedup only ever ran once, during initial topic seeding
 /// (PromptTopicSeedingService) - a repeat call to this generator had no protection at all, so
@@ -46,29 +46,62 @@ public class TopicPromptGeneratorService : ITopicPromptGeneratorService
 
     public async Task<List<string>> GeneratePromptsAsync(Guid organizationId, Guid topicId, string topicName, int count, CancellationToken ct, string? brandName = null, string? brandWebsite = null)
     {
-        var raw = await GenerateRawAsync(organizationId, topicName, count + GenerationHeadroom, ct, brandName, brandWebsite);
-        if (raw.Count == 0) return raw;
+        // Keep the panel useful for both measurements: roughly 20% brand-aware validation
+        // prompts establish whether engines understand the named company, while the remaining
+        // 80% stay brand-neutral and measure genuine organic discovery.
+        var branded = BuildBrandAwarePrompts(topicName, brandName, count);
+        var neutralTarget = Math.Max(0, count - branded.Count);
+        var raw = neutralTarget == 0
+            ? new List<string>()
+            : await GenerateRawAsync(organizationId, topicName, neutralTarget + GenerationHeadroom, ct, brandName, brandWebsite);
+        var candidates = branded.Concat(raw).ToList();
+        if (candidates.Count == 0) return candidates;
 
         var existingQuestions = await _repo.GetQuestionsByTopicAsync(topicId);
         var existingTexts = existingQuestions.Select(q => q.PromptText).ToList();
 
-        return await DeduplicateAsync(raw, existingTexts, count, ct);
+        return await DeduplicateAsync(candidates, existingTexts, count, ct);
+    }
+
+    private static List<string> BuildBrandAwarePrompts(string topicName, string? brandName, int totalCount)
+    {
+        if (string.IsNullOrWhiteSpace(brandName) || totalCount <= 0) return new List<string>();
+
+        var brand = brandName.Trim();
+        var brandWordCount = brand.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+        var maxTopicWords = Math.Max(2, 18 - brandWordCount);
+        var conciseTopic = string.Join(' ', topicName.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(maxTopicWords));
+        var desiredCount = Math.Max(1, (int)Math.Round(totalCount * 0.20, MidpointRounding.AwayFromZero));
+
+        var templates = new[]
+        {
+            $"How does {brand} compare with other {conciseTopic} providers?",
+            $"Is {brand} a strong choice for {conciseTopic}?",
+            $"What are the strengths and limitations of {brand} for {conciseTopic}?",
+            $"Which alternatives to {brand} should buyers consider for {conciseTopic}?",
+        };
+
+        return templates.Take(Math.Min(desiredCount, templates.Length)).ToList();
     }
 
     private async Task<List<string>> GenerateRawAsync(Guid organizationId, string topicName, int requestCount, CancellationToken ct, string? brandName, string? brandWebsite)
     {
-        const string systemPrompt = "You are an expert AI Search Prompt Generator for a brand visibility and AEO (Answer Engine Optimization) tool. Your goal is to generate prompts that real prospects would search for, and that could plausibly surface the evaluated brand in an AI answer.";
+        const string systemPrompt = "You design statistically useful prompt panels for AI-search visibility measurement. Generate natural buyer questions that are brand-neutral, category-specific, repeatable over time, and capable of returning several real providers. Never insert or favor the tracked brand.";
 
         var brandContext = !string.IsNullOrWhiteSpace(brandName)
-            ? $"\nBrand being tracked: '{brandName}' (website: {brandWebsite ?? "unknown"}).\nGenerate prompts that someone in this brand's target market would realistically ask — where the brand might organically appear in an AI answer if they are well-positioned in this niche."
+            ? $"\nPrivate category context (do not repeat in any question): the measured company is '{brandName}' ({brandWebsite ?? "website unknown"}). Use this only to understand the market. Every output question must omit this company and all supplied company names."
             : "";
 
         var userPrompt = $@"Generate {requestCount} realistic, distinct prompts that potential customers would ask AI search engines about the topic '{topicName}'.{brandContext}
 Each prompt should:
 - Sound like a genuine conversational question under 25 words
-- Be specific enough that a real niche player (not just mega-brands) could be recommended
-- NOT be generic 'What is X?' questions — instead ask things like 'best X for Y', 'who offers X in Y space', 'how to do X for Y use case'
-- Be meaningfully DIFFERENT from each other — vary the angle, persona, or use case, not just the wording of the same question
+- Ask the assistant to discover, shortlist, compare, or recommend providers/products
+- Be specific enough that multiple real niche providers, not only mega-brands, are eligible
+- Include a concrete buyer need, audience, constraint, use case, or geography where natural
+- Exclude educational questions answerable without naming a provider
+- Exclude the tracked brand, known vendor names, invented companies, and leading language tailored to one company
+- Cover a balanced mix of discovery, best-provider, requirements, alternatives, comparisons, and commercial intent
+- Be meaningfully different from the others in buyer intent or use case, not merely wording
 Respond with ONLY JSON: {{""prompts"": [string, ...]}}. Do not wrap in markdown.";
 
         var result = new List<string>();
@@ -92,7 +125,11 @@ Respond with ONLY JSON: {{""prompts"": [string, ...]}}. Do not wrap in markdown.
                 foreach (var item in arr.EnumerateArray())
                 {
                     var text = item.GetString();
-                    if (!string.IsNullOrWhiteSpace(text)) result.Add(text.Trim());
+                    if (string.IsNullOrWhiteSpace(text)) continue;
+                    var candidate = text.Trim();
+                    if (!string.IsNullOrWhiteSpace(brandName) && ContainsEntity(candidate, brandName)) continue;
+                    if (candidate.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length > 25) continue;
+                    result.Add(candidate);
                 }
             }
         }
@@ -151,6 +188,13 @@ Respond with ONLY JSON: {{""prompts"": [string, ...]}}. Do not wrap in markdown.
     }
 
     private static string Normalize(string text) => text.Trim().ToLowerInvariant();
+
+    private static bool ContainsEntity(string text, string entity) =>
+        System.Text.RegularExpressions.Regex.IsMatch(
+            text,
+            $@"(?<![\p{{L}}\p{{N}}]){System.Text.RegularExpressions.Regex.Escape(entity.Trim())}(?![\p{{L}}\p{{N}}])",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     private static double CosineSimilarity(double[] a, double[] b)
     {

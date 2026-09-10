@@ -6,6 +6,7 @@ namespace Citationly.Infrastructure.Repositories;
 
 public class PromptIntelligenceRepository : IPromptIntelligenceRepository
 {
+    private const string CurrentVisibilityMethodology = "prompt-visibility:v4-mention-share";
     private readonly IDbConnectionFactory _dbConnectionFactory;
 
     public PromptIntelligenceRepository(IDbConnectionFactory dbConnectionFactory)
@@ -235,12 +236,12 @@ public class PromptIntelligenceRepository : IPromptIntelligenceRepository
         if (!responses.Any()) return;
         using var connection = _dbConnectionFactory.CreateConnection();
         var sql = @"
-            INSERT INTO PromptResponses (PromptAnalysisId, Platform, ResponseText, ResponseLength, CreatedAt,
+            INSERT INTO PromptResponses (Id, PromptAnalysisId, Platform, ResponseText, ResponseLength, CreatedAt,
                                           ProviderKey, ModelUsed, PromptTokens, CompletionTokens, CostUsd,
-                                          WasSearchGrounded, PromptVersion, IsError, ErrorMessage)
-            VALUES (@PromptAnalysisId, @Platform, @ResponseText, @ResponseLength, @CreatedAt,
+                                          WasSearchGrounded, SourceUrlsJson, PromptVersion, IsError, ErrorMessage)
+            VALUES (@Id, @PromptAnalysisId, @Platform, @ResponseText, @ResponseLength, @CreatedAt,
                     @ProviderKey, @ModelUsed, @PromptTokens, @CompletionTokens, @CostUsd,
-                    @WasSearchGrounded, @PromptVersion, @IsError, @ErrorMessage);";
+                    @WasSearchGrounded, @SourceUrlsJson::jsonb, @PromptVersion, @IsError, @ErrorMessage);";
         await connection.ExecuteAsync(sql, responses);
     }
 
@@ -249,8 +250,8 @@ public class PromptIntelligenceRepository : IPromptIntelligenceRepository
         if (!mentions.Any()) return;
         using var connection = _dbConnectionFactory.CreateConnection();
         var sql = @"
-            INSERT INTO PromptMentions (PromptAnalysisId, Platform, EntityName, IsBrand, ContextSnippet, Position)
-            VALUES (@PromptAnalysisId, @Platform, @EntityName, @IsBrand, @ContextSnippet, @Position);";
+            INSERT INTO PromptMentions (PromptAnalysisId, PromptResponseId, Platform, EntityName, IsBrand, ContextSnippet, Position, IsRecommended, RecommendationPosition)
+            VALUES (@PromptAnalysisId, @PromptResponseId, @Platform, @EntityName, @IsBrand, @ContextSnippet, @Position, @IsRecommended, @RecommendationPosition);";
         await connection.ExecuteAsync(sql, mentions);
     }
 
@@ -258,8 +259,14 @@ public class PromptIntelligenceRepository : IPromptIntelligenceRepository
     {
         using var connection = _dbConnectionFactory.CreateConnection();
         var sql = @"
-            INSERT INTO PromptVisibility (PromptAnalysisId, OverallVisibilityScore, MentionFrequency, AveragePosition, ShareOfVoice, CitationCount, CompetitorCount)
-            VALUES (@PromptAnalysisId, @OverallVisibilityScore, @MentionFrequency, @AveragePosition, @ShareOfVoice, @CitationCount, @CompetitorCount);";
+            INSERT INTO PromptVisibility (
+                PromptAnalysisId, OverallVisibilityScore, VisibilityRank, MentionFrequency,
+                AveragePosition, ShareOfVoice, CitationCount, CitationShare, CompetitorCount,
+                SampleCount, MethodologyVersion)
+            VALUES (
+                @PromptAnalysisId, @OverallVisibilityScore, @VisibilityRank, @MentionFrequency,
+                @AveragePosition, @ShareOfVoice, @CitationCount, @CitationShare, @CompetitorCount,
+                @SampleCount, @MethodologyVersion);";
         await connection.ExecuteAsync(sql, visibility);
     }
 
@@ -328,14 +335,15 @@ public class PromptIntelligenceRepository : IPromptIntelligenceRepository
         using var connection = _dbConnectionFactory.CreateConnection();
         var sql = @"
             SELECT t.Id AS TopicId, t.Name AS TopicName, q.Id AS QuestionId, q.Region AS Region, q.Persona AS Persona, a.RunAt AS RunAt,
-                   v.OverallVisibilityScore, v.ShareOfVoice, v.AveragePosition, v.CitationCount
+                   v.OverallVisibilityScore, v.ShareOfVoice, v.AveragePosition, v.CitationCount, v.CitationShare
             FROM PromptVisibility v
             JOIN PromptAnalysis a ON v.PromptAnalysisId = a.Id
             JOIN PromptQuestions q ON a.PromptQuestionId = q.Id
             JOIN PromptTopics t ON q.PromptTopicId = t.Id
             WHERE t.OrganizationId = @OrganizationId AND a.Status = 'Completed' AND a.RunAt >= @Since
+              AND v.MethodologyVersion = @MethodologyVersion
             ORDER BY a.RunAt ASC";
-        return await connection.QueryAsync<PromptVisibilitySummaryRow>(sql, new { OrganizationId = organizationId, Since = since });
+        return await connection.QueryAsync<PromptVisibilitySummaryRow>(sql, new { OrganizationId = organizationId, Since = since, MethodologyVersion = CurrentVisibilityMethodology });
     }
 
     public async Task<IEnumerable<CompetitorComparisonSummaryRow>> GetCompetitorComparisonSummaryDataAsync(Guid organizationId, DateTime since)
@@ -345,11 +353,13 @@ public class PromptIntelligenceRepository : IPromptIntelligenceRepository
             SELECT cc.CompetitorName, cc.VisibilityScore, cc.ShareOfVoice, a.RunAt AS RunAt
             FROM CompetitorComparisons cc
             JOIN PromptAnalysis a ON cc.PromptAnalysisId = a.Id
+            JOIN PromptVisibility v ON v.PromptAnalysisId = a.Id
             JOIN PromptQuestions q ON a.PromptQuestionId = q.Id
             JOIN PromptTopics t ON q.PromptTopicId = t.Id
             WHERE t.OrganizationId = @OrganizationId AND a.Status = 'Completed' AND a.RunAt >= @Since
+              AND v.MethodologyVersion = @MethodologyVersion
             ORDER BY a.RunAt ASC";
-        return await connection.QueryAsync<CompetitorComparisonSummaryRow>(sql, new { OrganizationId = organizationId, Since = since });
+        return await connection.QueryAsync<CompetitorComparisonSummaryRow>(sql, new { OrganizationId = organizationId, Since = since, MethodologyVersion = CurrentVisibilityMethodology });
     }
 
     public async Task<IEnumerable<PromptPlatformSummaryRow>> GetPlatformSummaryDataAsync(Guid organizationId, DateTime since)
@@ -360,16 +370,18 @@ public class PromptIntelligenceRepository : IPromptIntelligenceRepository
         // mentions still count toward the denominator instead of silently vanishing.
         var sql = @"
             SELECT r.PromptAnalysisId AS AnalysisId, r.Platform, a.RunAt AS RunAt,
-                   EXISTS(SELECT 1 FROM PromptMentions m WHERE m.PromptAnalysisId = r.PromptAnalysisId AND m.Platform = r.Platform AND m.IsBrand = TRUE) AS IsBrandMentioned,
-                   (SELECT MIN(m2.Position) FROM PromptMentions m2 WHERE m2.PromptAnalysisId = r.PromptAnalysisId AND m2.Platform = r.Platform AND m2.IsBrand = TRUE) AS BrandPosition,
-                   (SELECT COUNT(*) FROM PromptMentions m3 WHERE m3.PromptAnalysisId = r.PromptAnalysisId AND m3.Platform = r.Platform) AS TotalMentionsOnPlatform,
-                   (SELECT COUNT(*) FROM PromptMentions m4 WHERE m4.PromptAnalysisId = r.PromptAnalysisId AND m4.Platform = r.Platform AND m4.IsBrand = TRUE) AS BrandMentionsOnPlatform
+                   EXISTS(SELECT 1 FROM PromptMentions m WHERE (m.PromptResponseId = r.Id OR (m.PromptResponseId IS NULL AND m.PromptAnalysisId = r.PromptAnalysisId AND m.Platform = r.Platform)) AND m.IsBrand = TRUE) AS IsBrandMentioned,
+                   (SELECT MIN(m2.Position) FROM PromptMentions m2 WHERE (m2.PromptResponseId = r.Id OR (m2.PromptResponseId IS NULL AND m2.PromptAnalysisId = r.PromptAnalysisId AND m2.Platform = r.Platform)) AND m2.IsBrand = TRUE) AS BrandPosition,
+                   (SELECT COUNT(*) FROM PromptMentions m3 WHERE m3.PromptResponseId = r.Id OR (m3.PromptResponseId IS NULL AND m3.PromptAnalysisId = r.PromptAnalysisId AND m3.Platform = r.Platform)) AS TotalMentionsOnPlatform,
+                   (SELECT COUNT(*) FROM PromptMentions m4 WHERE (m4.PromptResponseId = r.Id OR (m4.PromptResponseId IS NULL AND m4.PromptAnalysisId = r.PromptAnalysisId AND m4.Platform = r.Platform)) AND m4.IsBrand = TRUE) AS BrandMentionsOnPlatform
             FROM PromptResponses r
             JOIN PromptAnalysis a ON r.PromptAnalysisId = a.Id
+            JOIN PromptVisibility v ON v.PromptAnalysisId = a.Id
             JOIN PromptQuestions q ON a.PromptQuestionId = q.Id
             JOIN PromptTopics t ON q.PromptTopicId = t.Id
-            WHERE t.OrganizationId = @OrganizationId AND a.Status = 'Completed' AND a.RunAt >= @Since";
-        return await connection.QueryAsync<PromptPlatformSummaryRow>(sql, new { OrganizationId = organizationId, Since = since });
+            WHERE t.OrganizationId = @OrganizationId AND a.Status = 'Completed' AND a.RunAt >= @Since
+              AND v.MethodologyVersion = @MethodologyVersion";
+        return await connection.QueryAsync<PromptPlatformSummaryRow>(sql, new { OrganizationId = organizationId, Since = since, MethodologyVersion = CurrentVisibilityMethodology });
     }
 
     public async Task<IEnumerable<PromptCitationSummaryRow>> GetCitationSummaryDataAsync(Guid organizationId, DateTime since)
@@ -379,10 +391,12 @@ public class PromptIntelligenceRepository : IPromptIntelligenceRepository
             SELECT c.PromptAnalysisId AS AnalysisId, c.Platform, c.Domain, c.Url, c.Category, a.RunAt AS RunAt
             FROM PromptCitations c
             JOIN PromptAnalysis a ON c.PromptAnalysisId = a.Id
+            JOIN PromptVisibility v ON v.PromptAnalysisId = a.Id
             JOIN PromptQuestions q ON a.PromptQuestionId = q.Id
             JOIN PromptTopics t ON q.PromptTopicId = t.Id
-            WHERE t.OrganizationId = @OrganizationId AND a.Status = 'Completed' AND a.RunAt >= @Since";
-        return await connection.QueryAsync<PromptCitationSummaryRow>(sql, new { OrganizationId = organizationId, Since = since });
+            WHERE t.OrganizationId = @OrganizationId AND a.Status = 'Completed' AND a.RunAt >= @Since
+              AND v.MethodologyVersion = @MethodologyVersion";
+        return await connection.QueryAsync<PromptCitationSummaryRow>(sql, new { OrganizationId = organizationId, Since = since, MethodologyVersion = CurrentVisibilityMethodology });
     }
 
     public async Task<IEnumerable<PromptSentimentSummaryRow>> GetSentimentSummaryDataAsync(Guid organizationId, DateTime since)
@@ -424,19 +438,19 @@ public class PromptIntelligenceRepository : IPromptIntelligenceRepository
         if (!citations.Any()) return;
         using var connection = _dbConnectionFactory.CreateConnection();
         var sql = @"
-            INSERT INTO PromptCitations (PromptAnalysisId, Platform, Domain, Url, Category, CreatedAt)
-            VALUES (@PromptAnalysisId, @Platform, @Domain, @Url, @Category, @CreatedAt);";
+            INSERT INTO PromptCitations (PromptAnalysisId, PromptResponseId, Platform, Domain, Url, Category, CreatedAt)
+            VALUES (@PromptAnalysisId, @PromptResponseId, @Platform, @Domain, @Url, @Category, @CreatedAt);";
         await connection.ExecuteAsync(sql, citations);
     }
 
-    public async Task UpdateResponseSentimentAsync(Guid analysisId, string platform, string? sentiment, string? quote)
+    public async Task UpdateResponseSentimentAsync(Guid responseId, string? sentiment, string? quote)
     {
         using var connection = _dbConnectionFactory.CreateConnection();
         var sql = @"
             UPDATE PromptResponses
             SET Sentiment = @Sentiment, SentimentQuote = @Quote
-            WHERE PromptAnalysisId = @AnalysisId AND Platform = @Platform";
-        await connection.ExecuteAsync(sql, new { AnalysisId = analysisId, Platform = platform, Sentiment = sentiment, Quote = quote });
+            WHERE Id = @ResponseId";
+        await connection.ExecuteAsync(sql, new { ResponseId = responseId, Sentiment = sentiment, Quote = quote });
     }
 
     public async Task<IEnumerable<PromptFanout>> GetFanoutsByQuestionAsync(Guid questionId)
@@ -474,6 +488,40 @@ public class PromptIntelligenceRepository : IPromptIntelligenceRepository
             JOIN PromptTopics t ON q.PromptTopicId = t.Id
             WHERE t.OrganizationId = @OrganizationId AND a.Status = 'Completed' AND a.RunAt >= @Since AND m.IsBrand = FALSE";
         return await connection.QueryAsync<CompetitorMentionSummaryRow>(sql, new { OrganizationId = organizationId, Since = since });
+    }
+
+    public async Task<IEnumerable<CompetitorWatchObservationRow>> GetCompetitorWatchObservationDataAsync(Guid organizationId, DateTime since)
+    {
+        using var connection = _dbConnectionFactory.CreateConnection();
+        const string sql = @"
+            SELECT r.Id AS ResponseId,
+                   r.PromptAnalysisId AS AnalysisId,
+                   COALESCE(r.ProviderKey, '') AS ProviderKey,
+                   r.Platform,
+                   r.ModelUsed,
+                   a.RunAt,
+                   m.EntityName,
+                   m.IsBrand,
+                   m.Position,
+                   COALESCE(m.IsRecommended, FALSE) AS IsRecommended,
+                   m.RecommendationPosition
+            FROM PromptResponses r
+            JOIN PromptAnalysis a ON r.PromptAnalysisId = a.Id
+            JOIN PromptQuestions q ON a.PromptQuestionId = q.Id
+            JOIN PromptTopics t ON q.PromptTopicId = t.Id
+            LEFT JOIN PromptMentions m
+              ON m.PromptResponseId = r.Id
+              OR (m.PromptResponseId IS NULL
+                  AND m.PromptAnalysisId = r.PromptAnalysisId
+                  AND m.Platform = r.Platform)
+            WHERE t.OrganizationId = @OrganizationId
+              AND a.Status = 'Completed'
+              AND a.RunAt >= @Since
+              AND r.IsError = FALSE
+              AND LOWER(COALESCE(r.ProviderKey, '')) = 'openai'
+            ORDER BY a.RunAt, r.Id";
+
+        return await connection.QueryAsync<CompetitorWatchObservationRow>(sql, new { OrganizationId = organizationId, Since = since });
     }
 
     public async Task<IEnumerable<FanoutOverviewRow>> GetFanoutOverviewDataAsync(Guid organizationId)

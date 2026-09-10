@@ -581,11 +581,11 @@ CREATE TABLE IF NOT EXISTS Competitors (
     EnrichedAt TIMESTAMPTZ,
     CompetitorType VARCHAR(50) DEFAULT 'Direct',
     Confidence INTEGER DEFAULT 0,
+    DiscoverySource VARCHAR(20) NOT NULL DEFAULT 'unknown',
     CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Competitor Watch: real, AI-judged snapshots taken every scan (7-day recurring),
--- so rank/trend/share-of-voice-change are comparisons over time, not per-request randomness.
+-- Competitor Watch: deterministic snapshots aggregated from stored OpenAI response evidence.
 CREATE TABLE IF NOT EXISTS CompetitorSnapshots (
     Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
@@ -603,6 +603,15 @@ CREATE TABLE IF NOT EXISTS CompetitorSnapshots (
     ModelsJson JSONB NOT NULL DEFAULT '{}'::jsonb,
     Tagline VARCHAR(512),
     WebsiteUrl VARCHAR(2048),
+    MentionCount INT NOT NULL DEFAULT 0,
+    RecommendationCount INT NOT NULL DEFAULT 0,
+    ResponseCount INT NOT NULL DEFAULT 0,
+    CitationCount INT NOT NULL DEFAULT 0,
+    AveragePosition INT NOT NULL DEFAULT 100,
+    MeasurementSource VARCHAR(50) NOT NULL DEFAULT 'legacy-estimated',
+    MethodologyVersion VARCHAR(50) NOT NULL DEFAULT 'legacy-v1',
+    ModelUsed VARCHAR(100),
+    DiscoverySource VARCHAR(20) NOT NULL DEFAULT 'unknown',
     CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_competitorsnapshots_org_scandate ON CompetitorSnapshots (OrganizationId, ScanDate);
@@ -1028,34 +1037,51 @@ CREATE TABLE IF NOT EXISTS PromptResponses (
     CompletionTokens INT,
     CostUsd NUMERIC(10,6),
     WasSearchGrounded BOOLEAN NOT NULL DEFAULT FALSE,
+    SourceUrlsJson JSONB NOT NULL DEFAULT '[]'::jsonb,
     PromptVersion VARCHAR(100) NOT NULL DEFAULT 'prompt-intelligence:v1',
     IsError BOOLEAN NOT NULL DEFAULT FALSE,
     ErrorMessage TEXT
 );
+ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS SourceUrlsJson JSONB NOT NULL DEFAULT '[]'::jsonb;
 CREATE INDEX IF NOT EXISTS idx_promptresponses_analysis_platform ON PromptResponses (PromptAnalysisId, Platform, CreatedAt DESC);
 
 CREATE TABLE IF NOT EXISTS PromptMentions (
     Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     PromptAnalysisId UUID REFERENCES PromptAnalysis(Id) ON DELETE CASCADE,
+    PromptResponseId UUID REFERENCES PromptResponses(Id) ON DELETE CASCADE,
     Platform VARCHAR(100) NOT NULL DEFAULT '',
     EntityName VARCHAR(255) NOT NULL DEFAULT '',
     IsBrand BOOLEAN NOT NULL DEFAULT FALSE,
     ContextSnippet TEXT NOT NULL DEFAULT '',
-    Position INT NOT NULL DEFAULT 0
+    Position INT NOT NULL DEFAULT 0,
+    IsRecommended BOOLEAN NOT NULL DEFAULT FALSE,
+    RecommendationPosition INT
 );
 CREATE INDEX IF NOT EXISTS idx_promptmentions_analysis_platform_brand ON PromptMentions (PromptAnalysisId, Platform, IsBrand);
 CREATE INDEX IF NOT EXISTS idx_promptmentions_entity_lower ON PromptMentions (LOWER(EntityName));
+CREATE INDEX IF NOT EXISTS idx_promptmentions_response ON PromptMentions (PromptResponseId);
 
 CREATE TABLE IF NOT EXISTS PromptVisibility (
     Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     PromptAnalysisId UUID REFERENCES PromptAnalysis(Id) ON DELETE CASCADE,
     OverallVisibilityScore INT NOT NULL DEFAULT 0,
+    VisibilityRank INT NOT NULL DEFAULT 0,
     MentionFrequency INT NOT NULL DEFAULT 0,
     AveragePosition INT NOT NULL DEFAULT 0,
     ShareOfVoice INT NOT NULL DEFAULT 0,
     CitationCount INT NOT NULL DEFAULT 0,
-    CompetitorCount INT NOT NULL DEFAULT 0
+    CitationShare INT NOT NULL DEFAULT 0,
+    CompetitorCount INT NOT NULL DEFAULT 0,
+    SampleCount INT NOT NULL DEFAULT 0,
+    MethodologyVersion VARCHAR(100) NOT NULL DEFAULT 'prompt-visibility:v4-mention-share'
 );
+ALTER TABLE PromptVisibility ADD COLUMN IF NOT EXISTS VisibilityRank INT NOT NULL DEFAULT 0;
+ALTER TABLE PromptVisibility ADD COLUMN IF NOT EXISTS CitationShare INT NOT NULL DEFAULT 0;
+ALTER TABLE PromptVisibility ADD COLUMN IF NOT EXISTS SampleCount INT NOT NULL DEFAULT 0;
+ALTER TABLE PromptVisibility ADD COLUMN IF NOT EXISTS MethodologyVersion VARCHAR(100);
+UPDATE PromptVisibility SET MethodologyVersion = 'legacy-v2' WHERE MethodologyVersion IS NULL;
+ALTER TABLE PromptVisibility ALTER COLUMN MethodologyVersion SET DEFAULT 'prompt-visibility:v4-mention-share';
+ALTER TABLE PromptVisibility ALTER COLUMN MethodologyVersion SET NOT NULL;
 
 CREATE TABLE IF NOT EXISTS PromptRecommendations (
     Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -1106,6 +1132,7 @@ CREATE TABLE IF NOT EXISTS CompetitorComparisons (
 CREATE TABLE IF NOT EXISTS PromptCitations (
     Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     PromptAnalysisId UUID REFERENCES PromptAnalysis(Id) ON DELETE CASCADE,
+    PromptResponseId UUID REFERENCES PromptResponses(Id) ON DELETE CASCADE,
     Platform VARCHAR(100) NOT NULL DEFAULT '',
     Domain VARCHAR(255) NOT NULL DEFAULT '',
     Url TEXT NOT NULL DEFAULT '',
@@ -1113,6 +1140,7 @@ CREATE TABLE IF NOT EXISTS PromptCitations (
     CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_promptcitations_analysis_platform_domain ON PromptCitations (PromptAnalysisId, Platform, Domain);
+CREATE INDEX IF NOT EXISTS idx_promptcitations_response ON PromptCitations (PromptResponseId);
 
 CREATE TABLE IF NOT EXISTS BrandClaims (
     Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -1413,6 +1441,7 @@ RETURNS TABLE (
     Role VARCHAR,
     IsNewUser BOOLEAN
 ) AS $$
+#variable_conflict use_column
 DECLARE
     v_UserId UUID;
     v_OrganizationId UUID;

@@ -1,5 +1,6 @@
 using Citationly.Application.Interfaces;
 using Citationly.Domain.Entities;
+using System.Text.Json;
 
 namespace Citationly.Application.Features.PromptIntelligence.Services;
 
@@ -17,6 +18,7 @@ public class PromptExecutionService : IPromptExecutionService
     private readonly IRecommendationEngineService _recommendationEngine;
     private readonly ISentimentClassifierService _sentimentClassifier;
     private readonly ICitationExtractorService _citationExtractor;
+    private readonly IEntityRecommendationClassifierService _recommendationClassifier;
 
     public PromptExecutionService(
         IPromptIntelligenceRepository repo,
@@ -25,7 +27,8 @@ public class PromptExecutionService : IPromptExecutionService
         IVisibilityCalculatorService calculator,
         IRecommendationEngineService recommendationEngine,
         ISentimentClassifierService sentimentClassifier,
-        ICitationExtractorService citationExtractor)
+        ICitationExtractorService citationExtractor,
+        IEntityRecommendationClassifierService recommendationClassifier)
     {
         _repo = repo;
         _websiteRepo = websiteRepo;
@@ -34,6 +37,7 @@ public class PromptExecutionService : IPromptExecutionService
         _recommendationEngine = recommendationEngine;
         _sentimentClassifier = sentimentClassifier;
         _citationExtractor = citationExtractor;
+        _recommendationClassifier = recommendationClassifier;
     }
 
     public async IAsyncEnumerable<string> ExecutePromptAnalysisAsync(Guid organizationId, Guid questionId, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
@@ -95,34 +99,65 @@ public class PromptExecutionService : IPromptExecutionService
         var trackedCompetitors = await _websiteRepo.GetCompetitorsAsync(organizationId);
         var competitors = trackedCompetitors.Select(c => c.Name).Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
         var competitorDomains = trackedCompetitors.Select(c => c.WebsiteUrl).Where(u => !string.IsNullOrWhiteSpace(u)).ToList();
-        var (visibility, mentions, compComparisons) = _calculator.CalculateVisibilityMetrics(analysisId, successfulResponses, brandName, competitors);
+        var mentionList = _calculator.ExtractMentions(analysisId, successfulResponses, brandName, competitors).ToList();
+
+        foreach (var response in successfulResponses)
+        {
+            var responseMentions = mentionList
+                .Where(mention => mention.PromptResponseId == response.Id)
+                .ToList();
+            var entityNames = responseMentions
+                .Select(mention => mention.EntityName)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var entityRecommendations = await _recommendationClassifier.ClassifyAsync(
+                organizationId,
+                response.ResponseText,
+                entityNames,
+                ct);
+
+            foreach (var mention in responseMentions)
+            {
+                if (!entityRecommendations.TryGetValue(mention.EntityName, out var position)) continue;
+                mention.IsRecommended = true;
+                mention.RecommendationPosition = position;
+            }
+        }
 
         // Real citation extraction from the actual captured response text
-        var citations = successfulResponses.SelectMany(r => _citationExtractor.ExtractCitations(analysisId, r.Platform, r.ResponseText, ownDomain, competitorDomains)).ToList();
-        
-        // Use real citation count
-        if (ownDomain != null)
-        {
-            visibility.CitationCount = citations.Count(c => c.Domain.Contains(ownDomain, StringComparison.OrdinalIgnoreCase));
-        }
-        else
-        {
-            visibility.CitationCount = 0;
-        }
+        var citations = successfulResponses.SelectMany(response => _citationExtractor.ExtractCitations(
+            analysisId,
+            response.Id,
+            response.Platform,
+            response.ResponseText,
+            ownDomain,
+            competitorDomains,
+            ParseSourceUrls(response.SourceUrlsJson))).ToList();
 
-        await _repo.InsertMentionsAsync(mentions);
+        // Score after the complete evidence set has been extracted. Core Peec-compatible brand
+        // metrics use response mentions and mention order; recommendation classification remains
+        // separate evidence for competitor/recommendation insights.
+        var (visibility, _, compComparisons) = _calculator.CalculateVisibilityMetrics(
+            analysisId,
+            successfulResponses,
+            brandName,
+            competitors,
+            mentionList,
+            citations);
+
+        await _repo.InsertMentionsAsync(mentionList);
         await _repo.InsertVisibilityAsync(visibility);
         await _repo.InsertCompetitorComparisonsAsync(compComparisons);
         await _repo.InsertCitationsAsync(citations);
 
         // Real LLM sentiment classification, scoped to responses that actually mentioned the brand.
-        var brandMentionedPlatforms = mentions.Where(m => m.IsBrand).Select(m => m.Platform).ToHashSet();
-        foreach (var response in successfulResponses.Where(r => brandMentionedPlatforms.Contains(r.Platform)))
+        var brandMentionedResponseIds = mentionList.Where(m => m.IsBrand && m.PromptResponseId.HasValue).Select(m => m.PromptResponseId!.Value).ToHashSet();
+        foreach (var response in successfulResponses.Where(r => brandMentionedResponseIds.Contains(r.Id)))
         {
             var (sentiment, quote) = await _sentimentClassifier.ClassifyAsync(organizationId, response.ResponseText, brandName, ct);
             if (sentiment != null)
             {
-                await _repo.UpdateResponseSentimentAsync(analysisId, response.Platform, sentiment, quote);
+                await _repo.UpdateResponseSentimentAsync(response.Id, sentiment, quote);
             }
         }
 
@@ -145,5 +180,18 @@ public class PromptExecutionService : IPromptExecutionService
         return Uri.TryCreate(candidate, UriKind.Absolute, out var uri)
             ? (uri.Host.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? uri.Host[4..] : uri.Host)
             : null;
+    }
+
+    private static IReadOnlyCollection<string> ParseSourceUrls(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return Array.Empty<string>();
+        try
+        {
+            return JsonSerializer.Deserialize<List<string>>(json) ?? new List<string>();
+        }
+        catch (JsonException)
+        {
+            return Array.Empty<string>();
+        }
     }
 }

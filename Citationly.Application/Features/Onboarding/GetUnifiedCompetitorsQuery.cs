@@ -25,6 +25,7 @@ public class UnifiedCompetitor
     public int Confidence { get; set; }
     public string? Reason { get; set; }
     public string? SourceOrganization { get; set; } // Which org found this competitor
+    public string DiscoverySource { get; set; } = "unknown";
 }
 
 /// <summary>
@@ -64,7 +65,8 @@ public class GetUnifiedCompetitorsQueryHandler : IRequestHandler<GetUnifiedCompe
                 SimilarityScore = c.SimilarityScore,
                 Confidence = c.Confidence,
                 Reason = ExtractReason(c.RawJson),
-                SourceOrganization = "Current organization"
+                SourceOrganization = "Current organization",
+                DiscoverySource = c.DiscoverySource
             }).ToList();
 
             // Dedup by normalized domain

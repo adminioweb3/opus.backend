@@ -304,14 +304,14 @@ public class PromptIntelligenceController : ControllerBase
 
         var compositeScore = Avg(rows.Select(r => r.OverallVisibilityScore));
         var shareOfVoice = Avg(rows.Select(r => r.ShareOfVoice));
-        var averagePosition = Avg(rows.Select(r => r.AveragePosition));
+        // Position is undefined when the brand was never recommended (stored as 0). Excluding
+        // those rows avoids making non-visibility look like an excellent average rank.
+        var averagePosition = Avg(rows.Where(r => r.AveragePosition > 0).Select(r => r.AveragePosition));
 
         var scoreHistory = rows
             .GroupBy(r => r.RunAt.Date)
             .OrderBy(g => g.Key)
             .Select(g => new { date = g.Key.ToString("yyyy-MM-dd"), score = Math.Round(Avg(g.Select(r => r.OverallVisibilityScore)), 1) });
-
-        var totalCitationCount = rows.Sum(r => r.CitationCount);
 
         var topics = rows
             .GroupBy(r => new { r.TopicId, r.TopicName })
@@ -322,9 +322,9 @@ public class PromptIntelligenceController : ControllerBase
                 promptCount = g.Select(r => r.QuestionId).Distinct().Count(),
                 score = Math.Round(Avg(g.Select(r => r.OverallVisibilityScore)), 1),
                 shareOfVoice = Math.Round(Avg(g.Select(r => r.ShareOfVoice)), 1),
-                averagePosition = Math.Round(Avg(g.Select(r => r.AveragePosition)), 1),
+                averagePosition = Math.Round(Avg(g.Where(r => r.AveragePosition > 0).Select(r => r.AveragePosition)), 1),
                 citationCount = g.Sum(r => r.CitationCount),
-                citationShare = totalCitationCount == 0 ? 0 : Math.Round((double)g.Sum(r => r.CitationCount) / totalCitationCount * 100, 1),
+                citationShare = Math.Round(Avg(g.Select(r => r.CitationShare)), 1),
             })
             .OrderByDescending(t => t.score)
             .Select((t, i) => new
@@ -384,19 +384,24 @@ public class PromptIntelligenceController : ControllerBase
 
         object BuildRankBlock(List<RankEntity> entities)
         {
-            var sortedNow = entities.OrderByDescending(e => e.Value).ToList();
-            var sortedOlder = entities.OrderByDescending(e => e.OlderValue).ToList();
-            var ownIndexNow = sortedNow.FindIndex(e => e.Owned);
-            var ownIndexOlder = sortedOlder.FindIndex(e => e.Owned);
-            var positionDelta = ownIndexOlder >= 0 && ownIndexNow >= 0 ? ownIndexOlder - ownIndexNow : 0;
+            var sortedNow = entities.OrderByDescending(e => e.Value).ThenBy(e => e.Name).ToList();
+            var own = entities.Single(e => e.Owned);
+            int? Position(double value, Func<RankEntity, double> selector) =>
+                value <= 0 ? null : 1 + entities.Count(e => selector(e) > value);
+
+            var ownPositionNow = Position(own.Value, e => e.Value);
+            var ownPositionOlder = Position(own.OlderValue, e => e.OlderValue);
+            var positionDelta = ownPositionOlder.HasValue && ownPositionNow.HasValue
+                ? ownPositionOlder.Value - ownPositionNow.Value
+                : 0;
 
             return new
             {
-                position = ownIndexNow >= 0 ? ownIndexNow + 1 : (int?)null,
+                position = ownPositionNow,
                 positionDelta,
-                rows = sortedNow.Select((e, i) => new
+                rows = sortedNow.Select(e => new
                 {
-                    rank = i + 1,
+                    rank = Position(e.Value, item => item.Value),
                     name = e.Name,
                     owned = e.Owned,
                     value = Math.Round(e.Value, 1),
@@ -413,7 +418,9 @@ public class PromptIntelligenceController : ControllerBase
             shareOfVoice = Math.Round(shareOfVoice, 1),
             shareOfVoiceDelta = Delta(ownRecentSov, ownOlderSov),
             averagePosition = Math.Round(averagePosition, 1),
-            averagePositionDelta = Delta(Avg(recentHalf.Select(r => r.AveragePosition)), Avg(olderHalf.Select(r => r.AveragePosition))),
+            averagePositionDelta = Delta(
+                Avg(recentHalf.Where(r => r.AveragePosition > 0).Select(r => r.AveragePosition)),
+                Avg(olderHalf.Where(r => r.AveragePosition > 0).Select(r => r.AveragePosition))),
             scoreHistory,
             topics,
             visibilityRank = BuildRankBlock(scoreEntities),

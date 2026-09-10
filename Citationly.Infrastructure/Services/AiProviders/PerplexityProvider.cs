@@ -81,6 +81,16 @@ public sealed class PerplexityProvider : IAiProvider
 
             using var doc = JsonDocument.Parse(responseText);
             var content = doc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString() ?? string.Empty;
+            var citations = doc.RootElement.TryGetProperty("citations", out var citationArray)
+                && citationArray.ValueKind == JsonValueKind.Array
+                ? citationArray.EnumerateArray()
+                    .Where(item => item.ValueKind == JsonValueKind.String)
+                    .Select(item => item.GetString())
+                    .Where(url => !string.IsNullOrWhiteSpace(url))
+                    .Select(url => url!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList()
+                : new List<string>();
 
             int? promptTokens = null, completionTokens = null;
             decimal? cost = null;
@@ -95,7 +105,7 @@ public sealed class PerplexityProvider : IAiProvider
             }
 
             await _aiUsageLimiter.RecordEstimatedCostAsync(_aiContext.OrganizationId, cost, "provider:perplexity", ct);
-            return new AiProviderResult(content, _model, promptTokens, completionTokens, cost, WasSearchGrounded: true);
+            return new AiProviderResult(content, _model, promptTokens, completionTokens, cost, WasSearchGrounded: true, Citations: citations);
         }, cancellationToken);
     }
 }

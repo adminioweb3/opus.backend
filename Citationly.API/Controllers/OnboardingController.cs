@@ -16,15 +16,18 @@ public class OnboardingController : ControllerBase
     private readonly IMediator _mediator;
     private readonly ICurrentOrganizationAccessor _currentOrganizationAccessor;
     private readonly IOutboundUrlSafetyValidator _urlSafetyValidator;
+    private readonly IOnboardingDashboardBaselineService _dashboardBaselineService;
 
     public OnboardingController(
         IMediator mediator,
         ICurrentOrganizationAccessor currentOrganizationAccessor,
-        IOutboundUrlSafetyValidator urlSafetyValidator)
+        IOutboundUrlSafetyValidator urlSafetyValidator,
+        IOnboardingDashboardBaselineService dashboardBaselineService)
     {
         _mediator = mediator;
         _currentOrganizationAccessor = currentOrganizationAccessor;
         _urlSafetyValidator = urlSafetyValidator;
+        _dashboardBaselineService = dashboardBaselineService;
     }
 
     private Task<Guid?> GetCurrentOrganizationIdAsync()
@@ -343,6 +346,15 @@ public class OnboardingController : ControllerBase
         var result = await _mediator.Send(command);
 
         return Ok(result);
+    }
+
+    [HttpGet("dashboard-baseline-status")]
+    public async Task<IActionResult> GetDashboardBaselineStatus()
+    {
+        var organizationId = await GetCurrentOrganizationIdAsync();
+        if (organizationId is null) return Unauthorized();
+
+        return Ok(await _dashboardBaselineService.GetStatusAsync(organizationId.Value));
     }
 
     [Authorize]

@@ -413,18 +413,17 @@ public class RunScanCommandHandler : IRequestHandler<RunScanCommand, RunScanResu
     }
 
     /// <summary>Real competitive percentile from CompetitorRankingService's deterministic,
-    /// zero-AI-call ranking engine. Falls back to a documented neutral default (not a guess) if
-    /// the org has no comparable competitors yet, or if ranking otherwise can't be computed.</summary>
+    /// zero-AI-call ranking engine. Returns zero when measured comparison evidence is unavailable.</summary>
     private async Task<int> ComputeRealCompetitorScoreAsync(Guid organizationId, CancellationToken cancellationToken)
     {
         try
         {
             var ranking = await _competitorRankingService.ComputeRankingsAsync(organizationId, cancellationToken);
-            return ranking.TotalCompanies <= 1 ? 50 : (int)Math.Round(Math.Clamp(ranking.Percentile, 0, 100));
+            return ranking.TotalCompanies <= 1 ? 0 : (int)Math.Round(Math.Clamp(ranking.Percentile, 0, 100));
         }
         catch
         {
-            return 50;
+            return 0;
         }
     }
 }

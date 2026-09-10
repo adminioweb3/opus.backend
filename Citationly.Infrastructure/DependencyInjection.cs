@@ -78,6 +78,14 @@ public static class DependencyInjection
         services.AddTransient<ICompanyCompetitorRepository, CompanyCompetitorRepository>();
         services.AddScoped<ICompanySimilarityService, CompanySimilarityService>();
         services.AddScoped<ICompanyGraphService, CompanyGraphService>();
+        services.AddHttpClient<ICompanyRealityVerifier, CompanyRealityVerifier>(client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(10);
+        })
+        .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+        {
+            AllowAutoRedirect = false
+        });
 
         // Competitors
         services.AddScoped<ICompetitorDiscoveryService, Citationly.Infrastructure.Services.Competitors.CompetitorDiscoveryService>();

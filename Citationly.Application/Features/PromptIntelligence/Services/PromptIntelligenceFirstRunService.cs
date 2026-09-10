@@ -10,15 +10,14 @@ public interface IPromptIntelligenceFirstRunService
 }
 
 /// <summary>
-/// Fired once, fire-and-forget, at the end of onboarding (CompleteOnboardingCommand) so Answer
+/// Runs inside the ordered onboarding baseline job so Answer
 /// Atlas already has real data the first time a user opens it, instead of starting empty until
 /// someone manually clicks Analyze. Seeds PromptTopic/PromptQuestion from the org's generated
 /// AiSearchPrompt rows, then runs real analysis (real per-engine LLM calls) on a small, bounded
 /// batch — not every prompt, to keep onboarding-time cost/latency reasonable.
 ///
-/// Not idempotent across retries (each run creates new PromptAnalysis rows for whatever it
-/// picks), so automatic retry is disabled at the call site — a failed individual question is
-/// caught and skipped rather than failing the whole batch.
+/// Once any current measured visibility exists, retries are a no-op. A failed individual
+/// question is caught and skipped rather than failing the whole batch.
 /// </summary>
 public class PromptIntelligenceFirstRunService : IPromptIntelligenceFirstRunService
 {
@@ -45,6 +44,13 @@ public class PromptIntelligenceFirstRunService : IPromptIntelligenceFirstRunServ
     [AutomaticRetry(Attempts = 0)]
     public async Task RunFirstBatchAsync(Guid organizationId)
     {
+        // Onboarding completion can be retried. Once measured evidence exists, do not spend
+        // another provider batch or create duplicate analyses.
+        var existingEvidence = await _repo.GetVisibilitySummaryDataAsync(
+            organizationId,
+            DateTime.UtcNow.AddDays(-90));
+        if (existingEvidence.Any()) return;
+
         await _seeding.EnsureSeededAsync(organizationId);
 
         var topics = await _repo.GetTopicsAsync(organizationId);

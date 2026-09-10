@@ -3,14 +3,12 @@ using Citationly.Domain.Entities;
 namespace Citationly.Application.Interfaces.Competitors;
 
 /// <summary>
-/// Deterministic C# ranking engine. No AI calls.
-/// Reads enriched competitor data and computes weighted composite scores.
+/// Deterministic projection of measured Competitor Watch evidence. No AI calls or default scores.
 /// </summary>
 public interface ICompetitorRankingService
 {
     /// <summary>
-    /// Computes rankings across all enriched competitors for an organization,
-    /// including the user's own business. Returns a comprehensive ranking result.
+    /// Computes rankings across the latest measured OpenAI competitor snapshot.
     /// </summary>
     Task<CompetitorRankingResult> ComputeRankingsAsync(Guid organizationId, CancellationToken cancellationToken);
 }

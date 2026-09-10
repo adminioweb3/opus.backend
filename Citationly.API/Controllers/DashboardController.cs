@@ -146,7 +146,7 @@ public class DashboardController : ControllerBase
     private static readonly string[] CompetitorPalette = { "#7C3AED", "#2563EB", "#14B8A6", "#D97706", "#DB2777" };
 
     [HttpGet("competitor-watch")]
-    public async Task<IActionResult> GetCompetitorWatch()
+    public async Task<IActionResult> GetCompetitorWatch([FromQuery] string range = "30D")
     {
         var orgGuid = await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
         if (orgGuid is null) return Unauthorized();
@@ -159,7 +159,7 @@ public class DashboardController : ControllerBase
             var existingScanDate = await _snapshotRepository.GetLatestScanDateAsync(orgGuid.Value);
             if (existingScanDate.HasValue && await CompetitorSnapshotHasCompetitorsAsync(orgGuid.Value, existingScanDate.Value))
             {
-                return await BuildCompetitorWatchResponseAsync(orgGuid.Value);
+                return await BuildCompetitorWatchResponseAsync(orgGuid.Value, range);
             }
 
             return Ok(new { you = (object?)null, comps = Array.Empty<object>(), message = discoveryResult.Message });
@@ -171,11 +171,11 @@ public class DashboardController : ControllerBase
             await _mediator.Send(new RunCompetitorScanCommand { OrganizationId = orgGuid.Value });
         }
 
-        return await BuildCompetitorWatchResponseAsync(orgGuid.Value);
+        return await BuildCompetitorWatchResponseAsync(orgGuid.Value, range);
     }
 
     [HttpPost("competitor-watch/rescan")]
-    public async Task<IActionResult> RescanCompetitorWatch()
+    public async Task<IActionResult> RescanCompetitorWatch([FromQuery] string range = "30D")
     {
         var orgGuid = await _currentOrganization.GetOrganizationIdAsync(User, HttpContext.RequestAborted);
         if (orgGuid is null) return Unauthorized();
@@ -194,7 +194,7 @@ public class DashboardController : ControllerBase
             return BadRequest(new { message = result.Message });
         }
 
-        return await BuildCompetitorWatchResponseAsync(orgGuid.Value);
+        return await BuildCompetitorWatchResponseAsync(orgGuid.Value, range);
     }
 
     private async Task<EnsureTrackedCompetitorsResult> EnsureTrackedCompetitorsAsync(Guid organizationId)
@@ -216,54 +216,50 @@ public class DashboardController : ControllerBase
 
     private sealed record EnsureTrackedCompetitorsResult(bool Success, string? Message);
 
-    private async Task<IActionResult> BuildCompetitorWatchResponseAsync(Guid orgGuid)
+    private async Task<IActionResult> BuildCompetitorWatchResponseAsync(Guid orgGuid, string range)
     {
         var latestScanDate = await _snapshotRepository.GetLatestScanDateAsync(orgGuid);
         if (latestScanDate == null)
         {
-            // Nothing to scan yet (org hasn't completed onboarding analysis at all).
-            return Ok(new { you = (object?)null, comps = Array.Empty<object>() });
+            return Ok(new { you = (object?)null, comps = Array.Empty<object>(), message = "No measured OpenAI competitor data is available yet." });
         }
 
         var latest = await _snapshotRepository.GetSnapshotsByScanDateAsync(orgGuid, latestScanDate.Value);
+        latest = latest.Where(snapshot => snapshot.MeasurementSource == "openai-observed").ToList();
+        if (latest.Count == 0)
+        {
+            return Ok(new
+            {
+                you = (object?)null,
+                comps = Array.Empty<object>(),
+                message = "Run Prompt Intelligence to collect measured OpenAI responses for Competitor Watch."
+            });
+        }
+
         var youSnap = latest.FirstOrDefault(s => s.IsYou);
         // Was capped at 4 — the scan itself (RunCompetitorScanCommand) snapshots every tracked
         // competitor with no limit, so this was truncating an already-larger real dataset down to
         // 4 before it ever reached the client. Match CompetitorDiscoveryService's TopSelectionCount
         // (40) so Competitor Watch reflects the same competitor set as the rest of the product, and
         // so there's actually more than a page's worth for the frontend's "More" modal to reveal.
-        var compSnaps = latest.Where(s => !s.IsYou).OrderBy(s => s.Rank).ToList();
+        var compSnaps = latest.Where(s => !s.IsYou)
+            .OrderBy(s => s.Rank == 0 ? int.MaxValue : s.Rank)
+            .ThenByDescending(s => s.Visibility)
+            .ToList();
 
-        var history = await _snapshotRepository.GetRecentHistoryAsync(orgGuid, 12);
+        var rangeDays = ParseRangeDays(range);
+        var cutoff = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-(rangeDays - 1));
+        var history = (await _snapshotRepository.GetRecentHistoryAsync(orgGuid, 14))
+            .Where(snapshot => snapshot.MeasurementSource == "openai-observed" && snapshot.ScanDate >= cutoff)
+            .ToList();
 
-        List<int> BuildTrend(Guid? competitorId, bool isYou)
+        object[] BuildTrend(Guid? competitorId, bool isYou)
         {
-            var points = history
+            return history
                 .Where(s => isYou ? s.IsYou : (!s.IsYou && s.CompetitorId == competitorId))
                 .OrderBy(s => s.ScanDate)
-                .Select(s => s.Visibility)
-                .ToList();
-
-            if (points.Count == 0) return Enumerable.Repeat(50, 12).ToList();
-            if (points.Count < 12)
-            {
-                var padded = Enumerable.Repeat(points[0], 12 - points.Count).ToList();
-                padded.AddRange(points);
-                return padded;
-            }
-            return points.TakeLast(12).ToList();
-        }
-
-        Dictionary<string, int> ParseModels(string modelsJson)
-        {
-            try
-            {
-                return JsonSerializer.Deserialize<Dictionary<string, int>>(modelsJson) ?? new();
-            }
-            catch
-            {
-                return new();
-            }
+                .Select(s => (object)new { date = s.ScanDate.ToString("yyyy-MM-dd"), value = s.Visibility })
+                .ToArray();
         }
 
         object? you = youSnap == null ? null : new
@@ -281,9 +277,16 @@ public class DashboardController : ControllerBase
             rank = youSnap.Rank,
             tagline = youSnap.Tagline ?? "Your organization",
             websiteUrl = youSnap.WebsiteUrl,
-            models = ParseModels(youSnap.ModelsJson),
-            citations = new { total = (youSnap.Score * 25).ToString("N0"), share = $"{youSnap.ShareOfVoice}%" },
-            content = new { velocity = $"{Math.Max(1, youSnap.Score / 8)} / wk" },
+            mentionCount = youSnap.MentionCount,
+            recommendationCount = youSnap.RecommendationCount,
+            responseCount = youSnap.ResponseCount,
+            mentionRate = Percentage(youSnap.MentionCount, youSnap.ResponseCount),
+            recommendationRate = Percentage(youSnap.RecommendationCount, youSnap.ResponseCount),
+            citationCount = youSnap.CitationCount,
+            averagePosition = youSnap.AveragePosition,
+            measurementSource = youSnap.MeasurementSource,
+            discoverySource = youSnap.DiscoverySource,
+            modelUsed = youSnap.ModelUsed,
             trend = BuildTrend(null, true)
         };
 
@@ -302,14 +305,45 @@ public class DashboardController : ControllerBase
             rank = s.Rank,
             tagline = s.Tagline ?? "Competitor",
             websiteUrl = s.WebsiteUrl,
-            models = ParseModels(s.ModelsJson),
-            citations = new { total = (s.Score * 25).ToString("N0"), share = $"{s.ShareOfVoice}%" },
-            content = new { velocity = $"{Math.Max(1, s.Score / 8)} / wk" },
+            mentionCount = s.MentionCount,
+            recommendationCount = s.RecommendationCount,
+            responseCount = s.ResponseCount,
+            mentionRate = Percentage(s.MentionCount, s.ResponseCount),
+            recommendationRate = Percentage(s.RecommendationCount, s.ResponseCount),
+            citationCount = s.CitationCount,
+            averagePosition = s.AveragePosition,
+            measurementSource = s.MeasurementSource,
+            discoverySource = s.DiscoverySource,
+            modelUsed = s.ModelUsed,
             trend = BuildTrend(s.CompetitorId, false)
         }).ToList();
 
-        return Ok(new { you, comps = compsList });
+        return Ok(new
+        {
+            you,
+            comps = compsList,
+            meta = new
+            {
+                provider = "OpenAI",
+                model = youSnap?.ModelUsed ?? latest.First().ModelUsed ?? "OpenAI",
+                responseCount = youSnap?.ResponseCount ?? latest.Max(snapshot => snapshot.ResponseCount),
+                lastMeasured = latestScanDate.Value.ToString("yyyy-MM-dd"),
+                methodologyVersion = CompetitorEvidenceScorer.MethodologyVersion,
+                evidenceWindowDays = 90,
+                range = $"{rangeDays}D"
+            }
+        });
     }
+
+    private static int ParseRangeDays(string? range) => range?.ToUpperInvariant() switch
+    {
+        "7D" => 7,
+        "90D" => 90,
+        _ => 30
+    };
+
+    private static int Percentage(int numerator, int denominator) =>
+        denominator <= 0 ? 0 : (int)Math.Round(numerator * 100d / denominator);
 
     private async Task<bool> CompetitorSnapshotIsStaleAsync(Guid organizationId, DateOnly scanDate)
     {
@@ -317,6 +351,9 @@ public class DashboardController : ControllerBase
         if (trackedCompetitors.Count == 0) return false;
 
         var snapshots = await _snapshotRepository.GetSnapshotsByScanDateAsync(organizationId, scanDate);
+        if (snapshots.Any(snapshot => snapshot.MeasurementSource != "openai-observed" ||
+                                      snapshot.MethodologyVersion != CompetitorEvidenceScorer.MethodologyVersion)) return true;
+
         var snapshotCompetitorIds = snapshots
             .Where(s => !s.IsYou && s.CompetitorId.HasValue)
             .Select(s => s.CompetitorId!.Value)
@@ -351,6 +388,10 @@ public class DashboardController : ControllerBase
             entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(30);
             return await _aggregator.BuildAsync(orgGuid.Value, range);
         });
+
+        // Never retain onboarding's transient empty state while its measured baseline job is
+        // still finishing. A refresh should immediately observe newly-created scan data.
+        if (result is { HasData: false }) _cache.Remove(cacheKey);
 
         return Ok(result);
     }

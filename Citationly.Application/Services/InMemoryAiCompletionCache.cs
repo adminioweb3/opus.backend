@@ -33,7 +33,8 @@ public sealed class InMemoryAiCompletionCache : IAiCompletionCache
             PromptTokens: null,
             CompletionTokens: null,
             CostUsd: null,
-            cached.WasSearchGrounded));
+            cached.WasSearchGrounded,
+            cached.Citations));
     }
 
     public Task StoreAsync(
@@ -56,7 +57,8 @@ public sealed class InMemoryAiCompletionCache : IAiCompletionCache
                 result.PromptTokens,
                 result.CompletionTokens,
                 result.CostUsd,
-                result.WasSearchGrounded),
+                result.WasSearchGrounded,
+                result.Citations),
             DateTimeOffset.UtcNow.Add(freshness));
 
         return Task.CompletedTask;

@@ -60,19 +60,19 @@ public class PromptDiscoveryService : IPromptDiscoveryService
         // business directly — that's the entire point of a comparison prompt.
         var comparisonTopic = $"{businessName} vs Competitors";
         var comparisonItems = await DiscoverComparisonBatchAsync(organizationId, businessName, competitorNames, ctx, systemPrompt);
-        AppendTopic(entities, seen, organizationId, businessName, comparisonTopic, comparisonItems);
+        AppendTopic(entities, seen, organizationId, businessName, comparisonTopic, comparisonItems, allowBrandName: true);
 
         // Topics 2-5: real business/service lines, generic non-branded prompts.
         var batchTasks = topicNames.Select(name => DiscoverBusinessLineBatchAsync(organizationId, businessName, name, ctx, systemPrompt));
         var batchResults = await Task.WhenAll(batchTasks);
 
         for (int i = 0; i < topicNames.Count; i++)
-            AppendTopic(entities, seen, organizationId, businessName, topicNames[i], batchResults[i]);
+            AppendTopic(entities, seen, organizationId, businessName, topicNames[i], batchResults[i], allowBrandName: false);
 
         return entities;
     }
 
-    private static void AppendTopic(List<AiSearchPrompt> entities, HashSet<string> seen, Guid organizationId, string businessName, string topicName, List<DiscoveryPromptItem> items)
+    private static void AppendTopic(List<AiSearchPrompt> entities, HashSet<string> seen, Guid organizationId, string businessName, string topicName, List<DiscoveryPromptItem> items, bool allowBrandName)
     {
         var kept = 0;
         foreach (var p in items)
@@ -80,7 +80,7 @@ public class PromptDiscoveryService : IPromptDiscoveryService
             if (kept >= PromptsPerTopic) break; // hard cap — never more than 8 for this topic
 
             var text = (p.prompt ?? "").Trim();
-            if (text.Length == 0 || !seen.Add(text)) continue;
+            if (text.Length == 0 || (!allowBrandName && Contains(text, businessName)) || !seen.Add(text)) continue;
 
             var promptEntity = new AiSearchPrompt
             {

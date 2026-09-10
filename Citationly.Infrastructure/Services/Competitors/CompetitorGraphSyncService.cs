@@ -58,6 +58,7 @@ public class CompetitorGraphSyncService : ICompetitorGraphSyncService
                 Category = "Direct",
                 CompetitorType = "Direct",
                 Confidence = edge.Confidence,
+                DiscoverySource = edge.DiscoverySource,
                 Rank = edge.Rank,
                 SimilarityScore = (int)Math.Round(edge.Similarity),
                 Authority = CompanyProfileSummarizer.ExtractDomainAuthorityEstimate(company.BusinessProfileJson),
@@ -70,6 +71,7 @@ public class CompetitorGraphSyncService : ICompetitorGraphSyncService
                     rank = edge.Rank,
                     similarity = edge.Similarity,
                     confidence = edge.Confidence,
+                    discoverySource = edge.DiscoverySource,
                     reason = edge.Reason,
                     strength = edge.Strength,
                     weakness = edge.Weakness

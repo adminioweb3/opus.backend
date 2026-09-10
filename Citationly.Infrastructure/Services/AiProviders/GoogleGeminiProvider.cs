@@ -90,6 +90,7 @@ public sealed class GoogleGeminiProvider : IAiProvider
                 .GetProperty("parts")[0]
                 .GetProperty("text")
                 .GetString() ?? string.Empty;
+            var citations = ExtractGroundingUrls(doc.RootElement);
 
             int? promptTokens = null, completionTokens = null;
             decimal? cost = null;
@@ -104,7 +105,34 @@ public sealed class GoogleGeminiProvider : IAiProvider
             }
 
             await _aiUsageLimiter.RecordEstimatedCostAsync(_aiContext.OrganizationId, cost, "provider:google", ct);
-            return new AiProviderResult(content, _model, promptTokens, completionTokens, cost, WasSearchGrounded: _enableSearchGrounding);
+            return new AiProviderResult(content, _model, promptTokens, completionTokens, cost, WasSearchGrounded: _enableSearchGrounding, Citations: citations);
         }, cancellationToken);
+    }
+
+    private static IReadOnlyList<string> ExtractGroundingUrls(JsonElement root)
+    {
+        if (!root.TryGetProperty("candidates", out var candidates)
+            || candidates.ValueKind != JsonValueKind.Array
+            || candidates.GetArrayLength() == 0
+            || !candidates[0].TryGetProperty("groundingMetadata", out var metadata)
+            || !metadata.TryGetProperty("groundingChunks", out var chunks)
+            || chunks.ValueKind != JsonValueKind.Array)
+            return Array.Empty<string>();
+
+        var urls = new List<string>();
+        foreach (var chunk in chunks.EnumerateArray())
+        {
+            if (!chunk.TryGetProperty("web", out var web)
+                || !web.TryGetProperty("uri", out var uriElement)
+                || uriElement.ValueKind != JsonValueKind.String)
+                continue;
+
+            var uri = uriElement.GetString();
+            if (!string.IsNullOrWhiteSpace(uri)
+                && !urls.Contains(uri, StringComparer.OrdinalIgnoreCase))
+                urls.Add(uri);
+        }
+
+        return urls;
     }
 }

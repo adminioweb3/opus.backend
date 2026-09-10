@@ -37,10 +37,12 @@ public static class DependencyInjection
         services.AddScoped<Citationly.Application.Features.PromptIntelligence.Services.IPromptExecutionService, Citationly.Application.Features.PromptIntelligence.Services.PromptExecutionService>();
         services.AddScoped<Citationly.Application.Features.PromptIntelligence.Services.ISentimentClassifierService, Citationly.Application.Features.PromptIntelligence.Services.SentimentClassifierService>();
         services.AddScoped<Citationly.Application.Features.PromptIntelligence.Services.ICitationExtractorService, Citationly.Application.Features.PromptIntelligence.Services.CitationExtractorService>();
+        services.AddScoped<Citationly.Application.Features.PromptIntelligence.Services.IEntityRecommendationClassifierService, Citationly.Application.Features.PromptIntelligence.Services.EntityRecommendationClassifierService>();
         services.AddScoped<Citationly.Application.Features.PromptIntelligence.Services.IQueryFanoutService, Citationly.Application.Features.PromptIntelligence.Services.QueryFanoutService>();
         services.AddScoped<Citationly.Application.Features.PromptIntelligence.Services.ITopicPromptGeneratorService, Citationly.Application.Features.PromptIntelligence.Services.TopicPromptGeneratorService>();
         services.AddScoped<Citationly.Application.Features.PromptIntelligence.Services.IPromptTopicSeedingService, Citationly.Application.Features.PromptIntelligence.Services.PromptTopicSeedingService>();
         services.AddScoped<Citationly.Application.Features.PromptIntelligence.Services.IPromptIntelligenceFirstRunService, Citationly.Application.Features.PromptIntelligence.Services.PromptIntelligenceFirstRunService>();
+        services.AddScoped<Citationly.Application.Features.Onboarding.IOnboardingDashboardBaselineService, Citationly.Application.Features.Onboarding.OnboardingDashboardBaselineService>();
 
         // GEO Dashboard
         services.AddScoped<Citationly.Application.Features.GeoDashboard.GeoDashboardAggregator>();

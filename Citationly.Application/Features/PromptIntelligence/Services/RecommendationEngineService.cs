@@ -70,11 +70,11 @@ public class RecommendationEngineService : IRecommendationEngineService
             });
         }
 
-        if (visibility.AveragePosition > 50)
+        if (visibility.AveragePosition > 3)
         {
             var rankingEvidence = strongestCompetitor == null
-                ? $"Average brand position was {visibility.AveragePosition}, which means the brand appeared late or inconsistently."
-                : $"Average brand position was {visibility.AveragePosition}; {strongestCompetitor.CompetitorName} currently has the strongest observed competitor visibility.";
+                ? $"Average recommendation rank was #{visibility.AveragePosition}, so the brand appeared below the leading choices."
+                : $"Average recommendation rank was #{visibility.AveragePosition}; {strongestCompetitor.CompetitorName} currently has the strongest observed competitor visibility.";
 
             recs.Add(new PromptRecommendation
             {

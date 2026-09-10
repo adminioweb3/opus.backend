@@ -57,6 +57,12 @@ public static class SelfHealingMigrations
         ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS PromptVersion VARCHAR(100) NOT NULL DEFAULT 'prompt-intelligence:v1';
         ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS IsError BOOLEAN NOT NULL DEFAULT FALSE;
         ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS ErrorMessage TEXT;
+        ALTER TABLE PromptMentions ADD COLUMN IF NOT EXISTS PromptResponseId UUID REFERENCES PromptResponses(Id) ON DELETE CASCADE;
+        ALTER TABLE PromptMentions ADD COLUMN IF NOT EXISTS IsRecommended BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE PromptMentions ADD COLUMN IF NOT EXISTS RecommendationPosition INT;
+        ALTER TABLE PromptCitations ADD COLUMN IF NOT EXISTS PromptResponseId UUID REFERENCES PromptResponses(Id) ON DELETE CASCADE;
+        CREATE INDEX IF NOT EXISTS idx_promptmentions_response ON PromptMentions (PromptResponseId);
+        CREATE INDEX IF NOT EXISTS idx_promptcitations_response ON PromptCitations (PromptResponseId);
 
         -- AiSearchPrompts enrichment columns - previously added via a per-call ALTER TABLE inside
         -- WebsiteRepository.InsertAiSearchPromptsAsync/UpdateAiSearchPromptsAsync (the same
@@ -122,6 +128,7 @@ public static class SelfHealingMigrations
         ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS EnrichedAt TIMESTAMPTZ;
         ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS CompetitorType VARCHAR(50) DEFAULT 'Direct';
         ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS Confidence INTEGER DEFAULT 0;
+        ALTER TABLE Competitors ADD COLUMN IF NOT EXISTS DiscoverySource VARCHAR(20) NOT NULL DEFAULT 'unknown';
 
         -- Immutable evidence enforcement (Phase 2 B2): once a raw AI response is stored, nothing
         -- may rewrite what was actually observed. The one legitimate post-hoc write is sentiment
@@ -783,6 +790,15 @@ public static class SelfHealingMigrations
         CREATE INDEX IF NOT EXISTS idx_websiteprofiles_org_created ON WebsiteProfiles (OrganizationId, CreatedAt DESC);
 
         ALTER TABLE CompetitorSnapshots ADD COLUMN IF NOT EXISTS WebsiteUrl VARCHAR(2048);
+        ALTER TABLE CompetitorSnapshots ADD COLUMN IF NOT EXISTS MentionCount INT NOT NULL DEFAULT 0;
+        ALTER TABLE CompetitorSnapshots ADD COLUMN IF NOT EXISTS RecommendationCount INT NOT NULL DEFAULT 0;
+        ALTER TABLE CompetitorSnapshots ADD COLUMN IF NOT EXISTS ResponseCount INT NOT NULL DEFAULT 0;
+        ALTER TABLE CompetitorSnapshots ADD COLUMN IF NOT EXISTS CitationCount INT NOT NULL DEFAULT 0;
+        ALTER TABLE CompetitorSnapshots ADD COLUMN IF NOT EXISTS AveragePosition INT NOT NULL DEFAULT 100;
+        ALTER TABLE CompetitorSnapshots ADD COLUMN IF NOT EXISTS MeasurementSource VARCHAR(50) NOT NULL DEFAULT 'legacy-estimated';
+        ALTER TABLE CompetitorSnapshots ADD COLUMN IF NOT EXISTS MethodologyVersion VARCHAR(50) NOT NULL DEFAULT 'legacy-v1';
+        ALTER TABLE CompetitorSnapshots ADD COLUMN IF NOT EXISTS ModelUsed VARCHAR(100);
+        ALTER TABLE CompetitorSnapshots ADD COLUMN IF NOT EXISTS DiscoverySource VARCHAR(20) NOT NULL DEFAULT 'unknown';
 
         -- Usage metering (Phase 1) - per-org, per-metric, per-period counters so AI-cost
         -- endpoints and recurring jobs can be capped by plan instead of running unbounded.
@@ -1108,6 +1124,7 @@ public static class SelfHealingMigrations
         ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS Sentiment VARCHAR(10);
         ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS SentimentQuote TEXT;
         CREATE INDEX IF NOT EXISTS idx_promptresponses_analysis_platform ON PromptResponses (PromptAnalysisId, Platform, CreatedAt DESC);
+        ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS SourceUrlsJson JSONB NOT NULL DEFAULT '[]'::jsonb;
 
         CREATE TABLE IF NOT EXISTS PromptMentions (
             Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1125,12 +1142,23 @@ public static class SelfHealingMigrations
             Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             PromptAnalysisId UUID REFERENCES PromptAnalysis(Id) ON DELETE CASCADE,
             OverallVisibilityScore INT NOT NULL DEFAULT 0,
+            VisibilityRank INT NOT NULL DEFAULT 0,
             MentionFrequency INT NOT NULL DEFAULT 0,
             AveragePosition INT NOT NULL DEFAULT 0,
             ShareOfVoice INT NOT NULL DEFAULT 0,
             CitationCount INT NOT NULL DEFAULT 0,
-            CompetitorCount INT NOT NULL DEFAULT 0
+            CitationShare INT NOT NULL DEFAULT 0,
+            CompetitorCount INT NOT NULL DEFAULT 0,
+            SampleCount INT NOT NULL DEFAULT 0,
+            MethodologyVersion VARCHAR(100) NOT NULL DEFAULT 'prompt-visibility:v4-mention-share'
         );
+        ALTER TABLE PromptVisibility ADD COLUMN IF NOT EXISTS VisibilityRank INT NOT NULL DEFAULT 0;
+        ALTER TABLE PromptVisibility ADD COLUMN IF NOT EXISTS CitationShare INT NOT NULL DEFAULT 0;
+        ALTER TABLE PromptVisibility ADD COLUMN IF NOT EXISTS SampleCount INT NOT NULL DEFAULT 0;
+        ALTER TABLE PromptVisibility ADD COLUMN IF NOT EXISTS MethodologyVersion VARCHAR(100);
+        UPDATE PromptVisibility SET MethodologyVersion = 'legacy-v2' WHERE MethodologyVersion IS NULL;
+        ALTER TABLE PromptVisibility ALTER COLUMN MethodologyVersion SET DEFAULT 'prompt-visibility:v4-mention-share';
+        ALTER TABLE PromptVisibility ALTER COLUMN MethodologyVersion SET NOT NULL;
 
         CREATE TABLE IF NOT EXISTS PromptRecommendations (
             Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1417,6 +1445,7 @@ public static class SelfHealingMigrations
             Role VARCHAR,
             IsNewUser BOOLEAN
         ) AS $$
+        #variable_conflict use_column
         DECLARE
             v_UserId UUID;
             v_OrganizationId UUID;

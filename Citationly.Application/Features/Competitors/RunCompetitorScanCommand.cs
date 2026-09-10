@@ -1,8 +1,8 @@
-using System.Text;
 using System.Text.Json;
-using MediatR;
 using Citationly.Application.Interfaces;
 using Citationly.Domain.Entities;
+using Citationly.Domain.Utils;
+using MediatR;
 
 namespace Citationly.Application.Features.Competitors;
 
@@ -11,28 +11,27 @@ public class RunCompetitorScanCommand : IRequest<RunCompetitorScanResult>
     public Guid OrganizationId { get; set; }
 }
 
-public record RunCompetitorScanResult(bool Success, string Message);
+public sealed record RunCompetitorScanResult(bool Success, string Message);
 
 public class RunCompetitorScanCommandHandler : IRequestHandler<RunCompetitorScanCommand, RunCompetitorScanResult>
 {
-    private static readonly string[] ModelKeys = { "ChatGPT", "Claude", "Gemini", "Perplexity", "Copilot", "Grok" };
-    private static readonly string[] Palette = { "#7C3AED", "#2563EB", "#14B8A6", "#D97706", "#DB2777" };
+    private const int EvidenceLookbackDays = 90;
 
     private readonly IAiVisibilityRepository _visibilityRepo;
     private readonly IWebsiteRepository _websiteRepository;
     private readonly ICompetitorSnapshotRepository _snapshotRepo;
-    private readonly IAiCompletionService _aiCompletionService;
+    private readonly IPromptIntelligenceRepository _promptIntelligenceRepository;
 
     public RunCompetitorScanCommandHandler(
         IAiVisibilityRepository visibilityRepo,
         IWebsiteRepository websiteRepository,
         ICompetitorSnapshotRepository snapshotRepo,
-        IAiCompletionService aiCompletionService)
+        IPromptIntelligenceRepository promptIntelligenceRepository)
     {
         _visibilityRepo = visibilityRepo;
         _websiteRepository = websiteRepository;
         _snapshotRepo = snapshotRepo;
-        _aiCompletionService = aiCompletionService;
+        _promptIntelligenceRepository = promptIntelligenceRepository;
     }
 
     public async Task<RunCompetitorScanResult> Handle(RunCompetitorScanCommand request, CancellationToken cancellationToken)
@@ -40,110 +39,188 @@ public class RunCompetitorScanCommandHandler : IRequestHandler<RunCompetitorScan
         await _snapshotRepo.EnsureTableCreatedAsync();
 
         var orgId = request.OrganizationId;
-
         var competitors = await _visibilityRepo.GetCompetitorsByOrgAsync(orgId);
         var profile = await _websiteRepository.GetLatestWebsiteProfileAsync(orgId);
         var executiveSummary = await _websiteRepository.GetExecutiveSummaryAsync(orgId);
-        var scans = (await _visibilityRepo.GetHistoricalScansByOrgAsync(orgId)).OrderBy(s => s.ScanDate).ToList();
-        var latestScan = scans.LastOrDefault();
 
-        if (competitors.Count == 0 && profile == null && executiveSummary == null && latestScan == null)
+        if (competitors.Count == 0 && profile == null)
         {
-            return new RunCompetitorScanResult(false, "No analyzed data found yet for this organization. Complete onboarding analysis first, then run a competitor scan.");
+            return new RunCompetitorScanResult(false, "No analyzed company or competitors were found. Complete onboarding first.");
         }
 
+        var since = DateTime.UtcNow.AddDays(-EvidenceLookbackDays);
+        var observations = (await _promptIntelligenceRepository
+            .GetCompetitorWatchObservationDataAsync(orgId, since))
+            .ToList();
+        var responseCount = observations.Select(row => row.ResponseId).Distinct().Count();
+
+        if (responseCount == 0)
+        {
+            return new RunCompetitorScanResult(
+                false,
+                "No completed OpenAI prompt responses were found. Run Prompt Intelligence before calculating Competitor Watch.");
+        }
+
+        var openAiPlatforms = observations
+            .Select(row => row.Platform)
+            .Where(platform => !string.IsNullOrWhiteSpace(platform))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var citations = (await _promptIntelligenceRepository.GetCitationSummaryDataAsync(orgId, since))
+            .Where(citation => openAiPlatforms.Contains(citation.Platform))
+            .ToList();
+
+        var inputs = new List<CompetitorEvidenceInput>
+        {
+            BuildInput(
+                competitorId: null,
+                isYou: true,
+                name: BusinessName(profile),
+                websiteUrl: profile?.WebsiteUrl,
+                observations,
+                citations)
+        };
+
+        inputs.AddRange(competitors.Select(competitor => BuildInput(
+            competitor.Id,
+            isYou: false,
+            competitor.Name,
+            competitor.WebsiteUrl,
+            observations,
+            citations)));
+
+        var scored = CompetitorEvidenceScorer.Score(inputs, responseCount);
         var previousScanDate = await _snapshotRepo.GetLatestScanDateAsync(orgId);
         var previousSnapshots = previousScanDate.HasValue
             ? await _snapshotRepo.GetSnapshotsByScanDateAsync(orgId, previousScanDate.Value)
             : new List<CompetitorSnapshot>();
-        var previousYou = previousSnapshots.FirstOrDefault(s => s.IsYou);
-        var previousByCompetitorId = previousSnapshots.Where(s => s.CompetitorId.HasValue).ToDictionary(s => s.CompetitorId!.Value);
+        var previousYou = previousSnapshots.FirstOrDefault(snapshot => snapshot.IsYou);
+        var previousByCompetitorId = previousSnapshots
+            .Where(snapshot => snapshot.CompetitorId.HasValue)
+            .ToDictionary(snapshot => snapshot.CompetitorId!.Value);
 
-        var (systemPrompt, userPrompt) = BuildPrompt(profile, executiveSummary, latestScan, competitors, previousYou, previousByCompetitorId);
-        var completion = await _aiCompletionService.CompleteAsync(
-            orgId,
-            "competitor.scan",
-            userPrompt,
-            systemPrompt,
-            requireJson: true,
-            preferredProviderKey: "openai",
-            cancellationToken);
-        if (!completion.Success)
-        {
-            return new RunCompetitorScanResult(false, completion.ErrorMessage ?? "Competitor scan could not be completed because the AI provider returned invalid JSON.");
-        }
-
-        var judged = ParseJudgedScores(completion.Content, competitors.Count, previousYou, previousByCompetitorId, competitors);
-
-        // "You" uses the real, already-AI-analyzed VisibilityScore when available — the model's
-        // own judged score only fills the gap when no GEO scan has run yet.
-        var youScore = latestScan?.VisibilityScore ?? judged.You.Score;
-
-        var entities = new List<(string Name, Guid? CompetitorId, bool IsYou, int Score, string Threat, Dictionary<string, int> ModelBreakdown, string? Tagline, string? WebsiteUrl)>
-        {
-            (BusinessName(profile), null, true, youScore, "low", judged.You.ModelBreakdown, Tagline(executiveSummary), profile?.WebsiteUrl)
-        };
-
-        for (int i = 0; i < competitors.Count; i++)
-        {
-            var comp = competitors[i];
-            var j = judged.Competitors.Count > i ? judged.Competitors[i] : null;
-            var score = j?.Score ?? previousByCompetitorId.GetValueOrDefault(comp.Id)?.Score ?? 50;
-            var threat = j?.ThreatLevel ?? "low";
-            var breakdown = j?.ModelBreakdown ?? ModelKeys.ToDictionary(k => k, _ => score);
-            entities.Add((comp.Name, comp.Id, false, score, threat, breakdown, CompetitorTagline(comp), comp.WebsiteUrl));
-        }
-
-        var ranked = entities.OrderByDescending(e => e.Score).ToList();
-        var totalWeight = ranked.Sum(e => Math.Max(1, e.Score));
-
+        var userScore = scored.First(score => score.IsYou);
+        var modelUsed = ModelLabel(observations);
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         await _snapshotRepo.DeleteByScanDateAsync(orgId, today);
 
-        var sovAssigned = new List<int>();
-        for (int i = 0; i < ranked.Count; i++)
+        foreach (var current in scored)
         {
-            var e = ranked[i];
-            var sov = (int)Math.Round((double)Math.Max(1, e.Score) / totalWeight * 100);
-            sovAssigned.Add(sov);
-        }
-        // Rounding drift correction, same convention as RunScanCommand.BuildShareOfVoice.
-        var drift = 100 - sovAssigned.Sum();
-        if (drift != 0 && sovAssigned.Count > 0)
-        {
-            var maxIdx = sovAssigned.IndexOf(sovAssigned.Max());
-            sovAssigned[maxIdx] += drift;
-        }
+            var previous = current.IsYou
+                ? previousYou
+                : current.CompetitorId.HasValue
+                    ? previousByCompetitorId.GetValueOrDefault(current.CompetitorId.Value)
+                    : null;
 
-        for (int i = 0; i < ranked.Count; i++)
-        {
-            var e = ranked[i];
-            var prev = e.IsYou ? previousYou : (e.CompetitorId.HasValue ? previousByCompetitorId.GetValueOrDefault(e.CompetitorId.Value) : null);
-            var sov = sovAssigned[i];
-            var sovChg = prev != null ? sov - prev.ShareOfVoice : 0;
-            var visChg = prev != null ? e.Score - prev.Visibility : 0;
+            var competitor = current.CompetitorId.HasValue
+                ? competitors.FirstOrDefault(item => item.Id == current.CompetitorId.Value)
+                : null;
 
             await _snapshotRepo.InsertSnapshotAsync(new CompetitorSnapshot
             {
                 OrganizationId = orgId,
-                CompetitorId = e.CompetitorId,
-                IsYou = e.IsYou,
+                CompetitorId = current.CompetitorId,
+                IsYou = current.IsYou,
                 ScanDate = today,
-                Name = e.Name,
-                Score = e.Score,
-                Rank = i + 1,
-                ShareOfVoice = sov,
-                ShareOfVoiceChange = sovChg,
-                Visibility = e.Score,
-                VisibilityChange = visChg,
-                Threat = e.Threat,
-                ModelsJson = JsonSerializer.Serialize(e.ModelBreakdown),
-                Tagline = e.Tagline,
-                WebsiteUrl = e.WebsiteUrl
+                Name = current.Name,
+                Score = current.Score,
+                // Do not award #1 merely because the brand is first in an all-zero tie.
+                Rank = HasEvidence(current)
+                    ? 1 + scored.Count(other => HasEvidence(other) && other.Score > current.Score)
+                    : 0,
+                ShareOfVoice = current.ShareOfVoice,
+                ShareOfVoiceChange = previous == null ? 0 : current.ShareOfVoice - previous.ShareOfVoice,
+                Visibility = current.Score,
+                VisibilityChange = previous == null ? 0 : current.Score - previous.Visibility,
+                Threat = current.IsYou ? "low" : ThreatLevel(current, userScore),
+                ModelsJson = JsonSerializer.Serialize(new Dictionary<string, int> { ["OpenAI"] = current.Score }),
+                Tagline = current.IsYou ? Tagline(executiveSummary) : CompetitorTagline(competitor),
+                WebsiteUrl = current.WebsiteUrl,
+                MentionCount = current.MentionCount,
+                RecommendationCount = current.RecommendationCount,
+                ResponseCount = current.ResponseCount,
+                CitationCount = current.CitationCount,
+                AveragePosition = current.AveragePosition,
+                MeasurementSource = "openai-observed",
+                MethodologyVersion = CompetitorEvidenceScorer.MethodologyVersion,
+                ModelUsed = modelUsed,
+                DiscoverySource = current.IsYou ? "self" : competitor?.DiscoverySource ?? "unknown"
             });
         }
 
-        return new RunCompetitorScanResult(true, "Competitor scan complete.");
+        return new RunCompetitorScanResult(
+            true,
+            $"Competitor Watch calculated from {responseCount} measured OpenAI responses.");
+    }
+
+    private static CompetitorEvidenceInput BuildInput(
+        Guid? competitorId,
+        bool isYou,
+        string name,
+        string? websiteUrl,
+        IReadOnlyList<CompetitorWatchObservationRow> observations,
+        IReadOnlyList<PromptCitationSummaryRow> citations)
+    {
+        var positions = observations
+            .Where(row => isYou
+                ? row.IsBrand == true
+                : row.IsBrand == false && string.Equals(row.EntityName?.Trim(), name.Trim(), StringComparison.OrdinalIgnoreCase))
+            .Where(row => row.Position.HasValue)
+            .GroupBy(row => row.ResponseId)
+            .Select(group => group.Min(row => row.Position!.Value))
+            .ToList();
+
+        var recommendationPositions = observations
+            .Where(row => isYou
+                ? row.IsBrand == true
+                : row.IsBrand == false && string.Equals(row.EntityName?.Trim(), name.Trim(), StringComparison.OrdinalIgnoreCase))
+            .Where(row => row.IsRecommended)
+            .GroupBy(row => row.ResponseId)
+            .Select(group => group.Min(row => row.RecommendationPosition ?? 100))
+            .ToList();
+
+        var domain = DomainNormalizer.Normalize(websiteUrl ?? string.Empty);
+        var citationCount = string.IsNullOrWhiteSpace(domain)
+            ? 0
+            : citations.Count(citation => DomainMatches(DomainNormalizer.Normalize(citation.Domain), domain));
+
+        return new CompetitorEvidenceInput(
+            competitorId,
+            isYou,
+            name,
+            websiteUrl,
+            positions,
+            recommendationPositions,
+            citationCount);
+    }
+
+    private static bool DomainMatches(string observedDomain, string trackedDomain) =>
+        observedDomain.Equals(trackedDomain, StringComparison.OrdinalIgnoreCase) ||
+        observedDomain.EndsWith($".{trackedDomain}", StringComparison.OrdinalIgnoreCase);
+
+    private static bool HasEvidence(CompetitorEvidenceScore score) =>
+        score.MentionCount > 0 || score.RecommendationCount > 0 || score.CitationCount > 0;
+
+    private static string ThreatLevel(CompetitorEvidenceScore competitor, CompetitorEvidenceScore user)
+    {
+        if (competitor.Score >= user.Score + 15 || competitor.ShareOfVoice >= user.ShareOfVoice + 10) return "high";
+        if (competitor.Score >= user.Score || competitor.ShareOfVoice > user.ShareOfVoice) return "med";
+        return "low";
+    }
+
+    private static string ModelLabel(IEnumerable<CompetitorWatchObservationRow> observations)
+    {
+        var models = observations
+            .Select(row => row.ModelUsed)
+            .Where(model => !string.IsNullOrWhiteSpace(model))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return models.Count switch
+        {
+            0 => "OpenAI",
+            1 => models[0]!,
+            _ => "Multiple OpenAI models"
+        };
     }
 
     private static string BusinessName(WebsiteProfile? profile) =>
@@ -156,193 +233,10 @@ public class RunCompetitorScanCommandHandler : IRequestHandler<RunCompetitorScan
         return overview.Length > 90 ? overview[..90] : overview;
     }
 
-    private static string CompetitorTagline(Competitor comp)
+    private static string CompetitorTagline(Competitor? competitor)
     {
-        if (!string.IsNullOrWhiteSpace(comp.Description))
-            return comp.Description.Length > 90 ? comp.Description[..90] : comp.Description;
-        return string.IsNullOrWhiteSpace(comp.Industry) ? "Competitor" : comp.Industry;
-    }
-
-    private static (string SystemPrompt, string UserPrompt) BuildPrompt(
-        WebsiteProfile? profile,
-        ExecutiveSummaryData? executiveSummary,
-        HistoricalScan? latestScan,
-        List<Competitor> competitors,
-        CompetitorSnapshot? previousYou,
-        Dictionary<Guid, CompetitorSnapshot> previousByCompetitorId)
-    {
-        const string systemPrompt =
-            "You are a competitive intelligence analyst. Based ONLY on the real business signals provided, " +
-            "respond with ONLY a JSON object with EXACTLY these keys: " +
-            "\"you\": an object {\"score\": integer 0-100, \"modelBreakdown\": {\"ChatGPT\":int,\"Claude\":int,\"Gemini\":int,\"Perplexity\":int,\"Copilot\":int,\"Grok\":int} each 0-100}, " +
-            "\"competitors\": an array in the EXACT SAME ORDER as the competitors listed below, one object per competitor: " +
-            "{\"score\": integer 0-100, \"threatLevel\": \"low\"|\"med\"|\"high\", \"modelBreakdown\": {same 6 keys as above, each 0-100}}. " +
-            "Score reflects overall competitive strength in AI-generated answers (citations, brand authority, visibility). " +
-            "If previous scores are given for an entity, keep its new score realistically close to it (small, justified movement), not wildly different.";
-
-        var sb = new StringBuilder();
-        if (profile != null)
-        {
-            sb.AppendLine($"YOUR BUSINESS: {profile.BusinessName} ({profile.WebsiteUrl})");
-            var rawProfile = profile.RawProfileJson;
-            if (rawProfile.Length > 2000) rawProfile = rawProfile[..2000];
-            sb.AppendLine($"YOUR WEBSITE PROFILE: {rawProfile}");
-        }
-        if (executiveSummary != null)
-        {
-            sb.AppendLine($"YOUR EXECUTIVE SUMMARY: {executiveSummary.BusinessOverview}");
-            sb.AppendLine($"Your current AI visibility: {executiveSummary.CurrentAIVisibility}");
-            sb.AppendLine($"Your competitor position: {executiveSummary.CompetitorPosition}");
-        }
-        if (latestScan != null)
-        {
-            sb.AppendLine($"YOUR REAL LATEST SCAN SCORES: visibility {latestScan.VisibilityScore}, citation {latestScan.CitationScore}, sentiment {latestScan.SentimentScore}, competitor {latestScan.CompetitorScore}, aeoReadiness {latestScan.AeoReadiness}, geoReadiness {latestScan.GeoReadiness}.");
-        }
-        if (previousYou != null)
-        {
-            sb.AppendLine($"YOUR PREVIOUS SCAN SCORE: {previousYou.Score}.");
-        }
-
-        sb.AppendLine();
-        sb.AppendLine($"COMPETITORS ({competitors.Count}), in this exact order:");
-        for (int i = 0; i < competitors.Count; i++)
-        {
-            var c = competitors[i];
-            var line = new StringBuilder($"{i + 1}. {c.Name} — Industry: {c.Industry}");
-            if (c.Authority > 0) line.Append($", Authority: {c.Authority}");
-            if (!string.IsNullOrWhiteSpace(c.Description))
-            {
-                var desc = c.Description.Length > 200 ? c.Description[..200] : c.Description;
-                line.Append($", Description: {desc}");
-            }
-            if (!string.IsNullOrWhiteSpace(c.EnrichedJson))
-            {
-                var enriched = c.EnrichedJson.Length > 300 ? c.EnrichedJson[..300] : c.EnrichedJson;
-                line.Append($", Enriched data: {enriched}");
-            }
-            if (previousByCompetitorId.TryGetValue(c.Id, out var prevSnap))
-            {
-                line.Append($", Previous score: {prevSnap.Score}");
-            }
-            sb.AppendLine(line.ToString());
-        }
-
-        return (systemPrompt, sb.ToString());
-    }
-
-    private record JudgedYou(int Score, Dictionary<string, int> ModelBreakdown);
-    private record JudgedCompetitor(int Score, string ThreatLevel, Dictionary<string, int> ModelBreakdown);
-    private record JudgedResult(JudgedYou You, List<JudgedCompetitor> Competitors);
-
-    /// <summary>
-    /// Each rescan is an independent, non-deterministic AI judgment call — the prompt asks it to
-    /// "keep scores realistically close to previous," but that's a request, not a guarantee, and
-    /// nothing enforced it: a valid model response was used as-is regardless of how far it moved
-    /// from last time. The result was a leaderboard that could reshuffle noticeably on every click
-    /// of Rescan even though the underlying competitor set never changed. Cap how far any single
-    /// rescan can move a score from its last recorded value — real movement still accumulates
-    /// across repeated scans, it just can't happen in one large jump.
-    /// </summary>
-    private const int MaxScoreSwingPerScan = 8;
-
-    private static int StabilizeScore(int rawScore, int? previousScore)
-    {
-        var clamped = Math.Clamp(rawScore, 0, 100);
-        return previousScore.HasValue
-            ? Math.Clamp(clamped, previousScore.Value - MaxScoreSwingPerScan, previousScore.Value + MaxScoreSwingPerScan)
-            : clamped;
-    }
-
-    private static JudgedResult ParseJudgedScores(
-        string raw,
-        int competitorCount,
-        CompetitorSnapshot? previousYou,
-        Dictionary<Guid, CompetitorSnapshot> previousByCompetitorId,
-        List<Competitor> competitors)
-    {
-        Dictionary<string, int> DefaultBreakdown(int fallback) => ModelKeys.ToDictionary(k => k, _ => fallback);
-
-        try
-        {
-            using var doc = JsonDocument.Parse(raw);
-            var root = doc.RootElement;
-
-            Dictionary<string, int> ParseBreakdown(JsonElement el, int fallback)
-            {
-                var result = new Dictionary<string, int>();
-                foreach (var key in ModelKeys)
-                {
-                    result[key] = el.ValueKind == JsonValueKind.Object && el.TryGetProperty(key, out var v) && v.TryGetInt32(out var iv)
-                        ? Math.Clamp(iv, 0, 100)
-                        : fallback;
-                }
-                return result;
-            }
-
-            var youFallback = previousYou?.Score ?? 50;
-            JudgedYou you;
-            if (root.TryGetProperty("you", out var youEl) && youEl.ValueKind == JsonValueKind.Object)
-            {
-                var score = youEl.TryGetProperty("score", out var s) && s.TryGetInt32(out var sv)
-                    ? StabilizeScore(sv, previousYou?.Score)
-                    : youFallback;
-                var breakdown = youEl.TryGetProperty("modelBreakdown", out var mb) ? ParseBreakdown(mb, score) : DefaultBreakdown(score);
-                you = new JudgedYou(score, breakdown);
-            }
-            else
-            {
-                you = new JudgedYou(youFallback, DefaultBreakdown(youFallback));
-            }
-
-            var comps = new List<JudgedCompetitor>();
-            if (root.TryGetProperty("competitors", out var compsEl) && compsEl.ValueKind == JsonValueKind.Array)
-            {
-                var arr = compsEl.EnumerateArray().ToList();
-                for (int i = 0; i < competitorCount; i++)
-                {
-                    var prevScore = i < competitors.Count && previousByCompetitorId.TryGetValue(competitors[i].Id, out var prevSnapshot)
-                        ? prevSnapshot.Score
-                        : (int?)null;
-                    var fallback = prevScore ?? 50;
-
-                    if (i < arr.Count && arr[i].ValueKind == JsonValueKind.Object)
-                    {
-                        var el = arr[i];
-                        var score = el.TryGetProperty("score", out var s) && s.TryGetInt32(out var sv)
-                            ? StabilizeScore(sv, prevScore)
-                            : fallback;
-                        var threat = el.TryGetProperty("threatLevel", out var t) ? (t.GetString() ?? "low") : "low";
-                        if (threat != "low" && threat != "med" && threat != "high") threat = "low";
-                        var breakdown = el.TryGetProperty("modelBreakdown", out var mb) ? ParseBreakdown(mb, score) : DefaultBreakdown(score);
-                        comps.Add(new JudgedCompetitor(score, threat, breakdown));
-                    }
-                    else
-                    {
-                        comps.Add(new JudgedCompetitor(fallback, "low", DefaultBreakdown(fallback)));
-                    }
-                }
-            }
-            else
-            {
-                for (int i = 0; i < competitorCount; i++)
-                {
-                    var fallback = i < competitors.Count && previousByCompetitorId.TryGetValue(competitors[i].Id, out var prev) ? prev.Score : 50;
-                    comps.Add(new JudgedCompetitor(fallback, "low", DefaultBreakdown(fallback)));
-                }
-            }
-
-            return new JudgedResult(you, comps);
-        }
-        catch (Exception)
-        {
-            var youFallback = previousYou?.Score ?? 50;
-            var comps = new List<JudgedCompetitor>();
-            for (int i = 0; i < competitorCount; i++)
-            {
-                var fallback = i < competitors.Count && previousByCompetitorId.TryGetValue(competitors[i].Id, out var prev) ? prev.Score : 50;
-                comps.Add(new JudgedCompetitor(fallback, "low", DefaultBreakdown(fallback)));
-            }
-            return new JudgedResult(new JudgedYou(youFallback, DefaultBreakdown(youFallback)), comps);
-        }
+        if (!string.IsNullOrWhiteSpace(competitor?.Description))
+            return competitor.Description.Length > 90 ? competitor.Description[..90] : competitor.Description;
+        return string.IsNullOrWhiteSpace(competitor?.Industry) ? "Competitor" : competitor.Industry;
     }
 }

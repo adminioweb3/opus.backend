@@ -297,6 +297,13 @@ internal static class DatabaseMigrations
             ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS VisibilityWeight NUMERIC(5,2) NOT NULL DEFAULT 0;
             ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS ScoringReason TEXT;
             ALTER TABLE AiSearchPrompts ADD COLUMN IF NOT EXISTS ClassificationConfidence NUMERIC(5,2) NOT NULL DEFAULT 0;
+            """),
+        new(
+            "202609100001_auth_sync_userid_ambiguity_repair",
+            "Resolve UserId output-column ambiguity in the multi-provider auth sync function",
+            """
+            ALTER FUNCTION sp_CreateOrGetUserV2(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR)
+                SET plpgsql.variable_conflict TO 'use_column';
             """)
     ];
 }

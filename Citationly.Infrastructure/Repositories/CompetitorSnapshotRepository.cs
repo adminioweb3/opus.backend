@@ -23,9 +23,9 @@ public class CompetitorSnapshotRepository : ICompetitorSnapshotRepository
         using var connection = _dbConnectionFactory.CreateConnection();
         return await connection.ExecuteScalarAsync<Guid>(
             @"INSERT INTO CompetitorSnapshots
-                (OrganizationId, CompetitorId, IsYou, ScanDate, Name, Score, Rank, ShareOfVoice, ShareOfVoiceChange, Visibility, VisibilityChange, Threat, ModelsJson, Tagline, WebsiteUrl)
+                (OrganizationId, CompetitorId, IsYou, ScanDate, Name, Score, Rank, ShareOfVoice, ShareOfVoiceChange, Visibility, VisibilityChange, Threat, ModelsJson, Tagline, WebsiteUrl, MentionCount, RecommendationCount, ResponseCount, CitationCount, AveragePosition, MeasurementSource, MethodologyVersion, ModelUsed, DiscoverySource)
               VALUES
-                (@OrganizationId, @CompetitorId, @IsYou, @ScanDate, @Name, @Score, @Rank, @ShareOfVoice, @ShareOfVoiceChange, @Visibility, @VisibilityChange, @Threat, @ModelsJson::jsonb, @Tagline, @WebsiteUrl)
+                (@OrganizationId, @CompetitorId, @IsYou, @ScanDate, @Name, @Score, @Rank, @ShareOfVoice, @ShareOfVoiceChange, @Visibility, @VisibilityChange, @Threat, @ModelsJson::jsonb, @Tagline, @WebsiteUrl, @MentionCount, @RecommendationCount, @ResponseCount, @CitationCount, @AveragePosition, @MeasurementSource, @MethodologyVersion, @ModelUsed, @DiscoverySource)
               RETURNING Id",
             snapshot);
     }

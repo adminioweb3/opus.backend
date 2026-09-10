@@ -357,6 +357,7 @@ public class Competitor
     // Competitor classification
     public string CompetitorType { get; set; } = "Direct";
     public int Confidence { get; set; }
+    public string DiscoverySource { get; set; } = "unknown";
 }
 
 /// <summary>
@@ -399,7 +400,7 @@ public class CompanyCompetitor
     public DateTime UpdatedAt { get; set; }
 
     /// <summary>"observed" (co-occurs with the brand in real AI responses - PromptMentions),
-    /// "graph" (real cosine-similarity match), or "generated" (LLM-suggested, unverified).</summary>
+    /// "graph" (real cosine-similarity match), or "generated" (website-verified but not yet observed).</summary>
     public string DiscoverySource { get; set; } = "graph";
 }
 
@@ -421,6 +422,15 @@ public class CompetitorSnapshot
     public string ModelsJson { get; set; } = "{}";
     public string? Tagline { get; set; }
     public string? WebsiteUrl { get; set; }
+    public int MentionCount { get; set; }
+    public int RecommendationCount { get; set; }
+    public int ResponseCount { get; set; }
+    public int CitationCount { get; set; }
+    public int AveragePosition { get; set; } = 100;
+    public string MeasurementSource { get; set; } = "legacy-estimated";
+    public string MethodologyVersion { get; set; } = "legacy-v1";
+    public string? ModelUsed { get; set; }
+    public string DiscoverySource { get; set; } = "unknown";
     public DateTime CreatedAt { get; set; }
 }
 

@@ -109,7 +109,16 @@ public partial class ProductTruthRegressionTests
             Path.Combine(publicRoot, "integrations", "content.tsx"),
             Path.Combine(publicRoot, "integrations", "page.tsx"),
             Path.Combine(publicRoot, "resources", "content.tsx"),
-            Path.Combine(publicRoot, "docs", "content.tsx")
+            Path.Combine(publicRoot, "docs", "content.tsx"),
+            Path.Combine(publicRoot, "pricing", "content.tsx"),
+            Path.Combine(publicRoot, "features", "content.tsx"),
+            Path.Combine(publicRoot, "features", "ai-visibility-dashboard", "content.tsx"),
+            Path.Combine(publicRoot, "features", "brand-monitoring", "content.tsx"),
+            Path.Combine(publicRoot, "features", "citation-tracking", "content.tsx"),
+            Path.Combine(repoRoot, "frontend", "src", "components", "features", "landing", "Pricing.tsx"),
+            Path.Combine(repoRoot, "frontend", "src", "components", "features", "landing", "ProductShowcase.tsx"),
+            Path.Combine(repoRoot, "frontend", "src", "components", "layouts", "navbar", "navData.ts"),
+            Path.Combine(repoRoot, "frontend", "src", "app", "(dashboard)", "dashboard", "visibility-radar", "page.tsx")
         };
 
         var forbiddenClaims = new[]
@@ -119,6 +128,15 @@ public partial class ProductTruthRegressionTests
             "Visibility Radar runs across 6 engines",
             "query six major engines",
             "continuously monitors six major AI engines",
+            "all six engines",
+            "checks six AI platforms",
+            "3 AI platforms",
+            "All 9 AI platforms",
+            "All 9 platforms",
+            "every AI platform",
+            "real-time visibility across ChatGPT",
+            "real-time score",
+            "Real-time monitoring",
             "starts working immediately",
             "Zapier alone opens the door"
         };

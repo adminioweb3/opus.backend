@@ -31,6 +31,7 @@ public interface IPromptIntelligenceRepository
     Task<IEnumerable<PromptExecutionHistoryRow>> GetExecutionHistoryAsync(Guid questionId);
     Task<string?> GetOrganizationPlanTypeAsync(Guid organizationId);
     Task<IEnumerable<CompetitorMentionSummaryRow>> GetCompetitorMentionSummaryDataAsync(Guid organizationId, DateTime since);
+    Task<IEnumerable<CompetitorWatchObservationRow>> GetCompetitorWatchObservationDataAsync(Guid organizationId, DateTime since);
     Task<IEnumerable<FanoutOverviewRow>> GetFanoutOverviewDataAsync(Guid organizationId);
 
     // Results (Insert)
@@ -46,7 +47,7 @@ public interface IPromptIntelligenceRepository
     Task<IEnumerable<RecommendationImpactHistoryRow>> GetRecommendationImpactHistoryAsync(Guid organizationId, string category, int minSamples);
     Task InsertCompetitorComparisonsAsync(IEnumerable<CompetitorComparison> comparisons);
     Task InsertCitationsAsync(IEnumerable<PromptCitation> citations);
-    Task UpdateResponseSentimentAsync(Guid analysisId, string platform, string? sentiment, string? quote);
+    Task UpdateResponseSentimentAsync(Guid responseId, string? sentiment, string? quote);
 
     // Fanouts
     Task<IEnumerable<PromptFanout>> GetFanoutsByQuestionAsync(Guid questionId);
@@ -81,6 +82,7 @@ public class PromptVisibilitySummaryRow
     public int ShareOfVoice { get; set; }
     public int AveragePosition { get; set; }
     public int CitationCount { get; set; }
+    public int CitationShare { get; set; }
 }
 
 public class CompetitorComparisonSummaryRow
@@ -136,6 +138,21 @@ public class CompetitorMentionSummaryRow
     public string Platform { get; set; } = string.Empty;
     public int Position { get; set; }
     public DateTime RunAt { get; set; }
+}
+
+public class CompetitorWatchObservationRow
+{
+    public Guid ResponseId { get; set; }
+    public Guid AnalysisId { get; set; }
+    public string ProviderKey { get; set; } = string.Empty;
+    public string Platform { get; set; } = string.Empty;
+    public string? ModelUsed { get; set; }
+    public DateTime RunAt { get; set; }
+    public string? EntityName { get; set; }
+    public bool? IsBrand { get; set; }
+    public int? Position { get; set; }
+    public bool IsRecommended { get; set; }
+    public int? RecommendationPosition { get; set; }
 }
 
 public class FanoutOverviewRow

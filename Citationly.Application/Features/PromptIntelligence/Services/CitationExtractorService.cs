@@ -7,10 +7,12 @@ public interface ICitationExtractorService
 {
     IEnumerable<PromptCitation> ExtractCitations(
         Guid analysisId,
+        Guid responseId,
         string platform,
         string responseText,
         string? ownDomain,
-        IReadOnlyCollection<string>? competitorDomains = null);
+        IReadOnlyCollection<string>? competitorDomains = null,
+        IReadOnlyCollection<string>? providerCitationUrls = null);
 }
 
 /// <summary>
@@ -80,19 +82,25 @@ public class CitationExtractorService : ICitationExtractorService
 
     public IEnumerable<PromptCitation> ExtractCitations(
         Guid analysisId,
+        Guid responseId,
         string platform,
         string responseText,
         string? ownDomain,
-        IReadOnlyCollection<string>? competitorDomains = null)
+        IReadOnlyCollection<string>? competitorDomains = null,
+        IReadOnlyCollection<string>? providerCitationUrls = null)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var normalizedCompetitorDomains = new HashSet<string>(
             (competitorDomains ?? Array.Empty<string>()).Select(NormalizeHost).Where(h => !string.IsNullOrEmpty(h)),
             StringComparer.OrdinalIgnoreCase);
 
-        foreach (Match match in UrlRegex.Matches(responseText))
+        var urls = UrlRegex.Matches(responseText)
+            .Select(match => match.Value)
+            .Concat(providerCitationUrls ?? Array.Empty<string>());
+
+        foreach (var candidateUrl in urls)
         {
-            var rawUrl = match.Value.TrimEnd('.', ',', ')', ']');
+            var rawUrl = candidateUrl.TrimEnd('.', ',', ')', ']');
             if (!Uri.TryCreate(rawUrl, UriKind.Absolute, out var uri)) continue;
 
             var host = uri.Host.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? uri.Host[4..] : uri.Host;
@@ -101,6 +109,7 @@ public class CitationExtractorService : ICitationExtractorService
             yield return new PromptCitation
             {
                 PromptAnalysisId = analysisId,
+                PromptResponseId = responseId,
                 Platform = platform,
                 Domain = host,
                 Url = rawUrl,

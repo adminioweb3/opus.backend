@@ -1,5 +1,6 @@
 using Citationly.Application.Interfaces;
 using Citationly.Domain.Entities;
+using System.Text.Json;
 
 namespace Citationly.Application.Features.PromptIntelligence.Services;
 
@@ -18,6 +19,7 @@ public interface ILLMRunnerService
 /// </summary>
 public class LLMRunnerService : ILLMRunnerService
 {
+    public const int SamplesPerProvider = 3;
     private static readonly TimeSpan CacheFreshness = TimeSpan.FromHours(6);
     private readonly IAiProviderRegistry _providerRegistry;
     private readonly IAiCompletionCache _completionCache;
@@ -38,6 +40,7 @@ public class LLMRunnerService : ILLMRunnerService
             {
                 new PromptResponse
                 {
+                    Id = Guid.NewGuid(),
                     PromptAnalysisId = analysisId,
                     Platform = "none",
                     ResponseText = "[Error] No AI providers are configured. Set at least one of OpenAI/Anthropic/Google/Perplexity's API key.",
@@ -50,7 +53,16 @@ public class LLMRunnerService : ILLMRunnerService
             };
         }
 
-        var tasks = providers.Select(provider => ExecuteProviderAsync(organizationId, analysisId, provider, promptText, ct, personaSystemPrompt));
+        var tasks = providers.SelectMany(provider =>
+            Enumerable.Range(1, SamplesPerProvider)
+                .Select(sampleIndex => ExecuteProviderAsync(
+                    organizationId,
+                    analysisId,
+                    provider,
+                    promptText,
+                    sampleIndex,
+                    ct,
+                    personaSystemPrompt)));
         return await Task.WhenAll(tasks);
     }
 
@@ -59,6 +71,7 @@ public class LLMRunnerService : ILLMRunnerService
         Guid analysisId,
         IAiProvider provider,
         string promptText,
+        int sampleIndex,
         CancellationToken ct,
         string? personaSystemPrompt)
     {
@@ -70,7 +83,7 @@ public class LLMRunnerService : ILLMRunnerService
         {
             var result = await _completionCache.TryGetAsync(
                 organizationId,
-                operationName: "prompt-intelligence.analysis",
+                operationName: $"prompt-intelligence.analysis.sample-{sampleIndex}",
                 provider.ProviderKey,
                 systemPrompt,
                 promptText,
@@ -82,7 +95,7 @@ public class LLMRunnerService : ILLMRunnerService
                 result = await provider.CompleteAsync(systemPrompt, promptText, ct);
                 await _completionCache.StoreAsync(
                     organizationId,
-                    operationName: "prompt-intelligence.analysis",
+                    operationName: $"prompt-intelligence.analysis.sample-{sampleIndex}",
                     provider.ProviderKey,
                     systemPrompt,
                     promptText,
@@ -93,6 +106,7 @@ public class LLMRunnerService : ILLMRunnerService
 
             return new PromptResponse
             {
+                Id = Guid.NewGuid(),
                 PromptAnalysisId = analysisId,
                 Platform = provider.PlatformName,
                 ResponseText = result.Content,
@@ -104,7 +118,8 @@ public class LLMRunnerService : ILLMRunnerService
                 CompletionTokens = result.CompletionTokens,
                 CostUsd = result.CostUsd,
                 WasSearchGrounded = result.WasSearchGrounded,
-                PromptVersion = "prompt-intelligence:v1",
+                SourceUrlsJson = JsonSerializer.Serialize(result.Citations ?? Array.Empty<string>()),
+                PromptVersion = "prompt-intelligence:v2-sampled",
                 IsError = false,
             };
         }
@@ -112,13 +127,14 @@ public class LLMRunnerService : ILLMRunnerService
         {
             return new PromptResponse
             {
+                Id = Guid.NewGuid(),
                 PromptAnalysisId = analysisId,
                 Platform = provider.PlatformName,
                 ResponseText = $"[Error] Failed to fetch response: {ex.Message}",
                 ResponseLength = 0,
                 CreatedAt = DateTime.UtcNow,
                 ProviderKey = provider.ProviderKey,
-                PromptVersion = "prompt-intelligence:v1",
+                PromptVersion = "prompt-intelligence:v2-sampled",
                 IsError = true,
                 ErrorMessage = ex.Message
             };

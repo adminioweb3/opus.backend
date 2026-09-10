@@ -156,8 +156,8 @@ public class WebsiteRepository : IWebsiteRepository
             foreach (var comp in competitors)
             {
                 await connection.ExecuteAsync(@"
-                    INSERT INTO Competitors (OrganizationId, Name, WebsiteUrl, Industry, Description, Category, Logo, Country, Authority, Popularity, Rank, SimilarityScore, RawJson, EnrichmentStatus, EnrichedJson, EnrichedAt, CompetitorType, Confidence, CreatedAt)
-                    VALUES (@OrganizationId, @Name, @WebsiteUrl, @Industry, @Description, @Category, @Logo, @Country, @Authority, @Popularity, @Rank, @SimilarityScore, @RawJson::jsonb, @EnrichmentStatus, @EnrichedJson::jsonb, @EnrichedAt, @CompetitorType, @Confidence, @CreatedAt)",
+                    INSERT INTO Competitors (OrganizationId, Name, WebsiteUrl, Industry, Description, Category, Logo, Country, Authority, Popularity, Rank, SimilarityScore, RawJson, EnrichmentStatus, EnrichedJson, EnrichedAt, CompetitorType, Confidence, DiscoverySource, CreatedAt)
+                    VALUES (@OrganizationId, @Name, @WebsiteUrl, @Industry, @Description, @Category, @Logo, @Country, @Authority, @Popularity, @Rank, @SimilarityScore, @RawJson::jsonb, @EnrichmentStatus, @EnrichedJson::jsonb, @EnrichedAt, @CompetitorType, @Confidence, @DiscoverySource, @CreatedAt)",
                     new {
                         comp.OrganizationId,
                         comp.Name,
@@ -176,6 +176,7 @@ public class WebsiteRepository : IWebsiteRepository
                         EnrichedJson = comp.EnrichedJson ?? (object)DBNull.Value,
                         EnrichedAt = comp.EnrichedAt.HasValue ? (object)comp.EnrichedAt.Value : DBNull.Value,
                         comp.CompetitorType,
+                        comp.DiscoverySource,
                         comp.Confidence,
                         CreatedAt = comp.CreatedAt == default ? DateTime.UtcNow : comp.CreatedAt
                     }, transaction: transaction);

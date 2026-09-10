@@ -98,6 +98,7 @@ public class PromptResponse
     public int? CompletionTokens { get; set; }
     public decimal? CostUsd { get; set; }
     public bool WasSearchGrounded { get; set; }
+    public string SourceUrlsJson { get; set; } = "[]";
     public string PromptVersion { get; set; } = "prompt-intelligence:v1";
     public bool IsError { get; set; }
     public string? ErrorMessage { get; set; }
@@ -107,11 +108,14 @@ public class PromptMention
 {
     public Guid Id { get; set; }
     public Guid PromptAnalysisId { get; set; }
+    public Guid? PromptResponseId { get; set; }
     public string Platform { get; set; } = string.Empty;
     public string EntityName { get; set; } = string.Empty; // Brand or Competitor Name
     public bool IsBrand { get; set; }
     public string ContextSnippet { get; set; } = string.Empty;
     public int Position { get; set; }
+    public bool IsRecommended { get; set; }
+    public int? RecommendationPosition { get; set; }
 }
 
 public class PromptVisibility
@@ -119,11 +123,15 @@ public class PromptVisibility
     public Guid Id { get; set; }
     public Guid PromptAnalysisId { get; set; }
     public int OverallVisibilityScore { get; set; }
+    public int VisibilityRank { get; set; }
     public int MentionFrequency { get; set; }
     public int AveragePosition { get; set; }
     public int ShareOfVoice { get; set; }
     public int CitationCount { get; set; }
+    public int CitationShare { get; set; }
     public int CompetitorCount { get; set; }
+    public int SampleCount { get; set; }
+    public string MethodologyVersion { get; set; } = "prompt-visibility:v4-mention-share";
 }
 
 public class PromptRecommendation
@@ -176,6 +184,7 @@ public class PromptCitation
 {
     public Guid Id { get; set; }
     public Guid PromptAnalysisId { get; set; }
+    public Guid? PromptResponseId { get; set; }
     public string Platform { get; set; } = string.Empty;
     public string Domain { get; set; } = string.Empty;
     public string Url { get; set; } = string.Empty;

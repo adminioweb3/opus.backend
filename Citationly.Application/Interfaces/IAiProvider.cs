@@ -35,7 +35,8 @@ public sealed record AiProviderResult(
     int? PromptTokens,
     int? CompletionTokens,
     decimal? CostUsd,
-    bool WasSearchGrounded);
+    bool WasSearchGrounded,
+    IReadOnlyList<string>? Citations = null);
 
 public interface IAiProviderRegistry
 {

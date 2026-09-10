@@ -5,130 +5,236 @@ namespace Citationly.Application.Features.PromptIntelligence.Services;
 
 public interface IVisibilityCalculatorService
 {
-    (PromptVisibility Visibility, IEnumerable<PromptMention> Mentions, IEnumerable<CompetitorComparison> CompetitorComparisons) CalculateVisibilityMetrics(
+    IEnumerable<PromptMention> ExtractMentions(
         Guid analysisId,
         IEnumerable<PromptResponse> responses,
         string brandName,
         IEnumerable<string> competitors);
+
+    (PromptVisibility Visibility, IEnumerable<PromptMention> Mentions, IEnumerable<CompetitorComparison> CompetitorComparisons) CalculateVisibilityMetrics(
+        Guid analysisId,
+        IEnumerable<PromptResponse> responses,
+        string brandName,
+        IEnumerable<string> competitors,
+        IEnumerable<PromptMention>? classifiedMentions = null,
+        IEnumerable<PromptCitation>? citations = null);
 }
 
+/// <summary>
+/// Calculates prompt visibility from captured response evidence.
+///
+/// Methodology v4 (Peec-compatible brand metrics):
+/// - mention frequency: percentage of successful samples containing the brand;
+/// - visibility score: the same response-level brand mention percentage;
+/// - average position: mean 1-based mention order among tracked brands (0 when absent);
+/// - share of voice: brand mention count divided by mentions of all tracked brands;
+/// - citation share: owned-domain citations divided by every extracted citation.
+///
+/// A previous implementation treated the character offset of a name in prose as its "position"
+/// and derived visibility from that offset. That number was not a search/recommendation rank.
+/// </summary>
 public class VisibilityCalculatorService : IVisibilityCalculatorService
 {
-    public (PromptVisibility Visibility, IEnumerable<PromptMention> Mentions, IEnumerable<CompetitorComparison> CompetitorComparisons) CalculateVisibilityMetrics(
-        Guid analysisId, 
-        IEnumerable<PromptResponse> responses, 
-        string brandName, 
+    public IEnumerable<PromptMention> ExtractMentions(
+        Guid analysisId,
+        IEnumerable<PromptResponse> responses,
+        string brandName,
         IEnumerable<string> competitors)
     {
-        var mentions = new List<PromptMention>();
-        var compComparisons = new List<CompetitorComparison>();
-
-        int totalPlatforms = responses.Count();
-        if (totalPlatforms == 0) totalPlatforms = 1;
-
-        int brandMentionCount = 0;
-        int brandTotalPosition = 0;
-        int brandCitationCount = 0; // Simple simulation for citations (links)
-
-        var competitorScores = new Dictionary<string, (int mentions, int totalPosition)>();
-        foreach (var c in competitors) competitorScores[c] = (0, 0);
+        var entities = new[] { (Name: brandName, IsBrand: true) }
+            .Concat(competitors
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(name => (Name: name, IsBrand: false)))
+            .Where(entity => !string.IsNullOrWhiteSpace(entity.Name))
+            .ToList();
 
         foreach (var response in responses)
         {
-            // Simple text analysis
-            var text = response.ResponseText;
-            brandCitationCount += Regex.Matches(text, @"https?://[^\s)\]]+").Count;
-            // Extract Brand Mentions
-            var brandIdx = text.IndexOf(brandName, StringComparison.OrdinalIgnoreCase);
-            if (brandIdx >= 0)
+            var text = response.ResponseText ?? string.Empty;
+            var found = entities
+                .Select(entity => (
+                    entity.Name,
+                    entity.IsBrand,
+                    Index: (entity.IsBrand ? BuildBrandAliases(entity.Name) : new[] { entity.Name })
+                        .Select(alias => FindEntity(text, alias))
+                        .Where(index => index >= 0)
+                        .DefaultIfEmpty(-1)
+                        .Min()))
+                .Where(entity => entity.Index >= 0)
+                .OrderBy(entity => entity.Index)
+                .ToList();
+
+            for (var mentionIndex = 0; mentionIndex < found.Count; mentionIndex++)
             {
-                brandMentionCount++;
-                // Position is roughly where it appeared (0-100 scale, smaller is better/earlier)
-                int position = (int)((double)brandIdx / Math.Max(1, text.Length) * 100);
-                brandTotalPosition += position;
-                
-                // Simulated context snippet
-                int snippetStart = Math.Max(0, brandIdx - 50);
-                int snippetLength = Math.Min(text.Length - snippetStart, 100);
-                
-                mentions.Add(new PromptMention
+                var entity = found[mentionIndex];
+                var index = entity.Index;
+
+                var snippetStart = Math.Max(0, index - 60);
+                var snippetLength = Math.Min(text.Length - snippetStart, entity.Name.Length + 120);
+                yield return new PromptMention
                 {
                     PromptAnalysisId = analysisId,
+                    PromptResponseId = response.Id,
                     Platform = response.Platform,
-                    EntityName = brandName,
-                    IsBrand = true,
+                    EntityName = entity.Name,
+                    IsBrand = entity.IsBrand,
                     ContextSnippet = text.Substring(snippetStart, snippetLength).Replace("\n", " "),
-                    Position = position
-                });
-            }
-
-            // Extract Competitor Mentions
-            foreach (var comp in competitors)
-            {
-                var compIdx = text.IndexOf(comp, StringComparison.OrdinalIgnoreCase);
-                if (compIdx >= 0)
-                {
-                    var current = competitorScores[comp];
-                    int position = (int)((double)compIdx / Math.Max(1, text.Length) * 100);
-                    competitorScores[comp] = (current.mentions + 1, current.totalPosition + position);
-
-                    int snippetStart = Math.Max(0, compIdx - 50);
-                    int snippetLength = Math.Min(text.Length - snippetStart, 100);
-
-                    mentions.Add(new PromptMention
-                    {
-                        PromptAnalysisId = analysisId,
-                        Platform = response.Platform,
-                        EntityName = comp,
-                        IsBrand = false,
-                        ContextSnippet = text.Substring(snippetStart, snippetLength).Replace("\n", " "),
-                        Position = position
-                    });
-                }
+                    // 1-based order among tracked brands in this captured answer.
+                    Position = mentionIndex + 1,
+                };
             }
         }
+    }
 
-        // Calculate Visibility Score
-        int mentionFrequency = (int)Math.Round((double)brandMentionCount / totalPlatforms * 100);
-        int averagePosition = brandMentionCount > 0 ? brandTotalPosition / brandMentionCount : 100;
-        
-        // Visibility Formula: Weight frequency heavily, penalize late positions
-        int visibilityScore = (mentionFrequency * 2) - (averagePosition / 2);
-        visibilityScore = Math.Clamp(visibilityScore, 0, 100);
+    public (PromptVisibility Visibility, IEnumerable<PromptMention> Mentions, IEnumerable<CompetitorComparison> CompetitorComparisons) CalculateVisibilityMetrics(
+        Guid analysisId,
+        IEnumerable<PromptResponse> responses,
+        string brandName,
+        IEnumerable<string> competitors,
+        IEnumerable<PromptMention>? classifiedMentions = null,
+        IEnumerable<PromptCitation>? citations = null)
+    {
+        var responseList = responses.Where(response => !response.IsError).ToList();
+        var competitorList = competitors
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var mentions = (classifiedMentions ?? ExtractMentions(analysisId, responseList, brandName, competitorList)).ToList();
+        var citationList = citations?.ToList() ?? new List<PromptCitation>();
+        var sampleCount = responseList.Count;
 
-        int totalMentionsOverall = brandMentionCount + competitorScores.Values.Sum(v => v.mentions);
-        int shareOfVoice = totalMentionsOverall > 0 ? (int)Math.Round((double)brandMentionCount / totalMentionsOverall * 100) : 0;
+        var brandMentions = mentions.Where(mention => mention.IsBrand).ToList();
+        var mentionedSamples = brandMentions
+            .Where(mention => mention.PromptResponseId.HasValue)
+            .Select(mention => mention.PromptResponseId!.Value)
+            .Distinct()
+            .Count();
+        var mentionFrequency = Percentage(mentionedSamples, sampleCount);
+
+        var brandPositions = brandMentions
+            .Where(mention => mention.Position > 0)
+            .Select(mention => mention.Position)
+            .ToList();
+        var averagePosition = brandPositions.Count == 0
+            ? 0
+            : (int)Math.Round(brandPositions.Average(), MidpointRounding.AwayFromZero);
+        var visibilityScore = mentionFrequency;
+
+        var competitorMentionCounts = competitorList.ToDictionary(
+            name => name,
+            name => mentions
+                .Where(mention => !mention.IsBrand
+                    && string.Equals(mention.EntityName, name, StringComparison.OrdinalIgnoreCase))
+                .Count(),
+            StringComparer.OrdinalIgnoreCase);
+
+        var totalTrackedBrandMentions = brandMentions.Count + competitorMentionCounts.Values.Sum();
+        var shareOfVoice = totalTrackedBrandMentions == 0
+            ? 0
+            : Percentage(brandMentions.Count, totalTrackedBrandMentions);
+
+        var ownedCitations = citationList.Count(citation => string.Equals(citation.Category, "Owned", StringComparison.OrdinalIgnoreCase));
+        var citationShare = Percentage(ownedCitations, citationList.Count);
+
+        var competitorScores = competitorList.ToDictionary(
+            name => name,
+            name => Percentage(
+                mentions
+                    .Where(mention => !mention.IsBrand
+                        && string.Equals(mention.EntityName, name, StringComparison.OrdinalIgnoreCase)
+                        && mention.PromptResponseId.HasValue)
+                    .Select(mention => mention.PromptResponseId!.Value)
+                    .Distinct()
+                    .Count(),
+                sampleCount),
+            StringComparer.OrdinalIgnoreCase);
+        // An all-zero evidence panel has no winner. Zero is the API's explicit unranked value.
+        var visibilityRank = totalTrackedBrandMentions == 0
+            ? 0
+            : 1 + competitorScores.Values.Count(score => score > visibilityScore);
 
         var visibility = new PromptVisibility
         {
             PromptAnalysisId = analysisId,
             OverallVisibilityScore = visibilityScore,
+            VisibilityRank = visibilityRank,
             MentionFrequency = mentionFrequency,
             AveragePosition = averagePosition,
             ShareOfVoice = shareOfVoice,
-            CitationCount = brandCitationCount,
-            CompetitorCount = competitors.Count()
+            CitationCount = ownedCitations,
+            CitationShare = citationShare,
+            CompetitorCount = competitorList.Count,
+            SampleCount = sampleCount,
+            MethodologyVersion = "prompt-visibility:v4-mention-share",
         };
 
-        // Competitor Comparisons
-        foreach (var comp in competitorScores)
+        var comparisons = competitorList.Select(name => new CompetitorComparison
         {
-            int compMentions = comp.Value.mentions;
-            int compAvgPos = compMentions > 0 ? comp.Value.totalPosition / compMentions : 100;
-            int compFreq = (int)Math.Round((double)compMentions / totalPlatforms * 100);
-            int compVis = Math.Clamp((compFreq * 2) - (compAvgPos / 2), 0, 100);
-            int compSov = totalMentionsOverall > 0 ? (int)Math.Round((double)compMentions / totalMentionsOverall * 100) : 0;
+            PromptAnalysisId = analysisId,
+            CompetitorName = name,
+            VisibilityScore = competitorScores[name],
+            ShareOfVoice = totalTrackedBrandMentions == 0
+                ? 0
+                : Percentage(competitorMentionCounts[name], totalTrackedBrandMentions),
+            MissingTopicsJson = "[]",
+        }).ToList();
 
-            compComparisons.Add(new CompetitorComparison
+        return (visibility, mentions, comparisons);
+    }
+
+    private static int FindEntity(string text, string entityName)
+    {
+        if (string.IsNullOrWhiteSpace(text) || string.IsNullOrWhiteSpace(entityName)) return -1;
+        var match = Regex.Match(
+            text,
+            $@"(?<![\p{{L}}\p{{N}}]){Regex.Escape(entityName.Trim())}(?![\p{{L}}\p{{N}}])",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        return match.Success ? match.Index : -1;
+    }
+
+    private static IReadOnlyCollection<string> BuildBrandAliases(string brandName)
+    {
+        var aliases = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var trimmed = brandName.Trim();
+        if (trimmed.Length == 0) return aliases;
+        aliases.Add(trimmed);
+
+        // Website titles are often persisted as "Brand | Tagline" or "Brand - Product".
+        // A model naturally says only "Brand", which must still count as the same entity.
+        foreach (var separator in new[] { " | ", " — ", " – ", " - " })
+        {
+            var separatorIndex = trimmed.IndexOf(separator, StringComparison.Ordinal);
+            if (separatorIndex >= 2)
             {
-                PromptAnalysisId = analysisId,
-                CompetitorName = comp.Key,
-                VisibilityScore = compVis,
-                ShareOfVoice = compSov,
-                MissingTopicsJson = "[]" // Real AI insight to be implemented
-            });
+                var candidate = trimmed[..separatorIndex].Trim();
+                if (IsSafeAlias(candidate)) aliases.Add(candidate);
+            }
         }
 
-        return (visibility, mentions, compComparisons);
+        var withoutCorporateSuffix = Regex.Replace(
+            trimmed,
+            @"\s+(?:pvt\.?\s+ltd\.?|private\s+limited|incorporated|corporation|company|limited|llc|ltd\.?|inc\.?|corp\.?)$",
+            string.Empty,
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant).Trim();
+        if (IsSafeAlias(withoutCorporateSuffix)) aliases.Add(withoutCorporateSuffix);
+
+        return aliases;
     }
+
+    private static bool IsSafeAlias(string candidate)
+    {
+        if (candidate.Length < 3) return false;
+        var genericSingleWords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "data", "solutions", "services", "systems", "technology", "technologies", "group", "company"
+        };
+        return candidate.Contains(' ') || !genericSingleWords.Contains(candidate);
+    }
+
+    private static int Percentage(int numerator, int denominator) =>
+        denominator <= 0 ? 0 : ClampPercentage((double)numerator / denominator * 100d);
+
+    private static int ClampPercentage(double value) =>
+        Math.Clamp((int)Math.Round(value, MidpointRounding.AwayFromZero), 0, 100);
 }
