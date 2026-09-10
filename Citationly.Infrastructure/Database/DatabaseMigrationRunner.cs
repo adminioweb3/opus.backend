@@ -362,6 +362,10 @@ internal static class DatabaseMigrations
             ALTER TABLE PromptVisibility
                 ALTER COLUMN MethodologyVersion SET DEFAULT 'prompt-visibility:v4-mention-share',
                 ALTER COLUMN MethodologyVersion SET NOT NULL;
-            """)
+            """),
+        new(
+            "202609100003_full_schema_reconciliation",
+            "Reapply the complete non-destructive schema baseline after production drift",
+            SelfHealingMigrations.Sql)
     ];
 }
