@@ -304,6 +304,64 @@ internal static class DatabaseMigrations
             """
             ALTER FUNCTION sp_CreateOrGetUserV2(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR)
                 SET plpgsql.variable_conflict TO 'use_column';
+            """),
+        new(
+            "202609100002_competitor_schema_drift_repair",
+            "Add competitor evidence columns introduced after the production baseline was applied",
+            """
+            ALTER TABLE Competitors
+                ADD COLUMN IF NOT EXISTS DiscoverySource VARCHAR(20) NOT NULL DEFAULT 'unknown';
+
+            ALTER TABLE CompetitorSnapshots
+                ADD COLUMN IF NOT EXISTS WebsiteUrl VARCHAR(2048),
+                ADD COLUMN IF NOT EXISTS MentionCount INT NOT NULL DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS RecommendationCount INT NOT NULL DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS ResponseCount INT NOT NULL DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS CitationCount INT NOT NULL DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS AveragePosition INT NOT NULL DEFAULT 100,
+                ADD COLUMN IF NOT EXISTS MeasurementSource VARCHAR(50) NOT NULL DEFAULT 'legacy-estimated',
+                ADD COLUMN IF NOT EXISTS MethodologyVersion VARCHAR(50) NOT NULL DEFAULT 'legacy-v1',
+                ADD COLUMN IF NOT EXISTS ModelUsed VARCHAR(100),
+                ADD COLUMN IF NOT EXISTS DiscoverySource VARCHAR(20) NOT NULL DEFAULT 'unknown';
+
+            ALTER TABLE PromptResponses
+                ADD COLUMN IF NOT EXISTS Sentiment VARCHAR(10),
+                ADD COLUMN IF NOT EXISTS SentimentQuote TEXT,
+                ADD COLUMN IF NOT EXISTS ProviderKey VARCHAR(50),
+                ADD COLUMN IF NOT EXISTS ModelUsed VARCHAR(100),
+                ADD COLUMN IF NOT EXISTS PromptTokens INT,
+                ADD COLUMN IF NOT EXISTS CompletionTokens INT,
+                ADD COLUMN IF NOT EXISTS CostUsd NUMERIC(10,6),
+                ADD COLUMN IF NOT EXISTS WasSearchGrounded BOOLEAN NOT NULL DEFAULT FALSE,
+                ADD COLUMN IF NOT EXISTS SourceUrlsJson JSONB NOT NULL DEFAULT '[]'::jsonb,
+                ADD COLUMN IF NOT EXISTS PromptVersion VARCHAR(100) NOT NULL DEFAULT 'prompt-intelligence:v1',
+                ADD COLUMN IF NOT EXISTS IsError BOOLEAN NOT NULL DEFAULT FALSE,
+                ADD COLUMN IF NOT EXISTS ErrorMessage TEXT;
+
+            ALTER TABLE PromptMentions
+                ADD COLUMN IF NOT EXISTS PromptResponseId UUID REFERENCES PromptResponses(Id) ON DELETE CASCADE,
+                ADD COLUMN IF NOT EXISTS IsRecommended BOOLEAN NOT NULL DEFAULT FALSE,
+                ADD COLUMN IF NOT EXISTS RecommendationPosition INT;
+
+            ALTER TABLE PromptCitations
+                ADD COLUMN IF NOT EXISTS PromptResponseId UUID REFERENCES PromptResponses(Id) ON DELETE CASCADE;
+
+            CREATE INDEX IF NOT EXISTS idx_promptmentions_response ON PromptMentions (PromptResponseId);
+            CREATE INDEX IF NOT EXISTS idx_promptcitations_response ON PromptCitations (PromptResponseId);
+
+            ALTER TABLE PromptVisibility
+                ADD COLUMN IF NOT EXISTS VisibilityRank INT NOT NULL DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS CitationShare INT NOT NULL DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS SampleCount INT NOT NULL DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS MethodologyVersion VARCHAR(100);
+
+            UPDATE PromptVisibility
+            SET MethodologyVersion = 'legacy-v2'
+            WHERE MethodologyVersion IS NULL;
+
+            ALTER TABLE PromptVisibility
+                ALTER COLUMN MethodologyVersion SET DEFAULT 'prompt-visibility:v4-mention-share',
+                ALTER COLUMN MethodologyVersion SET NOT NULL;
             """)
     ];
 }
