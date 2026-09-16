@@ -275,8 +275,12 @@ public class PromptIntelligenceRepository : IPromptIntelligenceRepository
         if (!recommendations.Any()) return;
         using var connection = _dbConnectionFactory.CreateConnection();
         var sql = @"
-            INSERT INTO PromptRecommendations (PromptAnalysisId, Category, Title, Description, Priority, Difficulty, EstimatedVisibilityGain)
-            VALUES (@PromptAnalysisId, @Category, @Title, @Description, @Priority, @Difficulty, @EstimatedVisibilityGain);";
+            INSERT INTO PromptRecommendations (
+                PromptAnalysisId, Category, Title, Description, Priority, Difficulty, EstimatedVisibilityGain,
+                TargetUrl, Evidence, ActionStepsJson, ValidationPlan, Confidence, EvidenceType)
+            VALUES (
+                @PromptAnalysisId, @Category, @Title, @Description, @Priority, @Difficulty, @EstimatedVisibilityGain,
+                @TargetUrl, @Evidence, @ActionStepsJson::jsonb, @ValidationPlan, @Confidence, @EvidenceType);";
         await connection.ExecuteAsync(sql, recommendations);
     }
 

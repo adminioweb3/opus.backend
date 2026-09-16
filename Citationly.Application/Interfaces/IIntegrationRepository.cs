@@ -15,6 +15,14 @@ public interface IIntegrationRepository
 
     /// <summary>Server-side only: includes the real ApiKey. Scoped to organizationId for tenant safety.</summary>
     Task<Integration?> GetIntegrationByIdAsync(Guid id, Guid organizationId);
+    Task<bool> UpdateHealthAsync(Guid id, Guid organizationId, string status, string? lastError, DateTime verifiedAtUtc);
+    Task<bool> DeleteIntegrationAsync(Guid id, Guid organizationId);
+}
+
+public interface IIntegrationCredentialProtector
+{
+    string Protect(string plaintext);
+    string Unprotect(string protectedValue);
 }
 
 public interface IApiKeyRepository

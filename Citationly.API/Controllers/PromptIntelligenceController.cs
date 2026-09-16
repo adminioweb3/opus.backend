@@ -171,7 +171,20 @@ public class PromptIntelligenceController : ControllerBase
 
         var visibility = await _repo.GetVisibilityAsync(analysisId);
         var mentions = await _repo.GetMentionsAsync(analysisId);
-        var responses = await _repo.GetResponsesAsync(analysisId);
+        var responses = (await _repo.GetResponsesAsync(analysisId))
+            .Select(response => new
+            {
+                response.Id,
+                response.Platform,
+                response.ResponseText,
+                response.Sentiment,
+                response.SentimentQuote,
+                response.CreatedAt,
+                response.WasSearchGrounded,
+                response.IsError,
+                response.ErrorMessage
+            })
+            .ToList();
         var recommendations = await _repo.GetRecommendationsAsync(analysisId);
         var recommendationImplementations = await _repo.GetRecommendationImplementationsAsync(analysisId);
         var competitors = await _repo.GetCompetitorComparisonsAsync(analysisId);

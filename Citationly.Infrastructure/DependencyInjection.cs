@@ -26,10 +26,12 @@ public static class DependencyInjection
         services.AddTransient<ITeamRepository, TeamRepository>();
         services.AddTransient<IWebsiteRepository, WebsiteRepository>();
         services.AddTransient<IIntegrationRepository, IntegrationRepository>();
+        services.AddSingleton<IIntegrationCredentialProtector, IntegrationCredentialProtector>();
         services.AddTransient<IApiKeyRepository, ApiKeyRepository>();
         services.AddTransient<IAlertRepository, AlertRepository>();
         services.AddTransient<IAuditLogRepository, AuditLogRepository>();
         services.AddTransient<IBetaFeedbackRepository, BetaFeedbackRepository>();
+        services.AddScoped<IAssistantConversationRepository, AssistantConversationRepository>();
         services.AddTransient<IAgencyRepository, AgencyRepository>();
         services.AddTransient<ISsoRepository, SsoRepository>();
         services.AddTransient<IDataLifecycleRepository, DataLifecycleRepository>();

@@ -296,7 +296,12 @@ CREATE TABLE IF NOT EXISTS Integrations (
     OrganizationId UUID REFERENCES Organizations(Id) ON DELETE CASCADE,
     PlatformName VARCHAR(100) NOT NULL, -- e.g., 'WordPress', 'Shopify'
     ApiUrl VARCHAR(2048),
-    ApiKey VARCHAR(1024), -- Plain text for MVP as agreed
+    ApiKey TEXT,
+    AuthType VARCHAR(50) NOT NULL DEFAULT 'api_key',
+    Status VARCHAR(50) NOT NULL DEFAULT 'Connected',
+    CredentialHint VARCHAR(255) NOT NULL DEFAULT '',
+    LastVerifiedAt TIMESTAMP WITH TIME ZONE,
+    LastError TEXT,
     CreatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(OrganizationId, PlatformName)
@@ -1091,8 +1096,20 @@ CREATE TABLE IF NOT EXISTS PromptRecommendations (
     Description TEXT NOT NULL DEFAULT '',
     Priority VARCHAR(50) NOT NULL DEFAULT 'Medium',
     Difficulty VARCHAR(50) NOT NULL DEFAULT 'Medium',
-    EstimatedVisibilityGain INT NOT NULL DEFAULT 0
+    EstimatedVisibilityGain INT NOT NULL DEFAULT 0,
+    TargetUrl TEXT NOT NULL DEFAULT '',
+    Evidence TEXT NOT NULL DEFAULT '',
+    ActionStepsJson JSONB NOT NULL DEFAULT '[]'::jsonb,
+    ValidationPlan TEXT NOT NULL DEFAULT '',
+    Confidence VARCHAR(50) NOT NULL DEFAULT 'Medium',
+    EvidenceType VARCHAR(100) NOT NULL DEFAULT 'provider-backed'
 );
+ALTER TABLE PromptRecommendations ADD COLUMN IF NOT EXISTS TargetUrl TEXT NOT NULL DEFAULT '';
+ALTER TABLE PromptRecommendations ADD COLUMN IF NOT EXISTS Evidence TEXT NOT NULL DEFAULT '';
+ALTER TABLE PromptRecommendations ADD COLUMN IF NOT EXISTS ActionStepsJson JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE PromptRecommendations ADD COLUMN IF NOT EXISTS ValidationPlan TEXT NOT NULL DEFAULT '';
+ALTER TABLE PromptRecommendations ADD COLUMN IF NOT EXISTS Confidence VARCHAR(50) NOT NULL DEFAULT 'Medium';
+ALTER TABLE PromptRecommendations ADD COLUMN IF NOT EXISTS EvidenceType VARCHAR(100) NOT NULL DEFAULT 'provider-backed';
 
 CREATE TABLE IF NOT EXISTS RecommendationImplementations (
     Id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -1428,6 +1445,25 @@ CREATE TABLE IF NOT EXISTS WebsiteProfiles (
 CREATE INDEX IF NOT EXISTS idx_websiteprofiles_org_created ON WebsiteProfiles (OrganizationId, CreatedAt DESC);
 
 -- Enhanced user creation/lookup with multi-auth provider support
+CREATE TABLE IF NOT EXISTS AssistantThreads (
+    Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    OrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,
+    UserId UUID NOT NULL REFERENCES Users(Id) ON DELETE CASCADE,
+    Title VARCHAR(80) NOT NULL DEFAULT 'New conversation',
+    CreatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_assistantthreads_user_updated ON AssistantThreads (OrganizationId, UserId, UpdatedAt DESC);
+
+CREATE TABLE IF NOT EXISTS AssistantMessages (
+    Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    ThreadId UUID NOT NULL REFERENCES AssistantThreads(Id) ON DELETE CASCADE,
+    Role VARCHAR(20) NOT NULL CHECK (Role IN ('user', 'assistant')),
+    Content TEXT NOT NULL,
+    CreatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_assistantmessages_thread_created ON AssistantMessages (ThreadId, CreatedAt ASC);
+
 CREATE OR REPLACE FUNCTION sp_CreateOrGetUserV2(
     p_FirebaseUid VARCHAR,
     p_Provider VARCHAR,

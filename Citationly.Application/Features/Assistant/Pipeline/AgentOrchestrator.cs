@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Citationly.Application.Features.Assistant.Services;
 using Citationly.Application.Interfaces;
+using Citationly.Domain.Entities;
 using Microsoft.Extensions.Configuration;
 
 namespace Citationly.Application.Features.Assistant.Pipeline;
@@ -37,7 +38,7 @@ public class AgentOrchestrator
     public async IAsyncEnumerable<string> ExecutePipelineAsync(
         Guid? organizationId, 
         string userMessage, 
-        object history,
+        IReadOnlyList<AssistantMessage> history,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var previous = _aiContext.OrganizationId;
@@ -73,9 +74,9 @@ public class AgentOrchestrator
             {
                 finalResponse = await _openAiClient.GenerateResponseAsync(finalPrompt, cancellationToken);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                finalResponse = $"OpenAI Error: {ex.Message}";
+                finalResponse = "I could not generate a response right now. Please try again in a moment.";
             }
 
             // Finally yield the actual response content

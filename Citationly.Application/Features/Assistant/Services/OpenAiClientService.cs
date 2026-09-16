@@ -34,15 +34,15 @@ public class OpenAiClientService
             new { role = "user", content = prompt }
         };
 
-        return await CallOpenRouterAsync(messages, "gpt-4o-mini", 500, ct, isIntent: true);
+        return await CallOpenAiAsync(messages, "gpt-4o-mini", 500, ct, isIntent: true);
     }
 
     public async Task<string> GenerateResponseAsync(object messageList, CancellationToken ct)
     {
-        return await CallOpenRouterAsync(messageList, "gpt-4o", 1000, ct);
+        return await CallOpenAiAsync(messageList, "gpt-4o", 1600, ct);
     }
 
-    private async Task<string> CallOpenRouterAsync(object messages, string model, int maxTokens, CancellationToken ct, bool isIntent = false)
+    private async Task<string> CallOpenAiAsync(object messages, string model, int maxTokens, CancellationToken ct, bool isIntent = false)
     {
         if (string.IsNullOrEmpty(_apiKey))
         {
@@ -75,10 +75,10 @@ public class OpenAiClientService
             {
                 if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests || (int)response.StatusCode >= 500)
                 {
-                    throw new HttpRequestException($"OpenRouter API Error: {response.StatusCode}");
+                    throw new HttpRequestException($"OpenAI request failed with status {response.StatusCode}.");
                 }
 
-                throw new InvalidOperationException($"OpenRouter API Error: {responseBody}");
+                throw new InvalidOperationException($"OpenAI request failed with status {response.StatusCode}.");
             }
 
             using var doc = JsonDocument.Parse(responseBody);

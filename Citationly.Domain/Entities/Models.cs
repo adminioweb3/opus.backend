@@ -213,6 +213,11 @@ public class Integration
     public string PlatformName { get; set; } = string.Empty;
     public string? ApiUrl { get; set; }
     public string? ApiKey { get; set; }
+    public string AuthType { get; set; } = "api_key";
+    public string Status { get; set; } = "Connected";
+    public string CredentialHint { get; set; } = string.Empty;
+    public DateTime? LastVerifiedAt { get; set; }
+    public string? LastError { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
 }

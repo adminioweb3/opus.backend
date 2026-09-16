@@ -30,6 +30,18 @@ public class UpsertIntegrationCommandHandler : IRequestHandler<UpsertIntegration
             throw new InvalidOperationException("Integration credentials must be real values, not placeholders or demo configuration.");
         }
 
+        if (!Uri.TryCreate(request.ApiUrl, UriKind.Absolute, out var apiUri)
+            || (apiUri.Scheme != Uri.UriSchemeHttps && !apiUri.IsLoopback))
+        {
+            throw new InvalidOperationException("Use a valid HTTPS WordPress site URL.");
+        }
+
+        if (request.PlatformName.Equals("WordPress", StringComparison.OrdinalIgnoreCase)
+            && (!request.ApiKey.Contains(':') || request.ApiKey.StartsWith(':') || request.ApiKey.EndsWith(':')))
+        {
+            throw new InvalidOperationException("WordPress credentials must include a username and application password.");
+        }
+
         // 1. Validate credentials with the appropriate CMS service
         var cmsService = _cmsServices.FirstOrDefault(s => s.PlatformName.Equals(request.PlatformName, StringComparison.OrdinalIgnoreCase));
         
@@ -52,7 +64,10 @@ public class UpsertIntegrationCommandHandler : IRequestHandler<UpsertIntegration
             OrganizationId = request.OrganizationId,
             PlatformName = request.PlatformName,
             ApiUrl = request.ApiUrl,
-            ApiKey = request.ApiKey
+            ApiKey = request.ApiKey,
+            AuthType = "application_password",
+            Status = "Connected",
+            LastVerifiedAt = DateTime.UtcNow
         };
 
         var id = await _repository.UpsertIntegrationAsync(integration);

@@ -144,6 +144,12 @@ public class PromptRecommendation
     public string Priority { get; set; } = "Medium";
     public string Difficulty { get; set; } = "Medium";
     public int EstimatedVisibilityGain { get; set; }
+    public string TargetUrl { get; set; } = string.Empty;
+    public string Evidence { get; set; } = string.Empty;
+    public string ActionStepsJson { get; set; } = "[]";
+    public string ValidationPlan { get; set; } = string.Empty;
+    public string Confidence { get; set; } = "Medium";
+    public string EvidenceType { get; set; } = "provider-backed";
 }
 
 public class RecommendationImplementation

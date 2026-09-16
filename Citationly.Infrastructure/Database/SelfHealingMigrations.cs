@@ -531,6 +531,12 @@ public static class SelfHealingMigrations
             UpdatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(OrganizationId, PlatformName)
         );
+        ALTER TABLE Integrations ALTER COLUMN ApiKey TYPE TEXT;
+        ALTER TABLE Integrations ADD COLUMN IF NOT EXISTS AuthType VARCHAR(50) NOT NULL DEFAULT 'api_key';
+        ALTER TABLE Integrations ADD COLUMN IF NOT EXISTS Status VARCHAR(50) NOT NULL DEFAULT 'Connected';
+        ALTER TABLE Integrations ADD COLUMN IF NOT EXISTS CredentialHint VARCHAR(255) NOT NULL DEFAULT '';
+        ALTER TABLE Integrations ADD COLUMN IF NOT EXISTS LastVerifiedAt TIMESTAMP WITH TIME ZONE;
+        ALTER TABLE Integrations ADD COLUMN IF NOT EXISTS LastError TEXT;
 
         CREATE TABLE IF NOT EXISTS ApiKeys (
             Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1168,8 +1174,20 @@ public static class SelfHealingMigrations
             Description TEXT NOT NULL DEFAULT '',
             Priority VARCHAR(50) NOT NULL DEFAULT 'Medium',
             Difficulty VARCHAR(50) NOT NULL DEFAULT 'Medium',
-            EstimatedVisibilityGain INT NOT NULL DEFAULT 0
+            EstimatedVisibilityGain INT NOT NULL DEFAULT 0,
+            TargetUrl TEXT NOT NULL DEFAULT '',
+            Evidence TEXT NOT NULL DEFAULT '',
+            ActionStepsJson JSONB NOT NULL DEFAULT '[]'::jsonb,
+            ValidationPlan TEXT NOT NULL DEFAULT '',
+            Confidence VARCHAR(50) NOT NULL DEFAULT 'Medium',
+            EvidenceType VARCHAR(100) NOT NULL DEFAULT 'provider-backed'
         );
+        ALTER TABLE PromptRecommendations ADD COLUMN IF NOT EXISTS TargetUrl TEXT NOT NULL DEFAULT '';
+        ALTER TABLE PromptRecommendations ADD COLUMN IF NOT EXISTS Evidence TEXT NOT NULL DEFAULT '';
+        ALTER TABLE PromptRecommendations ADD COLUMN IF NOT EXISTS ActionStepsJson JSONB NOT NULL DEFAULT '[]'::jsonb;
+        ALTER TABLE PromptRecommendations ADD COLUMN IF NOT EXISTS ValidationPlan TEXT NOT NULL DEFAULT '';
+        ALTER TABLE PromptRecommendations ADD COLUMN IF NOT EXISTS Confidence VARCHAR(50) NOT NULL DEFAULT 'Medium';
+        ALTER TABLE PromptRecommendations ADD COLUMN IF NOT EXISTS EvidenceType VARCHAR(100) NOT NULL DEFAULT 'provider-backed';
 
         CREATE TABLE IF NOT EXISTS RecommendationImplementations (
             Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

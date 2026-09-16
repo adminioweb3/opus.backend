@@ -366,6 +366,44 @@ internal static class DatabaseMigrations
         new(
             "202609100003_full_schema_reconciliation",
             "Reapply the complete non-destructive schema baseline after production drift",
-            SelfHealingMigrations.Sql)
+            SelfHealingMigrations.Sql),
+        new(
+            "202609150001_assistant_conversations",
+            "Add persistent assistant threads and messages",
+            """
+            CREATE TABLE IF NOT EXISTS AssistantThreads (
+                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                OrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,
+                UserId UUID NOT NULL REFERENCES Users(Id) ON DELETE CASCADE,
+                Title VARCHAR(80) NOT NULL DEFAULT 'New conversation',
+                CreatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UpdatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_assistantthreads_user_updated
+                ON AssistantThreads (OrganizationId, UserId, UpdatedAt DESC);
+
+            CREATE TABLE IF NOT EXISTS AssistantMessages (
+                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                ThreadId UUID NOT NULL REFERENCES AssistantThreads(Id) ON DELETE CASCADE,
+                Role VARCHAR(20) NOT NULL CHECK (Role IN ('user', 'assistant')),
+                Content TEXT NOT NULL,
+                CreatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_assistantmessages_thread_created
+                ON AssistantMessages (ThreadId, CreatedAt ASC);
+            """),
+        new(
+            "202609150002_integration_lifecycle_security",
+            "Add encrypted integration credential metadata and connection health",
+            """
+            ALTER TABLE Integrations ALTER COLUMN ApiKey TYPE TEXT;
+            ALTER TABLE Integrations ADD COLUMN IF NOT EXISTS AuthType VARCHAR(50) NOT NULL DEFAULT 'api_key';
+            ALTER TABLE Integrations ADD COLUMN IF NOT EXISTS Status VARCHAR(50) NOT NULL DEFAULT 'Connected';
+            ALTER TABLE Integrations ADD COLUMN IF NOT EXISTS CredentialHint VARCHAR(255) NOT NULL DEFAULT '';
+            ALTER TABLE Integrations ADD COLUMN IF NOT EXISTS LastVerifiedAt TIMESTAMP WITH TIME ZONE;
+            ALTER TABLE Integrations ADD COLUMN IF NOT EXISTS LastError TEXT;
+            """)
     ];
 }

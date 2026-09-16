@@ -74,6 +74,8 @@ public class UpsertIntegrationCommandTests
         public Task<IEnumerable<Integration>> GetIntegrationsByOrgAsync(Guid organizationId) => Task.FromResult(Enumerable.Empty<Integration>());
         public Task<Integration?> GetIntegrationByOrgAndPlatformAsync(Guid organizationId, string platformName) => Task.FromResult<Integration?>(null);
         public Task<Integration?> GetIntegrationByIdAsync(Guid id, Guid organizationId) => Task.FromResult<Integration?>(null);
+        public Task<bool> UpdateHealthAsync(Guid id, Guid organizationId, string status, string? lastError, DateTime verifiedAtUtc) => Task.FromResult(true);
+        public Task<bool> DeleteIntegrationAsync(Guid id, Guid organizationId) => Task.FromResult(true);
         public Task<Guid> UpsertIntegrationAsync(Integration integration)
         {
             UpsertCalls++;

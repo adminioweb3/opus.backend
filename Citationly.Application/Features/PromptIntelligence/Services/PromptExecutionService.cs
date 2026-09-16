@@ -164,7 +164,17 @@ public class PromptExecutionService : IPromptExecutionService
         yield return "{\"step\": \"Generating Recommendations...\", \"progress\": 80}";
 
         // Recommendations
-        var recommendations = await _recommendationEngine.GenerateRecommendationsAsync(analysisId, visibility, compComparisons, citations, ct);
+        var recommendations = await _recommendationEngine.GenerateRecommendationsAsync(
+            organizationId,
+            analysisId,
+            question.PromptText,
+            brandName,
+            ownDomain,
+            visibility,
+            compComparisons,
+            citations,
+            successfulResponses,
+            ct);
         await _repo.InsertRecommendationsAsync(recommendations);
 
         // Update status
