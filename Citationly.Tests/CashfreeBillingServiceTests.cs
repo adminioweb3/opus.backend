@@ -12,6 +12,35 @@ namespace Citationly.Tests;
 public class CashfreeBillingServiceTests
 {
     [Fact]
+    public async Task CreateSubscriptionSessionAsync_AllowsConfiguredStarterPlan()
+    {
+        var repository = new StubBillingRepository();
+        var configuration = CreateConfiguration();
+        var service = new CashfreeBillingService(
+            new StubHttpClientFactory(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent.Create(new
+                {
+                    subscription_id = "sub_starter",
+                    subscription_session_id = "session_starter",
+                    subscription_status = "INITIALIZED"
+                })
+            }),
+            configuration,
+            repository,
+            new BillingRedirectUrlValidator(configuration),
+            new CashfreeWebhookSignatureVerifier(configuration),
+            NullLogger<CashfreeBillingService>.Instance);
+
+        var result = await service.CreateSubscriptionSessionAsync(
+            Guid.NewGuid(), "Starter", "Test User", "test@example.com", "9999999999",
+            "https://app.example.test/dashboard/settings");
+
+        Assert.Equal("session_starter", result.SessionId);
+        Assert.Contains(repository.Subscriptions, subscription => subscription.PlanKey == "Starter");
+    }
+
+    [Fact]
     public async Task ReconcileSubscriptionsAsync_RepairsLocalPlanState_WhenWebhookWasMissed()
     {
         var organizationId = Guid.NewGuid();
@@ -48,7 +77,8 @@ public class CashfreeBillingServiceTests
             ["Cashfree:AppId"] = "test-app",
             ["Cashfree:SecretKey"] = "test-secret",
             ["Cashfree:Environment"] = "Sandbox",
-            ["Cashfree:AllowedReturnOrigins:0"] = "https://app.example.test"
+            ["Cashfree:Plans:Starter:PlanId"] = "starter-plan",
+            ["Billing:AllowedRedirectOrigins:0"] = "https://app.example.test"
         })
         .Build();
 

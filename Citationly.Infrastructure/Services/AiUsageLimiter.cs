@@ -45,6 +45,21 @@ public sealed class AiUsageLimiter : IAiUsageLimiter
                 $"Daily AI spend quota exceeded for {operationName}. Configured limit: ${spendLimit:F2}.");
         }
 
+        var providerSpendMetric = GetProviderMonthlySpendMetric(operationName);
+        if (providerSpendMetric is not null)
+        {
+            var providerSpendQuota = await _entitlements.CheckQuotaAsync(
+                organizationId.Value,
+                providerSpendMetric,
+                cancellationToken);
+            if (!providerSpendQuota.IsWithinLimit)
+            {
+                var limit = providerSpendQuota.Limit.HasValue ? providerSpendQuota.Limit.Value / 1_000_000m : 0m;
+                throw new InvalidOperationException(
+                    $"Monthly provider spend quota exceeded for {operationName}. Configured limit: ${limit:F2}.");
+            }
+        }
+
         var tenant = await _rateLimitStore.TryConsumeAsync(
             $"ai:tenant:{organizationId.Value:N}",
             periodStart,
@@ -72,10 +87,32 @@ public sealed class AiUsageLimiter : IAiUsageLimiter
         if (!organizationId.HasValue || !costUsd.HasValue || costUsd.Value <= 0) return;
 
         var microUsd = Math.Max(1, (long)Math.Ceiling(costUsd.Value * 1_000_000m));
-        await _entitlements.ConsumeUsageAsync(
+        var daily = await _entitlements.TryConsumeUsageAsync(
             organizationId.Value,
             "ai_spend_micro_usd_per_day",
             microUsd,
             cancellationToken);
+        if (!daily.IsWithinLimit)
+            throw new InvalidOperationException($"Daily AI spend reservation failed for {operationName}.");
+
+        var providerSpendMetric = GetProviderMonthlySpendMetric(operationName);
+        if (providerSpendMetric is null) return;
+
+        var monthly = await _entitlements.TryConsumeUsageAsync(
+            organizationId.Value,
+            providerSpendMetric,
+            microUsd,
+            cancellationToken);
+        if (!monthly.IsWithinLimit)
+            throw new InvalidOperationException($"Monthly provider spend reservation failed for {operationName}.");
+    }
+
+    private static string? GetProviderMonthlySpendMetric(string operationName)
+    {
+        if (operationName.Contains("openrouter", StringComparison.OrdinalIgnoreCase))
+            return "openrouter_spend_micro_usd_per_month";
+        if (operationName.Contains("exa", StringComparison.OrdinalIgnoreCase))
+            return "exa_spend_micro_usd_per_month";
+        return null;
     }
 }

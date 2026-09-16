@@ -70,7 +70,7 @@ public sealed class EntitlementService : IEntitlementService
         var limit = await GetPlanLimitValueAsync(organizationId, metricKey, cancellationToken);
         using var connection = _dbConnectionFactory.CreateConnection();
 
-        var (periodStart, _) = GetCurrentDailyPeriod();
+        var (periodStart, _) = GetCurrentPeriod(metricKey);
         var currentUsage = await connection.ExecuteScalarAsync<long?>(
             "SELECT Count FROM UsageCounters WHERE OrganizationId = @OrganizationId AND MetricKey = @MetricKey AND PeriodStart = @PeriodStart",
             new { OrganizationId = organizationId, MetricKey = metricKey, PeriodStart = periodStart }) ?? 0;
@@ -83,7 +83,7 @@ public sealed class EntitlementService : IEntitlementService
     {
         if (amount <= 0) throw new ArgumentOutOfRangeException(nameof(amount), "Usage amount must be positive.");
 
-        var (periodStart, periodEnd) = GetCurrentDailyPeriod();
+        var (periodStart, periodEnd) = GetCurrentPeriod(metricKey);
         using var connection = _dbConnectionFactory.CreateConnection();
 
         await connection.ExecuteAsync(
@@ -101,7 +101,7 @@ public sealed class EntitlementService : IEntitlementService
         if (amount <= 0) throw new ArgumentOutOfRangeException(nameof(amount), "Usage amount must be positive.");
 
         var limit = await GetPlanLimitValueAsync(organizationId, metricKey, cancellationToken);
-        var (periodStart, periodEnd) = GetCurrentDailyPeriod();
+        var (periodStart, periodEnd) = GetCurrentPeriod(metricKey);
         using var connection = _dbConnectionFactory.CreateConnection();
 
         var reservedCount = await connection.ExecuteScalarAsync<long?>(
@@ -135,6 +135,18 @@ public sealed class EntitlementService : IEntitlementService
     {
         var todayUtc = DateTime.UtcNow.Date;
         return (todayUtc, todayUtc.AddDays(1));
+    }
+
+    private static (DateTime PeriodStart, DateTime PeriodEnd) GetCurrentPeriod(string metricKey)
+    {
+        if (metricKey.EndsWith("_per_month", StringComparison.OrdinalIgnoreCase))
+        {
+            var now = DateTime.UtcNow;
+            var start = new DateTime(now.Year, now.Month, 1, 0, 0, 0, DateTimeKind.Utc);
+            return (start, start.AddMonths(1));
+        }
+
+        return GetCurrentDailyPeriod();
     }
 
     private sealed class PlanLimitRow

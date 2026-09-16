@@ -17,6 +17,7 @@ public sealed class ExaEvidenceProvider : IWebEvidenceProvider
     private readonly int _defaultResultCount;
     private readonly int _maxHighlightCharacters;
     private readonly TimeSpan _cacheFreshness;
+    private readonly decimal _reservedCostPerSearchUsd;
     private readonly IAiUsageLimiter _usageLimiter;
     private readonly IAiResilienceService _resilience;
 
@@ -33,6 +34,7 @@ public sealed class ExaEvidenceProvider : IWebEvidenceProvider
         _defaultResultCount = Math.Clamp(configuration.GetValue("Exa:ResultsPerQuery", 5), 1, 10);
         _maxHighlightCharacters = Math.Clamp(configuration.GetValue("Exa:MaxHighlightCharacters", 2000), 200, 10000);
         _cacheFreshness = TimeSpan.FromHours(Math.Clamp(configuration.GetValue("Exa:CacheHours", 6), 1, 168));
+        _reservedCostPerSearchUsd = Math.Max(0.000001m, configuration.GetValue("Exa:ReservedCostPerSearchUsd", 0.012m));
         _usageLimiter = usageLimiter;
         _resilience = resilience;
     }
@@ -58,6 +60,11 @@ public sealed class ExaEvidenceProvider : IWebEvidenceProvider
             return cached.Result with { CacheHit = true, CostUsd = null };
 
         await _usageLimiter.EnsureWithinLimitsAsync(organizationId, "provider:exa.search", cancellationToken);
+        await _usageLimiter.RecordEstimatedCostAsync(
+            organizationId,
+            _reservedCostPerSearchUsd,
+            "provider:exa.search",
+            cancellationToken);
 
         var contents = new
         {
@@ -121,7 +128,14 @@ public sealed class ExaEvidenceProvider : IWebEvidenceProvider
                     && total.TryGetDecimal(out var parsedCost))
                     cost = parsedCost;
 
-                await _usageLimiter.RecordEstimatedCostAsync(organizationId, cost, "provider:exa.search", ct);
+                if (cost.HasValue && cost.Value > _reservedCostPerSearchUsd)
+                {
+                    await _usageLimiter.RecordEstimatedCostAsync(
+                        organizationId,
+                        cost.Value - _reservedCostPerSearchUsd,
+                        "provider:exa.search",
+                        ct);
+                }
                 var resultValue = new WebEvidenceResult(true, ProviderKey, requestId, items, cost, false, null);
                 Cache[cacheKey] = new CacheEntry(resultValue, DateTimeOffset.UtcNow.Add(_cacheFreshness));
                 return resultValue;

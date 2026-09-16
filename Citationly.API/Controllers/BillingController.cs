@@ -53,18 +53,26 @@ public class BillingController : ControllerBase
         var aiCalls = await _entitlementService.CheckQuotaAsync(orgId.Value, "ai_calls_per_day", HttpContext.RequestAborted);
         var aiSpend = await _entitlementService.CheckQuotaAsync(orgId.Value, "ai_spend_micro_usd_per_day", HttpContext.RequestAborted);
         var publicApiCalls = await _entitlementService.CheckQuotaAsync(orgId.Value, "public_api_calls_per_day", HttpContext.RequestAborted);
+        var openRouterSpend = await _entitlementService.CheckQuotaAsync(orgId.Value, "openrouter_spend_micro_usd_per_month", HttpContext.RequestAborted);
+        var exaSpend = await _entitlementService.CheckQuotaAsync(orgId.Value, "exa_spend_micro_usd_per_month", HttpContext.RequestAborted);
         var recurringScanInterval = await _entitlementService.GetPlanLimitValueAsync(orgId.Value, "recurring_scan_interval_days", HttpContext.RequestAborted);
 
         var periodStart = DateTime.UtcNow.Date;
         var periodEnd = periodStart.AddDays(1);
+        var monthlyPeriodStart = new DateTime(periodStart.Year, periodStart.Month, 1, 0, 0, 0, DateTimeKind.Utc);
+        var monthlyPeriodEnd = monthlyPeriodStart.AddMonths(1);
 
         return Ok(new BillingUsageResponse(
             planKey,
             periodStart,
             periodEnd,
+            monthlyPeriodStart,
+            monthlyPeriodEnd,
             new BillingUsageMetric("AI calls", "ai_calls_per_day", aiCalls.CurrentUsage, aiCalls.Limit, "calls today"),
             new BillingUsageMetric("Estimated AI spend", "ai_spend_micro_usd_per_day", aiSpend.CurrentUsage, aiSpend.Limit, "micro-USD today"),
             new BillingUsageMetric("Public API calls", "public_api_calls_per_day", publicApiCalls.CurrentUsage, publicApiCalls.Limit, "calls today"),
+            new BillingUsageMetric("OpenRouter spend", "openrouter_spend_micro_usd_per_month", openRouterSpend.CurrentUsage, openRouterSpend.Limit, "micro-USD this month"),
+            new BillingUsageMetric("Exa spend", "exa_spend_micro_usd_per_month", exaSpend.CurrentUsage, exaSpend.Limit, "micro-USD this month"),
             recurringScanInterval));
     }
 
@@ -173,9 +181,13 @@ public sealed record BillingUsageResponse(
     string PlanKey,
     DateTime PeriodStart,
     DateTime PeriodEnd,
+    DateTime MonthlyPeriodStart,
+    DateTime MonthlyPeriodEnd,
     BillingUsageMetric AiCalls,
     BillingUsageMetric EstimatedAiSpend,
     BillingUsageMetric PublicApiCalls,
+    BillingUsageMetric OpenRouterSpend,
+    BillingUsageMetric ExaSpend,
     long? RecurringScanIntervalDays);
 
 public sealed record BillingUsageMetric(

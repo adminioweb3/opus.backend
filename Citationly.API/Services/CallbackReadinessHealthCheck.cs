@@ -20,6 +20,7 @@ public sealed class CallbackReadinessHealthCheck : IHealthCheck
         {
             RequireConfigured("Cashfree:AppId", missing);
             RequireConfigured("Cashfree:SecretKey", missing);
+            RequireConfigured("Cashfree:Plans:Starter:PlanId", missing);
             RequireConfigured("Cashfree:Plans:Pro:PlanId", missing);
             RequireConfigured("Cashfree:Plans:Enterprise:PlanId", missing);
 

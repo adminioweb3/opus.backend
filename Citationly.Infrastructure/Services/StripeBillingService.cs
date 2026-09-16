@@ -11,7 +11,7 @@ namespace Citationly.Infrastructure.Services;
 /// <summary>Retained only as historical migration code. CashfreeBillingService is the registered provider.</summary>
 public sealed class StripeBillingService
 {
-    private static readonly HashSet<string> SupportedPlanKeys = new(StringComparer.OrdinalIgnoreCase) { "Pro", "Enterprise" };
+    private static readonly HashSet<string> SupportedPlanKeys = new(StringComparer.OrdinalIgnoreCase) { "Starter", "Pro", "Enterprise" };
     private readonly IConfiguration _configuration;
     private readonly IBillingRepository _billingRepository;
     private readonly BillingRedirectUrlValidator _redirectUrlValidator;
@@ -276,7 +276,7 @@ public sealed class StripeBillingService
     private string? ResolvePlanKeyFromPriceId(string? priceId)
     {
         if (string.IsNullOrWhiteSpace(priceId)) return null;
-        foreach (var plan in new[] { "Pro", "Enterprise" })
+        foreach (var plan in new[] { "Starter", "Pro", "Enterprise" })
         {
             if (string.Equals(ResolveConfigured(_configuration[$"Stripe:PriceIds:{plan}"]), priceId, StringComparison.Ordinal))
             {

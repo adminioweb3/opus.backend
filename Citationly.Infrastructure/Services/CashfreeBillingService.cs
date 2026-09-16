@@ -12,7 +12,7 @@ namespace Citationly.Infrastructure.Services;
 /// <summary>Server-side Cashfree subscription client. It never exposes merchant credentials.</summary>
 public sealed class CashfreeBillingService : IBillingService
 {
-    private static readonly HashSet<string> SupportedPlans = new(StringComparer.OrdinalIgnoreCase) { "Pro", "Enterprise" };
+    private static readonly HashSet<string> SupportedPlans = new(StringComparer.OrdinalIgnoreCase) { "Starter", "Pro", "Enterprise" };
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IConfiguration _configuration;
     private readonly IBillingRepository _billingRepository;

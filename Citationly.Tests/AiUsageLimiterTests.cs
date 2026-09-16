@@ -54,6 +54,23 @@ public class AiUsageLimiterTests
     }
 
     [Fact]
+    public async Task EnsureWithinLimitsAsync_Throws_WhenProviderMonthlySpendQuotaWasReached()
+    {
+        var entitlements = new StubEntitlementService
+        {
+            ProviderSpendQuotaResult = new UsageQuotaStatus(false, 5_000_000, 5_000_000)
+        };
+        var limiter = new AiUsageLimiter(new StubRateLimitStore(), entitlements);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            limiter.EnsureWithinLimitsAsync(Guid.NewGuid(), "provider:openrouter:chat"));
+
+        Assert.Contains("Monthly provider spend quota exceeded", ex.Message);
+        Assert.Equal(2, entitlements.CheckQuotaCalls);
+        Assert.Equal(0, entitlements.TryConsumeCalls);
+    }
+
+    [Fact]
     public async Task RecordEstimatedCostAsync_RecordsSpendOnlyAfterProviderReportsCost()
     {
         var entitlements = new StubEntitlementService();
@@ -61,9 +78,23 @@ public class AiUsageLimiterTests
 
         await limiter.RecordEstimatedCostAsync(Guid.NewGuid(), 0.000123m, "test.operation");
 
-        Assert.Equal(1, entitlements.ConsumeCalls);
-        Assert.Equal("ai_spend_micro_usd_per_day", entitlements.LastConsumeMetric);
-        Assert.Equal(123, entitlements.LastConsumeAmount);
+        Assert.Equal(1, entitlements.TryConsumeCalls);
+        Assert.Equal("ai_spend_micro_usd_per_day", entitlements.LastTryConsumeMetric);
+        Assert.Equal(123, entitlements.LastTryConsumeAmount);
+    }
+
+    [Fact]
+    public async Task RecordEstimatedCostAsync_RecordsDailyAndMonthlyProviderSpend()
+    {
+        var entitlements = new StubEntitlementService();
+        var limiter = new AiUsageLimiter(new StubRateLimitStore(), entitlements);
+
+        await limiter.RecordEstimatedCostAsync(Guid.NewGuid(), 0.02m, "provider:openrouter:chat");
+
+        Assert.Equal(2, entitlements.TryConsumeCalls);
+        Assert.Contains("ai_spend_micro_usd_per_day", entitlements.TryConsumeMetrics);
+        Assert.Contains("openrouter_spend_micro_usd_per_month", entitlements.TryConsumeMetrics);
+        Assert.Equal(20_000, entitlements.LastTryConsumeAmount);
     }
 
     [Fact]
@@ -83,12 +114,15 @@ public class AiUsageLimiterTests
     {
         public UsageQuotaStatus TryConsumeResult { get; init; } = new(true, 1, 10);
         public UsageQuotaStatus SpendQuotaResult { get; init; } = new(true, 0, null);
+        public UsageQuotaStatus ProviderSpendQuotaResult { get; init; } = new(true, 0, null);
         public int CheckQuotaCalls { get; private set; }
         public int ConsumeCalls { get; private set; }
         public int TryConsumeCalls { get; private set; }
         public string LastConsumeMetric { get; private set; } = string.Empty;
         public long LastConsumeAmount { get; private set; }
         public string LastTryConsumeMetric { get; private set; } = string.Empty;
+        public long LastTryConsumeAmount { get; private set; }
+        public List<string> TryConsumeMetrics { get; } = [];
 
         public Task<string> GetPlanKeyAsync(Guid organizationId, CancellationToken cancellationToken = default) =>
             Task.FromResult("Trial");
@@ -102,13 +136,17 @@ public class AiUsageLimiterTests
         public Task<UsageQuotaStatus> CheckQuotaAsync(Guid organizationId, string metricKey, CancellationToken cancellationToken = default)
         {
             CheckQuotaCalls++;
-            return Task.FromResult(SpendQuotaResult);
+            return Task.FromResult(metricKey.EndsWith("_per_month", StringComparison.OrdinalIgnoreCase)
+                ? ProviderSpendQuotaResult
+                : SpendQuotaResult);
         }
 
         public Task<UsageQuotaStatus> TryConsumeUsageAsync(Guid organizationId, string metricKey, long amount = 1, CancellationToken cancellationToken = default)
         {
             TryConsumeCalls++;
             LastTryConsumeMetric = metricKey;
+            LastTryConsumeAmount = amount;
+            TryConsumeMetrics.Add(metricKey);
             return Task.FromResult(TryConsumeResult);
         }
 

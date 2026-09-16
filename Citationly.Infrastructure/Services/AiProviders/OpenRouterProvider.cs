@@ -28,6 +28,7 @@ public sealed class OpenRouterProvider : IAiProvider
     private readonly string? _applicationUrl;
     private readonly string _dataCollection;
     private readonly bool _requireZdr;
+    private readonly decimal _reservedCostPerCallUsd;
     private readonly IAiRequestContextAccessor _aiContext;
     private readonly IAiUsageLimiter _aiUsageLimiter;
     private readonly IAiResilienceService _aiResilience;
@@ -48,6 +49,7 @@ public sealed class OpenRouterProvider : IAiProvider
         _applicationUrl = ConfigPlaceholderHelper.Resolve(configuration["OpenRouter:ApplicationUrl"]);
         _dataCollection = configuration["OpenRouter:DataCollection"] ?? "deny";
         _requireZdr = configuration.GetValue("OpenRouter:RequireZdr", true);
+        _reservedCostPerCallUsd = Math.Max(0.000001m, configuration.GetValue("OpenRouter:ReservedCostPerCallUsd", 0.02m));
         _aiContext = aiContext;
         _aiUsageLimiter = aiUsageLimiter;
         _aiResilience = aiResilience;
@@ -67,6 +69,11 @@ public sealed class OpenRouterProvider : IAiProvider
 
         var operation = $"provider:{ProviderKey}";
         await _aiUsageLimiter.EnsureWithinLimitsAsync(_aiContext.OrganizationId, operation, cancellationToken);
+        await _aiUsageLimiter.RecordEstimatedCostAsync(
+            _aiContext.OrganizationId,
+            _reservedCostPerCallUsd,
+            operation,
+            cancellationToken);
 
         var body = new
         {
@@ -132,7 +139,14 @@ public sealed class OpenRouterProvider : IAiProvider
             }
 
             var citations = ExtractCitations(message);
-            await _aiUsageLimiter.RecordEstimatedCostAsync(_aiContext.OrganizationId, cost, operation, ct);
+            if (cost.HasValue && cost.Value > _reservedCostPerCallUsd)
+            {
+                await _aiUsageLimiter.RecordEstimatedCostAsync(
+                    _aiContext.OrganizationId,
+                    cost.Value - _reservedCostPerCallUsd,
+                    operation,
+                    ct);
+            }
 
             return new AiProviderResult(
                 content,

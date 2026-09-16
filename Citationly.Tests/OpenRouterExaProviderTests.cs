@@ -54,7 +54,7 @@ public class OpenRouterExaProviderTests
         Assert.Contains("\"allow_fallbacks\":false", handler.RequestBody);
         Assert.Contains("\"data_collection\":\"deny\"", handler.RequestBody);
         Assert.Contains("\"zdr\":true", handler.RequestBody);
-        Assert.Equal(0.0042m, usage.RecordedCost);
+        Assert.Equal(0.02m, usage.RecordedCost);
     }
 
     [Fact]

@@ -843,7 +843,7 @@ public static class SelfHealingMigrations
 
         -- Plan limits (Phase 1) - one row per plan/feature, read by IEntitlementService.
         -- A NULL LimitValue means unlimited. Seeded with today's actual plan set
-        -- (Trial/Pro/Enterprise); adjust via a real admin UI once billing is live,
+        -- (Trial/Starter/Pro/Enterprise); adjust via a real admin UI once billing is live,
         -- not by hand-editing rows in production.
         CREATE TABLE IF NOT EXISTS PlanLimits (
             PlanKey VARCHAR(100) NOT NULL,
@@ -854,18 +854,32 @@ public static class SelfHealingMigrations
         INSERT INTO PlanLimits (PlanKey, FeatureKey, LimitValue) VALUES
             ('Trial', 'ai_calls_per_day', 50),
             ('Trial', 'ai_spend_micro_usd_per_day', 1000000),
+            ('Trial', 'openrouter_spend_micro_usd_per_month', 5000000),
+            ('Trial', 'exa_spend_micro_usd_per_month', 10000000),
             ('Trial', 'recurring_scan_interval_days', 7),
             ('Trial', 'public_api_calls_per_day', 100),
             ('Trial', 'regions_summary', 0),
             ('Trial', 'personas_summary', 0),
+            ('Starter', 'ai_calls_per_day', 250),
+            ('Starter', 'ai_spend_micro_usd_per_day', 1000000),
+            ('Starter', 'openrouter_spend_micro_usd_per_month', 5000000),
+            ('Starter', 'exa_spend_micro_usd_per_month', 5000000),
+            ('Starter', 'recurring_scan_interval_days', 7),
+            ('Starter', 'public_api_calls_per_day', 500),
+            ('Starter', 'regions_summary', 0),
+            ('Starter', 'personas_summary', 0),
             ('Pro', 'ai_calls_per_day', 1000),
             ('Pro', 'ai_spend_micro_usd_per_day', 2000000),
-            ('Pro', 'recurring_scan_interval_days', 1),
+            ('Pro', 'openrouter_spend_micro_usd_per_month', 25000000),
+            ('Pro', 'exa_spend_micro_usd_per_month', 25000000),
+            ('Pro', 'recurring_scan_interval_days', 7),
             ('Pro', 'public_api_calls_per_day', 5000),
             ('Pro', 'regions_summary', 0),
             ('Pro', 'personas_summary', 0),
             ('Enterprise', 'ai_calls_per_day', 5000),
             ('Enterprise', 'ai_spend_micro_usd_per_day', 10000000),
+            ('Enterprise', 'openrouter_spend_micro_usd_per_month', 100000000),
+            ('Enterprise', 'exa_spend_micro_usd_per_month', 100000000),
             ('Enterprise', 'recurring_scan_interval_days', 1),
             ('Enterprise', 'public_api_calls_per_day', NULL),
             ('Enterprise', 'regions_summary', 1),
@@ -876,13 +890,17 @@ public static class SelfHealingMigrations
         SET LimitValue = CASE
             WHEN PlanKey = 'Trial' AND FeatureKey = 'ai_calls_per_day' THEN 50
             WHEN PlanKey = 'Trial' AND FeatureKey = 'ai_spend_micro_usd_per_day' THEN 1000000
+            WHEN PlanKey = 'Starter' AND FeatureKey = 'ai_calls_per_day' THEN 250
+            WHEN PlanKey = 'Starter' AND FeatureKey = 'ai_spend_micro_usd_per_day' THEN 1000000
+            WHEN PlanKey = 'Starter' AND FeatureKey = 'recurring_scan_interval_days' THEN 7
             WHEN PlanKey = 'Pro' AND FeatureKey = 'ai_calls_per_day' THEN 1000
             WHEN PlanKey = 'Pro' AND FeatureKey = 'ai_spend_micro_usd_per_day' THEN 2000000
+            WHEN PlanKey = 'Pro' AND FeatureKey = 'recurring_scan_interval_days' THEN 7
             WHEN PlanKey = 'Enterprise' AND FeatureKey = 'ai_calls_per_day' THEN 5000
             WHEN PlanKey = 'Enterprise' AND FeatureKey = 'ai_spend_micro_usd_per_day' THEN 10000000
             ELSE LimitValue
         END
-        WHERE FeatureKey IN ('ai_calls_per_day', 'ai_spend_micro_usd_per_day');
+        WHERE FeatureKey IN ('ai_calls_per_day', 'ai_spend_micro_usd_per_day', 'recurring_scan_interval_days');
 
         CREATE TABLE IF NOT EXISTS ContentDrafts (
             Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

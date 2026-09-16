@@ -20,6 +20,7 @@ public static class ProductionConfigurationValidator
         {
             Require(configuration["Cashfree:AppId"], "Cashfree:AppId", missing);
             Require(configuration["Cashfree:SecretKey"], "Cashfree:SecretKey", missing);
+            Require(configuration["Cashfree:Plans:Starter:PlanId"], "Cashfree:Plans:Starter:PlanId", missing);
             Require(configuration["Cashfree:Plans:Pro:PlanId"], "Cashfree:Plans:Pro:PlanId", missing);
             Require(configuration["Cashfree:Plans:Enterprise:PlanId"], "Cashfree:Plans:Enterprise:PlanId", missing);
             if (!configuration.GetSection("Billing:AllowedRedirectOrigins").GetChildren().Any())
