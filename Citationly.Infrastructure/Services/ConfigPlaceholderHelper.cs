@@ -13,4 +13,7 @@ internal static class ConfigPlaceholderHelper
         if (string.IsNullOrWhiteSpace(value)) return null;
         return value.StartsWith("${", StringComparison.Ordinal) ? null : value;
     }
+
+    public static string? Resolve(string? value, string environmentVariableName) =>
+        Resolve(value) ?? Resolve(Environment.GetEnvironmentVariable(environmentVariableName));
 }

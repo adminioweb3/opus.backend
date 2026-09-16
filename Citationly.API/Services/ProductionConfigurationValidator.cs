@@ -33,6 +33,22 @@ public static class ProductionConfigurationValidator
             Require(configuration["OpenAI:ApiKey"], "OpenAI:ApiKey", missing);
         }
 
+        if (configuration.GetSection("OpenRouter:Models").GetChildren().Any(x => x.GetValue<bool>("Enabled")))
+        {
+            Require(
+                Resolve(configuration["OpenRouter:ApiKey"]) ?? Environment.GetEnvironmentVariable("OPENROUTER_API_KEY"),
+                "OPENROUTER_API_KEY or OpenRouter:ApiKey",
+                missing);
+        }
+
+        if (configuration.GetValue<bool>("Exa:Enabled"))
+        {
+            Require(
+                Resolve(configuration["Exa:ApiKey"]) ?? Environment.GetEnvironmentVariable("EXA_API_KEY"),
+                "EXA_API_KEY or Exa:ApiKey",
+                missing);
+        }
+
         if (missing.Count > 0)
         {
             throw new InvalidOperationException(
@@ -47,6 +63,7 @@ public static class ProductionConfigurationValidator
         {
             missing.Add(key);
         }
+
     }
 
     private static string? Resolve(string? value)

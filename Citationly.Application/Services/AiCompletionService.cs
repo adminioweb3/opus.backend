@@ -84,7 +84,12 @@ public sealed class AiCompletionService : IAiCompletionService
                     result.CompletionTokens,
                     result.CostUsd,
                     result.WasSearchGrounded,
-                    $"{provider.PlatformName} returned invalid JSON for {operationName}.");
+                    $"{provider.PlatformName} returned invalid JSON for {operationName}.",
+                    result.Citations,
+                    result.Gateway,
+                    result.UpstreamProvider,
+                    result.GenerationId,
+                    result.LatencyMs);
             }
 
             if (!cacheHit)
@@ -110,7 +115,12 @@ public sealed class AiCompletionService : IAiCompletionService
                 result.CompletionTokens,
                 result.CostUsd,
                 result.WasSearchGrounded,
-                null);
+                null,
+                result.Citations,
+                result.Gateway,
+                result.UpstreamProvider,
+                result.GenerationId,
+                result.LatencyMs);
         }
         catch (Exception ex)
         {

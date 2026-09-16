@@ -17,6 +17,7 @@ public class AiUsageLimiterTests
 
         Assert.Equal(2, rateLimits.TryConsumeCalls);
         Assert.Equal(1, entitlements.TryConsumeCalls);
+        Assert.Equal(1, entitlements.CheckQuotaCalls);
         Assert.Equal("ai_calls_per_day", entitlements.LastTryConsumeMetric);
     }
 
@@ -34,6 +35,22 @@ public class AiUsageLimiterTests
 
         Assert.Contains("Daily AI call quota exceeded", ex.Message);
         Assert.Equal(1, entitlements.TryConsumeCalls);
+    }
+
+    [Fact]
+    public async Task EnsureWithinLimitsAsync_Throws_WhenDailySpendQuotaWasReached()
+    {
+        var entitlements = new StubEntitlementService
+        {
+            SpendQuotaResult = new UsageQuotaStatus(false, 1_000_000, 1_000_000)
+        };
+        var limiter = new AiUsageLimiter(new StubRateLimitStore(), entitlements);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            limiter.EnsureWithinLimitsAsync(Guid.NewGuid(), "test.operation"));
+
+        Assert.Contains("Daily AI spend quota exceeded", ex.Message);
+        Assert.Equal(0, entitlements.TryConsumeCalls);
     }
 
     [Fact]

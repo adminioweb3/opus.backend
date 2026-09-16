@@ -22,7 +22,12 @@ public sealed record AiCompletionResult(
     int? CompletionTokens,
     decimal? CostUsd,
     bool WasSearchGrounded,
-    string? ErrorMessage)
+    string? ErrorMessage,
+    IReadOnlyList<string>? Citations = null,
+    string? Gateway = null,
+    string? UpstreamProvider = null,
+    string? GenerationId = null,
+    long? LatencyMs = null)
 {
     public static AiCompletionResult Unavailable(string message) =>
         new(false, string.Empty, null, null, null, null, null, null, false, message);

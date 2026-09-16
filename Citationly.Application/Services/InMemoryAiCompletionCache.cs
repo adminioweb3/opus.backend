@@ -34,7 +34,11 @@ public sealed class InMemoryAiCompletionCache : IAiCompletionCache
             CompletionTokens: null,
             CostUsd: null,
             cached.WasSearchGrounded,
-            cached.Citations));
+            cached.Citations,
+            cached.Gateway,
+            cached.UpstreamProvider,
+            cached.GenerationId,
+            cached.LatencyMs));
     }
 
     public Task StoreAsync(
@@ -58,7 +62,11 @@ public sealed class InMemoryAiCompletionCache : IAiCompletionCache
                 result.CompletionTokens,
                 result.CostUsd,
                 result.WasSearchGrounded,
-                result.Citations),
+                result.Citations,
+                result.Gateway,
+                result.UpstreamProvider,
+                result.GenerationId,
+                result.LatencyMs),
             DateTimeOffset.UtcNow.Add(freshness));
 
         return Task.CompletedTask;

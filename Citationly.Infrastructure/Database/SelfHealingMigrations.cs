@@ -54,6 +54,10 @@ public static class SelfHealingMigrations
         ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS CompletionTokens INT;
         ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS CostUsd NUMERIC(10,6);
         ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS WasSearchGrounded BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS Gateway VARCHAR(50);
+        ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS UpstreamProvider VARCHAR(100);
+        ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS GenerationId VARCHAR(255);
+        ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS LatencyMs BIGINT;
         ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS PromptVersion VARCHAR(100) NOT NULL DEFAULT 'prompt-intelligence:v1';
         ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS IsError BOOLEAN NOT NULL DEFAULT FALSE;
         ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS ErrorMessage TEXT;
@@ -147,6 +151,11 @@ public static class SelfHealingMigrations
                 OR NEW.CompletionTokens IS DISTINCT FROM OLD.CompletionTokens
                 OR NEW.CostUsd IS DISTINCT FROM OLD.CostUsd
                 OR NEW.WasSearchGrounded IS DISTINCT FROM OLD.WasSearchGrounded
+                OR NEW.SourceUrlsJson IS DISTINCT FROM OLD.SourceUrlsJson
+                OR NEW.Gateway IS DISTINCT FROM OLD.Gateway
+                OR NEW.UpstreamProvider IS DISTINCT FROM OLD.UpstreamProvider
+                OR NEW.GenerationId IS DISTINCT FROM OLD.GenerationId
+                OR NEW.LatencyMs IS DISTINCT FROM OLD.LatencyMs
                 OR NEW.PromptVersion IS DISTINCT FROM OLD.PromptVersion
                 OR NEW.IsError IS DISTINCT FROM OLD.IsError
                 OR NEW.ErrorMessage IS DISTINCT FROM OLD.ErrorMessage
@@ -843,20 +852,20 @@ public static class SelfHealingMigrations
             PRIMARY KEY (PlanKey, FeatureKey)
         );
         INSERT INTO PlanLimits (PlanKey, FeatureKey, LimitValue) VALUES
-            ('Trial', 'ai_calls_per_day', NULL),
-            ('Trial', 'ai_spend_micro_usd_per_day', NULL),
+            ('Trial', 'ai_calls_per_day', 50),
+            ('Trial', 'ai_spend_micro_usd_per_day', 1000000),
             ('Trial', 'recurring_scan_interval_days', 7),
             ('Trial', 'public_api_calls_per_day', 100),
             ('Trial', 'regions_summary', 0),
             ('Trial', 'personas_summary', 0),
-            ('Pro', 'ai_calls_per_day', NULL),
-            ('Pro', 'ai_spend_micro_usd_per_day', NULL),
+            ('Pro', 'ai_calls_per_day', 1000),
+            ('Pro', 'ai_spend_micro_usd_per_day', 2000000),
             ('Pro', 'recurring_scan_interval_days', 1),
             ('Pro', 'public_api_calls_per_day', 5000),
             ('Pro', 'regions_summary', 0),
             ('Pro', 'personas_summary', 0),
-            ('Enterprise', 'ai_calls_per_day', NULL),
-            ('Enterprise', 'ai_spend_micro_usd_per_day', NULL),
+            ('Enterprise', 'ai_calls_per_day', 5000),
+            ('Enterprise', 'ai_spend_micro_usd_per_day', 10000000),
             ('Enterprise', 'recurring_scan_interval_days', 1),
             ('Enterprise', 'public_api_calls_per_day', NULL),
             ('Enterprise', 'regions_summary', 1),
@@ -864,7 +873,15 @@ public static class SelfHealingMigrations
         ON CONFLICT (PlanKey, FeatureKey) DO NOTHING;
 
         UPDATE PlanLimits
-        SET LimitValue = NULL
+        SET LimitValue = CASE
+            WHEN PlanKey = 'Trial' AND FeatureKey = 'ai_calls_per_day' THEN 50
+            WHEN PlanKey = 'Trial' AND FeatureKey = 'ai_spend_micro_usd_per_day' THEN 1000000
+            WHEN PlanKey = 'Pro' AND FeatureKey = 'ai_calls_per_day' THEN 1000
+            WHEN PlanKey = 'Pro' AND FeatureKey = 'ai_spend_micro_usd_per_day' THEN 2000000
+            WHEN PlanKey = 'Enterprise' AND FeatureKey = 'ai_calls_per_day' THEN 5000
+            WHEN PlanKey = 'Enterprise' AND FeatureKey = 'ai_spend_micro_usd_per_day' THEN 10000000
+            ELSE LimitValue
+        END
         WHERE FeatureKey IN ('ai_calls_per_day', 'ai_spend_micro_usd_per_day');
 
         CREATE TABLE IF NOT EXISTS ContentDrafts (

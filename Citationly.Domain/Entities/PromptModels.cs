@@ -99,6 +99,10 @@ public class PromptResponse
     public decimal? CostUsd { get; set; }
     public bool WasSearchGrounded { get; set; }
     public string SourceUrlsJson { get; set; } = "[]";
+    public string? Gateway { get; set; }
+    public string? UpstreamProvider { get; set; }
+    public string? GenerationId { get; set; }
+    public long? LatencyMs { get; set; }
     public string PromptVersion { get; set; } = "prompt-intelligence:v1";
     public bool IsError { get; set; }
     public string? ErrorMessage { get; set; }

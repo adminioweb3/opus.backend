@@ -9,6 +9,10 @@ public class OpenAiClientService
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly string _apiKey;
+    private readonly string _baseUrl;
+    private readonly string _fastModel;
+    private readonly string _chatModel;
+    private readonly bool _useOpenRouter;
     private readonly IAiRequestContextAccessor _aiContext;
     private readonly IAiUsageLimiter _aiUsageLimiter;
     private readonly IAiResilienceService _aiResilience;
@@ -21,7 +25,22 @@ public class OpenAiClientService
         IAiResilienceService aiResilience)
     {
         _httpClientFactory = httpClientFactory;
-        _apiKey = ResolveConfiguredSecret(configuration["OpenAI:ApiKey"]) ?? string.Empty;
+        var openRouterKey = ResolveConfiguredSecret(configuration["OpenRouter:ApiKey"])
+            ?? ResolveConfiguredSecret(Environment.GetEnvironmentVariable("OPENROUTER_API_KEY"));
+        _apiKey = openRouterKey ?? ResolveConfiguredSecret(configuration["OpenAI:ApiKey"]) ?? string.Empty;
+        if (openRouterKey is not null)
+        {
+            _useOpenRouter = true;
+            _baseUrl = (configuration["OpenRouter:BaseUrl"] ?? "https://openrouter.ai/api/v1").TrimEnd('/');
+            _fastModel = configuration["OpenRouter:AnalysisModel"] ?? "google/gemini-2.5-flash-lite";
+            _chatModel = _fastModel;
+        }
+        else
+        {
+            _baseUrl = "https://api.openai.com/v1";
+            _fastModel = "gpt-4o-mini";
+            _chatModel = "gpt-4o";
+        }
         _aiContext = aiContext;
         _aiUsageLimiter = aiUsageLimiter;
         _aiResilience = aiResilience;
@@ -34,12 +53,12 @@ public class OpenAiClientService
             new { role = "user", content = prompt }
         };
 
-        return await CallOpenAiAsync(messages, "gpt-4o-mini", 500, ct, isIntent: true);
+        return await CallOpenAiAsync(messages, _fastModel, 500, ct, isIntent: true);
     }
 
     public async Task<string> GenerateResponseAsync(object messageList, CancellationToken ct)
     {
-        return await CallOpenAiAsync(messageList, "gpt-4o", 1600, ct);
+        return await CallOpenAiAsync(messageList, _chatModel, 1600, ct);
     }
 
     private async Task<string> CallOpenAiAsync(object messages, string model, int maxTokens, CancellationToken ct, bool isIntent = false)
@@ -54,17 +73,25 @@ public class OpenAiClientService
 
         await _aiUsageLimiter.EnsureWithinLimitsAsync(_aiContext.OrganizationId, isIntent ? "assistant.intent" : "assistant.chat", ct);
 
-        var payload = new
+        var payload = new Dictionary<string, object?>
         {
-            model = model,
-            max_tokens = maxTokens,
-            messages = messages
+            ["model"] = model,
+            ["max_tokens"] = maxTokens,
+            ["messages"] = messages
         };
+        if (_useOpenRouter)
+        {
+            payload["provider"] = new
+            {
+                data_collection = "deny",
+                zdr = true
+            };
+        }
 
         return await _aiResilience.ExecuteAsync(isIntent ? "assistant.intent" : "assistant.chat", async innerCt =>
         {
             var httpClient = _httpClientFactory.CreateClient();
-            using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/chat/completions");
+            using var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/chat/completions");
             request.Headers.Add("Authorization", $"Bearer {_apiKey}");
             request.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
 

@@ -19,7 +19,20 @@ public class CitationEnrichmentService : ICitationEnrichmentService
         string websiteProfileJson, 
         List<CitationSource> sourcesToEnrich)
     {
-        var sourcesJson = JsonSerializer.Serialize(sourcesToEnrich.Select(s => new
+        var predictiveSources = sourcesToEnrich
+            .Where(s => !string.Equals(s.Category, "Observed Web Source", StringComparison.OrdinalIgnoreCase)
+                        && !string.Equals(s.Category, "Community", StringComparison.OrdinalIgnoreCase)
+                        && !string.Equals(s.Category, "Review Platform", StringComparison.OrdinalIgnoreCase)
+                        && !string.Equals(s.Category, "Documentation", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        foreach (var observed in sourcesToEnrich.Except(predictiveSources))
+        {
+            observed.IsEnriched = true;
+            observed.EnrichedAt = DateTime.UtcNow;
+        }
+        if (predictiveSources.Count == 0) return sourcesToEnrich;
+
+        var sourcesJson = JsonSerializer.Serialize(predictiveSources.Select(s => new
         {
             Id = s.Id,
             Source = s.Source,
@@ -137,7 +150,7 @@ Return ONLY the JSON object.";
 
         var dict = parsed.ToDictionary(x => x.Id, x => x);
 
-        foreach (var source in sourcesToEnrich)
+        foreach (var source in predictiveSources)
         {
             if (dict.TryGetValue(source.Id.ToString(), out var enrichment))
             {

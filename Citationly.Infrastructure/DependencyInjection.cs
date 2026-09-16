@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Configuration;
 using Citationly.Application.Interfaces;
 using Citationly.Application.Interfaces.Companies;
 using Citationly.Application.Interfaces.Competitors;
@@ -10,12 +11,14 @@ using Citationly.Infrastructure.Services;
 using Citationly.Infrastructure.Services.Companies;
 using Citationly.Infrastructure.Services.GeoAudit;
 using Citationly.Infrastructure.Services.Scraping;
+using Citationly.Infrastructure.Services.AiProviders;
+using Citationly.Infrastructure.Services.WebEvidence;
 
 namespace Citationly.Infrastructure;
 
 public static class DependencyInjection
 {
-    public static IServiceCollection AddInfrastructure(this IServiceCollection services)
+    public static IServiceCollection AddInfrastructure(this IServiceCollection services, IConfiguration configuration)
     {
         Dapper.SqlMapper.AddTypeHandler(new DateOnlyTypeHandler());
         Dapper.SqlMapper.AddTypeHandler(new NullableDateOnlyTypeHandler());
@@ -105,7 +108,31 @@ public static class DependencyInjection
         services.AddScoped<Citationly.Application.Interfaces.IAiProvider, Citationly.Infrastructure.Services.AiProviders.AnthropicProvider>();
         services.AddScoped<Citationly.Application.Interfaces.IAiProvider, Citationly.Infrastructure.Services.AiProviders.GoogleGeminiProvider>();
         services.AddScoped<Citationly.Application.Interfaces.IAiProvider, Citationly.Infrastructure.Services.AiProviders.PerplexityProvider>();
+        services.AddHttpClient("OpenRouter", client => client.Timeout = TimeSpan.FromSeconds(60));
+        foreach (var modelSection in configuration.GetSection("OpenRouter:Models").GetChildren())
+        {
+            var definition = new OpenRouterModelDefinition(
+                modelSection["Key"] ?? string.Empty,
+                modelSection["PlatformLabel"] ?? "AI model API",
+                modelSection["Model"] ?? string.Empty,
+                modelSection.GetValue("Enabled", false),
+                Math.Clamp(modelSection.GetValue("MaxOutputTokens", 800), 64, 8192));
+
+            services.AddScoped<Citationly.Application.Interfaces.IAiProvider>(sp =>
+                new OpenRouterProvider(
+                    sp.GetRequiredService<IHttpClientFactory>().CreateClient("OpenRouter"),
+                    configuration,
+                    definition,
+                    sp.GetRequiredService<Citationly.Application.Interfaces.IAiRequestContextAccessor>(),
+                    sp.GetRequiredService<Citationly.Application.Interfaces.IAiUsageLimiter>(),
+                    sp.GetRequiredService<Citationly.Application.Interfaces.IAiResilienceService>()));
+        }
         services.AddScoped<Citationly.Application.Interfaces.IAiProviderRegistry, Citationly.Infrastructure.Services.AiProviders.AiProviderRegistry>();
+        services.AddHttpClient<Citationly.Application.Interfaces.IWebEvidenceProvider, ExaEvidenceProvider>(client =>
+        {
+            client.BaseAddress = new Uri((configuration["Exa:BaseUrl"] ?? "https://api.exa.ai").TrimEnd('/') + "/");
+            client.Timeout = TimeSpan.FromSeconds(30);
+        });
         // Onboarding Pipeline Services
         services.AddScoped<Citationly.Application.Interfaces.Onboarding.IPageClassificationService, Citationly.Infrastructure.Services.Onboarding.PageClassificationService>();
         services.AddScoped<Citationly.Application.Interfaces.Onboarding.IPageRankingService, Citationly.Infrastructure.Services.Onboarding.PageRankingService>();

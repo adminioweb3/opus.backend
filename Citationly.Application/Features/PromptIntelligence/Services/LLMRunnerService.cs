@@ -1,6 +1,7 @@
 using Citationly.Application.Interfaces;
 using Citationly.Domain.Entities;
 using System.Text.Json;
+using Microsoft.Extensions.Configuration;
 
 namespace Citationly.Application.Features.PromptIntelligence.Services;
 
@@ -19,15 +20,31 @@ public interface ILLMRunnerService
 /// </summary>
 public class LLMRunnerService : ILLMRunnerService
 {
-    public const int SamplesPerProvider = 3;
+    public const int LegacySamplesPerProvider = 3;
+    public const int SamplesPerProvider = LegacySamplesPerProvider;
     private static readonly TimeSpan CacheFreshness = TimeSpan.FromHours(6);
     private readonly IAiProviderRegistry _providerRegistry;
     private readonly IAiCompletionCache _completionCache;
+    private readonly int _samplesPerProvider;
 
     public LLMRunnerService(IAiProviderRegistry providerRegistry, IAiCompletionCache completionCache)
+        : this(providerRegistry, completionCache, LegacySamplesPerProvider)
+    {
+    }
+
+    public LLMRunnerService(
+        IAiProviderRegistry providerRegistry,
+        IAiCompletionCache completionCache,
+        IConfiguration configuration)
+        : this(providerRegistry, completionCache, Math.Clamp(configuration.GetValue("OpenRouter:ObservationSamples", 1), 1, 5))
+    {
+    }
+
+    private LLMRunnerService(IAiProviderRegistry providerRegistry, IAiCompletionCache completionCache, int samplesPerProvider)
     {
         _providerRegistry = providerRegistry;
         _completionCache = completionCache;
+        _samplesPerProvider = samplesPerProvider;
     }
 
     public async Task<IEnumerable<PromptResponse>> RunPromptAcrossModelsAsync(Guid organizationId, Guid analysisId, string promptText, CancellationToken ct, string? personaSystemPrompt = null)
@@ -54,7 +71,7 @@ public class LLMRunnerService : ILLMRunnerService
         }
 
         var tasks = providers.SelectMany(provider =>
-            Enumerable.Range(1, SamplesPerProvider)
+            Enumerable.Range(1, _samplesPerProvider)
                 .Select(sampleIndex => ExecuteProviderAsync(
                     organizationId,
                     analysisId,
@@ -119,6 +136,10 @@ public class LLMRunnerService : ILLMRunnerService
                 CostUsd = result.CostUsd,
                 WasSearchGrounded = result.WasSearchGrounded,
                 SourceUrlsJson = JsonSerializer.Serialize(result.Citations ?? Array.Empty<string>()),
+                Gateway = result.Gateway,
+                UpstreamProvider = result.UpstreamProvider,
+                GenerationId = result.GenerationId,
+                LatencyMs = result.LatencyMs,
                 PromptVersion = "prompt-intelligence:v2-sampled",
                 IsError = false,
             };

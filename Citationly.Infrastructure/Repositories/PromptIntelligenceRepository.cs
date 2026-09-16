@@ -238,10 +238,12 @@ public class PromptIntelligenceRepository : IPromptIntelligenceRepository
         var sql = @"
             INSERT INTO PromptResponses (Id, PromptAnalysisId, Platform, ResponseText, ResponseLength, CreatedAt,
                                           ProviderKey, ModelUsed, PromptTokens, CompletionTokens, CostUsd,
-                                          WasSearchGrounded, SourceUrlsJson, PromptVersion, IsError, ErrorMessage)
+                                          WasSearchGrounded, SourceUrlsJson, Gateway, UpstreamProvider,
+                                          GenerationId, LatencyMs, PromptVersion, IsError, ErrorMessage)
             VALUES (@Id, @PromptAnalysisId, @Platform, @ResponseText, @ResponseLength, @CreatedAt,
                     @ProviderKey, @ModelUsed, @PromptTokens, @CompletionTokens, @CostUsd,
-                    @WasSearchGrounded, @SourceUrlsJson::jsonb, @PromptVersion, @IsError, @ErrorMessage);";
+                    @WasSearchGrounded, @SourceUrlsJson::jsonb, @Gateway, @UpstreamProvider,
+                    @GenerationId, @LatencyMs, @PromptVersion, @IsError, @ErrorMessage);";
         await connection.ExecuteAsync(sql, responses);
     }
 

@@ -34,6 +34,17 @@ public sealed class AiUsageLimiter : IAiUsageLimiter
 
         if (!organizationId.HasValue) return;
 
+        var spendQuota = await _entitlements.CheckQuotaAsync(
+            organizationId.Value,
+            "ai_spend_micro_usd_per_day",
+            cancellationToken);
+        if (!spendQuota.IsWithinLimit)
+        {
+            var spendLimit = spendQuota.Limit.HasValue ? spendQuota.Limit.Value / 1_000_000m : 0m;
+            throw new InvalidOperationException(
+                $"Daily AI spend quota exceeded for {operationName}. Configured limit: ${spendLimit:F2}.");
+        }
+
         var tenant = await _rateLimitStore.TryConsumeAsync(
             $"ai:tenant:{organizationId.Value:N}",
             periodStart,

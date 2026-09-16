@@ -36,7 +36,11 @@ public sealed record AiProviderResult(
     int? CompletionTokens,
     decimal? CostUsd,
     bool WasSearchGrounded,
-    IReadOnlyList<string>? Citations = null);
+    IReadOnlyList<string>? Citations = null,
+    string? Gateway = null,
+    string? UpstreamProvider = null,
+    string? GenerationId = null,
+    long? LatencyMs = null);
 
 public interface IAiProviderRegistry
 {

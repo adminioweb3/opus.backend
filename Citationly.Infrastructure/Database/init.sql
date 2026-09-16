@@ -1043,11 +1043,19 @@ CREATE TABLE IF NOT EXISTS PromptResponses (
     CostUsd NUMERIC(10,6),
     WasSearchGrounded BOOLEAN NOT NULL DEFAULT FALSE,
     SourceUrlsJson JSONB NOT NULL DEFAULT '[]'::jsonb,
+    Gateway VARCHAR(50),
+    UpstreamProvider VARCHAR(100),
+    GenerationId VARCHAR(255),
+    LatencyMs BIGINT,
     PromptVersion VARCHAR(100) NOT NULL DEFAULT 'prompt-intelligence:v1',
     IsError BOOLEAN NOT NULL DEFAULT FALSE,
     ErrorMessage TEXT
 );
 ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS SourceUrlsJson JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS Gateway VARCHAR(50);
+ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS UpstreamProvider VARCHAR(100);
+ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS GenerationId VARCHAR(255);
+ALTER TABLE PromptResponses ADD COLUMN IF NOT EXISTS LatencyMs BIGINT;
 CREATE INDEX IF NOT EXISTS idx_promptresponses_analysis_platform ON PromptResponses (PromptAnalysisId, Platform, CreatedAt DESC);
 
 CREATE TABLE IF NOT EXISTS PromptMentions (
@@ -1363,20 +1371,20 @@ CREATE TABLE IF NOT EXISTS PlanLimits (
     PRIMARY KEY (PlanKey, FeatureKey)
 );
 INSERT INTO PlanLimits (PlanKey, FeatureKey, LimitValue) VALUES
-    ('Trial', 'ai_calls_per_day', NULL),
-    ('Trial', 'ai_spend_micro_usd_per_day', NULL),
+    ('Trial', 'ai_calls_per_day', 50),
+    ('Trial', 'ai_spend_micro_usd_per_day', 1000000),
     ('Trial', 'recurring_scan_interval_days', 7),
     ('Trial', 'public_api_calls_per_day', 100),
     ('Trial', 'regions_summary', 0),
     ('Trial', 'personas_summary', 0),
-    ('Pro', 'ai_calls_per_day', NULL),
-    ('Pro', 'ai_spend_micro_usd_per_day', NULL),
+    ('Pro', 'ai_calls_per_day', 1000),
+    ('Pro', 'ai_spend_micro_usd_per_day', 2000000),
     ('Pro', 'recurring_scan_interval_days', 1),
     ('Pro', 'public_api_calls_per_day', 5000),
     ('Pro', 'regions_summary', 0),
     ('Pro', 'personas_summary', 0),
-    ('Enterprise', 'ai_calls_per_day', NULL),
-    ('Enterprise', 'ai_spend_micro_usd_per_day', NULL),
+    ('Enterprise', 'ai_calls_per_day', 5000),
+    ('Enterprise', 'ai_spend_micro_usd_per_day', 10000000),
     ('Enterprise', 'recurring_scan_interval_days', 1),
     ('Enterprise', 'public_api_calls_per_day', NULL),
     ('Enterprise', 'regions_summary', 1),

@@ -8,10 +8,12 @@ namespace Citationly.Infrastructure.Services.Citations;
 public class CitationDiscoveryService : ICitationDiscoveryService
 {
     private readonly IAiCompletionService _aiCompletionService;
+    private readonly IWebEvidenceProvider _webEvidenceProvider;
 
-    public CitationDiscoveryService(IAiCompletionService aiCompletionService)
+    public CitationDiscoveryService(IAiCompletionService aiCompletionService, IWebEvidenceProvider webEvidenceProvider)
     {
         _aiCompletionService = aiCompletionService;
+        _webEvidenceProvider = webEvidenceProvider;
     }
 
     public async Task<List<CitationSource>> DiscoverCitationsAsync(
@@ -21,6 +23,15 @@ public class CitationDiscoveryService : ICitationDiscoveryService
         string promptAnalysisJson, 
         string platformScoresJson)
     {
+        if (_webEvidenceProvider.IsConfigured)
+        {
+            return await DiscoverObservedCitationsAsync(
+                organizationId,
+                websiteUrl,
+                websiteProfileJson,
+                promptAnalysisJson);
+        }
+
         string systemPrompt = "You are an expert in Generative Engine Optimization (GEO), AI Search, SEO, Knowledge Graphs, Entity Recognition, and Competitive Intelligence.";
 
         string userPrompt = $@"Your task is to identify the websites and knowledge sources most likely to influence AI-generated answers for the provided business and industry.
@@ -142,6 +153,95 @@ Return ONLY the JSON object.";
             IsEnriched = false,
             CreatedAt = DateTime.UtcNow
         }).ToList();
+    }
+
+    private async Task<List<CitationSource>> DiscoverObservedCitationsAsync(
+        Guid organizationId,
+        string websiteUrl,
+        string websiteProfileJson,
+        string promptAnalysisJson)
+    {
+        var context = CompactContext($"{websiteProfileJson} {promptAnalysisJson}", 500);
+        var queries = new[]
+        {
+            $"{websiteUrl} alternatives competitors reviews",
+            $"{context} authoritative industry sources guides",
+            $"{context} directories publications comparisons"
+        };
+
+        var observed = new Dictionary<string, (WebEvidenceItem Item, int Occurrences)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var query in queries.Where(x => !string.IsNullOrWhiteSpace(x)))
+        {
+            var result = await _webEvidenceProvider.SearchAsync(
+                organizationId,
+                new WebEvidenceQuery(query, ResultCount: 5));
+            if (!result.Success) continue;
+
+            foreach (var item in result.Items)
+            {
+                var key = NormalizeUrl(item.Url);
+                if (observed.TryGetValue(key, out var existing))
+                    observed[key] = (existing.Item, existing.Occurrences + 1);
+                else
+                    observed[key] = (item, 1);
+            }
+        }
+
+        var rank = 0;
+        return observed.Values
+            .OrderByDescending(x => x.Occurrences)
+            .ThenByDescending(x => x.Item.HighlightScores.DefaultIfEmpty(0).Max())
+            .Select(x =>
+            {
+                rank++;
+                var domain = Uri.TryCreate(x.Item.Url, UriKind.Absolute, out var uri) ? uri.Host : x.Item.Url;
+                var relevance = x.Item.HighlightScores.DefaultIfEmpty(0).Average();
+                return new CitationSource
+                {
+                    Id = Guid.NewGuid(),
+                    OrganizationId = organizationId,
+                    Rank = rank,
+                    Source = x.Item.Url,
+                    Category = CategorizeDomain(domain),
+                    Reason = $"Observed by Exa for {x.Occurrences} relevant quer{(x.Occurrences == 1 ? "y" : "ies")}: {x.Item.Title}",
+                    AuthorityScore = 0,
+                    InfluenceScore = 0,
+                    CitationFrequency = Math.Clamp(x.Occurrences * 25, 0, 100),
+                    CompetitorCoverage = 0,
+                    OpportunityScore = Math.Clamp((int)Math.Round(relevance * 100), 0, 100),
+                    MentionProbability = 0,
+                    IsEnriched = false,
+                    CreatedAt = DateTime.UtcNow
+                };
+            })
+            .ToList();
+    }
+
+    private static string CompactContext(string value, int maxLength)
+    {
+        var compact = string.Join(' ', value
+            .Replace('{', ' ')
+            .Replace('}', ' ')
+            .Replace('[', ' ')
+            .Replace(']', ' ')
+            .Replace('"', ' ')
+            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        return compact.Length <= maxLength ? compact : compact[..maxLength];
+    }
+
+    private static string NormalizeUrl(string value)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)) return value.Trim();
+        return $"{uri.Scheme}://{uri.Host}{uri.AbsolutePath.TrimEnd('/')}".ToLowerInvariant();
+    }
+
+    private static string CategorizeDomain(string domain)
+    {
+        var value = domain.ToLowerInvariant();
+        if (value.Contains("reddit") || value.Contains("quora")) return "Community";
+        if (value.Contains("g2.") || value.Contains("capterra") || value.Contains("trustpilot")) return "Review Platform";
+        if (value.Contains("github") || value.Contains("docs.")) return "Documentation";
+        return "Observed Web Source";
     }
 
     private class CitationDiscoveryResponseDto

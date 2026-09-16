@@ -91,7 +91,7 @@ builder.Services.AddSwaggerGen();
 
 // Add Clean Architecture Layers
 builder.Services.AddApplication();
-builder.Services.AddInfrastructure();
+builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddScoped<ICurrentOrganizationAccessor, CurrentOrganizationAccessor>();
 
 // Configure Hangfire

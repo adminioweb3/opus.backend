@@ -12,11 +12,14 @@ public class OpenAiEmbeddingService : IEmbeddingService
 {
     private readonly HttpClient _httpClient;
     private readonly string _apiKey;
+    private readonly string _endpoint;
+    private readonly string _operationName;
+    private readonly string _modelName;
     private readonly IAiRequestContextAccessor _aiContext;
     private readonly IAiUsageLimiter _aiUsageLimiter;
     private readonly IAiResilienceService _aiResilience;
 
-    public string ModelName => "text-embedding-3-small";
+    public string ModelName => _modelName;
 
     public OpenAiEmbeddingService(
         HttpClient httpClient,
@@ -26,7 +29,22 @@ public class OpenAiEmbeddingService : IEmbeddingService
         IAiResilienceService aiResilience)
     {
         _httpClient = httpClient;
-        _apiKey = ConfigPlaceholderHelper.Resolve(configuration["OpenAI:ApiKey"]) ?? string.Empty;
+        var openRouterKey = ConfigPlaceholderHelper.Resolve(configuration["OpenRouter:ApiKey"], "OPENROUTER_API_KEY");
+        var directOpenAiKey = ConfigPlaceholderHelper.Resolve(configuration["OpenAI:ApiKey"]);
+        _apiKey = openRouterKey ?? directOpenAiKey ?? string.Empty;
+        if (openRouterKey is not null)
+        {
+            var baseUrl = (configuration["OpenRouter:BaseUrl"] ?? "https://openrouter.ai/api/v1").TrimEnd('/');
+            _endpoint = $"{baseUrl}/embeddings";
+            _modelName = configuration["OpenRouter:EmbeddingModel"] ?? "openai/text-embedding-3-small";
+            _operationName = "openrouter.embedding";
+        }
+        else
+        {
+            _endpoint = "https://api.openai.com/v1/embeddings";
+            _modelName = "text-embedding-3-small";
+            _operationName = "openai.embedding";
+        }
         _aiContext = aiContext;
         _aiUsageLimiter = aiUsageLimiter;
         _aiResilience = aiResilience;
@@ -36,7 +54,7 @@ public class OpenAiEmbeddingService : IEmbeddingService
     {
         if (string.IsNullOrEmpty(_apiKey) || string.IsNullOrWhiteSpace(text)) return null;
 
-        await _aiUsageLimiter.EnsureWithinLimitsAsync(_aiContext.OrganizationId, "openai.embedding", cancellationToken);
+        await _aiUsageLimiter.EnsureWithinLimitsAsync(_aiContext.OrganizationId, _operationName, cancellationToken);
 
         // text-embedding-3-small's context window is 8191 tokens — a generous char cap keeps
         // callers from having to think about tokenization themselves.
@@ -44,10 +62,10 @@ public class OpenAiEmbeddingService : IEmbeddingService
 
         try
         {
-            return await _aiResilience.ExecuteAsync("openai.embedding", async ct =>
+            return await _aiResilience.ExecuteAsync(_operationName, async ct =>
             {
                 var requestBody = new { model = ModelName, input };
-                using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/embeddings");
+                using var request = new HttpRequestMessage(HttpMethod.Post, _endpoint);
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
                 request.Content = new StringContent(JsonSerializer.Serialize(requestBody), Encoding.UTF8, "application/json");
 
@@ -58,10 +76,10 @@ public class OpenAiEmbeddingService : IEmbeddingService
                 {
                     if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests || (int)response.StatusCode >= 500)
                     {
-                        throw new HttpRequestException($"OpenAI embeddings failed with {response.StatusCode}");
+                        throw new HttpRequestException($"Embedding request failed with {response.StatusCode}");
                     }
 
-                    throw new InvalidOperationException($"OpenAI embeddings failed with {response.StatusCode}: {responseString}");
+                    throw new InvalidOperationException($"Embedding request failed with {response.StatusCode}.");
                 }
 
                 using var doc = JsonDocument.Parse(responseString);
