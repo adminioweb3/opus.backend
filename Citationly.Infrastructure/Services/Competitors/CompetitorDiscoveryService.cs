@@ -75,19 +75,22 @@ public class CompetitorDiscoveryService : ICompetitorDiscoveryService
     private readonly ICompanyRepository _companyRepository;
     private readonly IPromptIntelligenceRepository _promptIntelligenceRepository;
     private readonly ICompanyRealityVerifier _companyRealityVerifier;
+    private readonly IWebEvidenceProvider _webEvidenceProvider;
 
     public CompetitorDiscoveryService(
         ICompanySimilarityService similarityService,
         IAiCompletionService aiCompletionService,
         ICompanyRepository companyRepository,
         IPromptIntelligenceRepository promptIntelligenceRepository,
-        ICompanyRealityVerifier companyRealityVerifier)
+        ICompanyRealityVerifier companyRealityVerifier,
+        IWebEvidenceProvider webEvidenceProvider)
     {
         _similarityService = similarityService;
         _aiCompletionService = aiCompletionService;
         _companyRepository = companyRepository;
         _promptIntelligenceRepository = promptIntelligenceRepository;
         _companyRealityVerifier = companyRealityVerifier;
+        _webEvidenceProvider = webEvidenceProvider;
     }
 
     public async Task<List<CompanyCompetitor>> DiscoverCompetitorsAsync(
@@ -106,15 +109,16 @@ public class CompetitorDiscoveryService : ICompetitorDiscoveryService
             : new List<CompanyCompetitor>();
         foreach (var edge in graphEdges) edge.DiscoverySource = "graph";
 
+        var targetCount = _webEvidenceProvider.IsConfigured ? 10 : TopSelectionCount;
         List<CompanyCompetitor> combined;
-        if (graphEdges.Count >= TopSelectionCount)
+        if (graphEdges.Count >= targetCount)
         {
-            combined = graphEdges.Take(TopSelectionCount).ToList();
+            combined = graphEdges.Take(targetCount).ToList();
         }
         else
         {
-            var shortfall = TopSelectionCount - graphEdges.Count;
-            Console.WriteLine($"[Discovery] Graph supplied {graphEdges.Count}/{TopSelectionCount}; generating {shortfall} to top up.");
+            var shortfall = targetCount - graphEdges.Count;
+            Console.WriteLine($"[Discovery] Graph supplied {graphEdges.Count}/{targetCount}; generating up to {shortfall} evidence-backed candidates.");
 
             var excludeDomains = candidates
                 .Select(c => c.Company.NormalizedDomain)
@@ -514,6 +518,23 @@ Return a JSON object whose ""selections"" key holds the array, with companyId co
         CancellationToken cancellationToken)
     {
         var ctx = CompanyProfileSummarizer.ExtractContext(rawProfileJson);
+        var exaCandidates = new List<WebEvidenceItem>();
+        if (_webEvidenceProvider.IsConfigured)
+        {
+            var evidenceQueries = new[]
+            {
+                $"{businessName} competitors alternatives {ctx.Industry} {ctx.Services}",
+                $"best {ctx.Products} for {ctx.TargetAudience} {ctx.Industry}"
+            };
+            foreach (var evidenceQuery in evidenceQueries)
+            {
+                var evidence = await _webEvidenceProvider.SearchAsync(
+                    organizationId,
+                    new WebEvidenceQuery(evidenceQuery, ResultCount: 5),
+                    cancellationToken);
+                if (evidence.Success) exaCandidates.AddRange(evidence.Items);
+            }
+        }
 
         const string systemPrompt =
             "You are a competitive intelligence analyst. " +
@@ -527,6 +548,14 @@ Return a JSON object whose ""selections"" key holds the array, with companyId co
         var exclusions = excludeDomains.Count > 0
             ? $"\nAlready covered, do NOT repeat: {string.Join(", ", excludeDomains)}"
             : string.Empty;
+        var observedCandidates = exaCandidates.Count == 0
+            ? string.Empty
+            : "\nObserved web candidates (when present, select only real competitors supported by these pages):\n" +
+              string.Join("\n", exaCandidates
+                  .GroupBy(x => x.Url, StringComparer.OrdinalIgnoreCase)
+                  .Select(g => g.First())
+                  .Take(10)
+                  .Select(x => $"- {x.Title}: {x.Url}"));
 
         // "well-known companies" (the old wording) reliably pulled category-dominating giants —
         // Microsoft, Google, NVIDIA — into every industry's competitor list regardless of the
@@ -543,7 +572,7 @@ Industry: {ctx.Industry}
 Services: {ctx.Services}
 Products: {ctx.Products}
 Target customers: {ctx.TargetAudience}
-Business model: {ctx.BusinessModel}{exclusions}
+Business model: {ctx.BusinessModel}{exclusions}{observedCandidates}
 
 List {count + GenerationHeadroom} real companies you are confident have an official active website. They must be FAIR, comparable competitors to this
 business — similar in scale, maturity, and market position, actually competing for the same
