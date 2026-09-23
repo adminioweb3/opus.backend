@@ -48,6 +48,27 @@ public class AiCompletionServiceTests
     }
 
     [Fact]
+    public async Task CompleteAsync_ForwardsJsonRequirement_ToProvider()
+    {
+        var context = new StubAiRequestContextAccessor();
+        var provider = new StubAiProvider(context)
+        {
+            Result = new AiProviderResult("{\"ok\":true}", "test-model", 1, 2, 0.01m, false)
+        };
+        var service = new AiCompletionService(new StubProviderRegistry(provider), context, new InMemoryAiCompletionCache());
+
+        var result = await service.CompleteAsync(
+            Guid.NewGuid(),
+            "json.operation",
+            "user",
+            "system",
+            requireJson: true);
+
+        Assert.True(result.Success);
+        Assert.True(provider.ObservedRequireJson);
+    }
+
+    [Fact]
     public async Task CompleteAsync_SetsAndRestoresOrganizationContext()
     {
         var originalOrgId = Guid.NewGuid();
@@ -83,6 +104,30 @@ public class AiCompletionServiceTests
         Assert.Null(second.CompletionTokens);
     }
 
+    [Fact]
+    public async Task CompleteAsync_HonorsPreferredOpenAiProvider()
+    {
+        var context = new StubAiRequestContextAccessor();
+        var directOpenAi = new StubAiProvider(context) { ProviderKey = "openai" };
+        var otherProvider = new StubAiProvider(context) { ProviderKey = "other" };
+        var service = new AiCompletionService(
+            new StubProviderRegistry(otherProvider, directOpenAi),
+            context,
+            new InMemoryAiCompletionCache());
+
+        var result = await service.CompleteAsync(
+            Guid.NewGuid(),
+            "analysis.operation",
+            "user",
+            "system",
+            preferredProviderKey: "openai");
+
+        Assert.True(result.Success);
+        Assert.Equal("openai", result.ProviderKey);
+        Assert.Equal(1, directOpenAi.CallCount);
+        Assert.Equal(0, otherProvider.CallCount);
+    }
+
     private sealed class StubProviderRegistry : IAiProviderRegistry
     {
         private readonly IReadOnlyList<IAiProvider> _providers;
@@ -114,8 +159,9 @@ public class AiCompletionServiceTests
         public AiProviderResult Result { get; set; } = new("{\"ok\":true}", "test-model", null, null, null, false);
         public Guid? ObservedOrganizationId { get; private set; }
         public int CallCount { get; private set; }
+        public bool ObservedRequireJson { get; private set; }
         public string PlatformName => "Stub";
-        public string ProviderKey => "stub";
+        public string ProviderKey { get; init; } = "stub";
         public bool IsConfigured => true;
         public bool SupportsWebSearch => false;
 
@@ -124,6 +170,16 @@ public class AiCompletionServiceTests
             CallCount++;
             ObservedOrganizationId = _context.OrganizationId;
             return Task.FromResult(Result);
+        }
+
+        public Task<AiProviderResult> CompleteAsync(
+            string systemPrompt,
+            string userPrompt,
+            bool requireJson,
+            CancellationToken cancellationToken = default)
+        {
+            ObservedRequireJson = requireJson;
+            return CompleteAsync(systemPrompt, userPrompt, cancellationToken);
         }
     }
 }

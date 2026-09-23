@@ -27,6 +27,23 @@ public interface IAiProvider
     bool SupportsWebSearch { get; }
 
     Task<AiProviderResult> CompleteAsync(string systemPrompt, string userPrompt, CancellationToken cancellationToken = default);
+
+    /// <summary>Runs an observation with the provider's native live-web capability when available.
+    /// The default remains a normal completion for providers without a separate search API.</summary>
+    Task<AiProviderResult> CompleteWithWebSearchAsync(
+        string systemPrompt,
+        string userPrompt,
+        CancellationToken cancellationToken = default) =>
+        CompleteAsync(systemPrompt, userPrompt, cancellationToken);
+
+    /// <summary>Requests provider-native JSON output when the caller requires a JSON object.
+    /// Providers without native JSON-mode support retain the prompt-only behavior.</summary>
+    Task<AiProviderResult> CompleteAsync(
+        string systemPrompt,
+        string userPrompt,
+        bool requireJson,
+        CancellationToken cancellationToken = default) =>
+        CompleteAsync(systemPrompt, userPrompt, cancellationToken);
 }
 
 public sealed record AiProviderResult(

@@ -12,7 +12,6 @@ public class OpenAiClientService
     private readonly string _baseUrl;
     private readonly string _fastModel;
     private readonly string _chatModel;
-    private readonly bool _useOpenRouter;
     private readonly IAiRequestContextAccessor _aiContext;
     private readonly IAiUsageLimiter _aiUsageLimiter;
     private readonly IAiResilienceService _aiResilience;
@@ -25,22 +24,12 @@ public class OpenAiClientService
         IAiResilienceService aiResilience)
     {
         _httpClientFactory = httpClientFactory;
-        var openRouterKey = ResolveConfiguredSecret(configuration["OpenRouter:ApiKey"])
-            ?? ResolveConfiguredSecret(Environment.GetEnvironmentVariable("OPENROUTER_API_KEY"));
-        _apiKey = openRouterKey ?? ResolveConfiguredSecret(configuration["OpenAI:ApiKey"]) ?? string.Empty;
-        if (openRouterKey is not null)
-        {
-            _useOpenRouter = true;
-            _baseUrl = (configuration["OpenRouter:BaseUrl"] ?? "https://openrouter.ai/api/v1").TrimEnd('/');
-            _fastModel = configuration["OpenRouter:AnalysisModel"] ?? "google/gemini-2.5-flash-lite";
-            _chatModel = _fastModel;
-        }
-        else
-        {
-            _baseUrl = "https://api.openai.com/v1";
-            _fastModel = "gpt-4o-mini";
-            _chatModel = "gpt-4o";
-        }
+        _apiKey = ResolveConfiguredSecret(configuration["OpenAI:ApiKey"])
+            ?? ResolveConfiguredSecret(Environment.GetEnvironmentVariable("OPENAI_API_KEY"))
+            ?? string.Empty;
+        _baseUrl = "https://api.openai.com/v1";
+        _fastModel = configuration["OpenAI:Model"] ?? "gpt-4o-mini";
+        _chatModel = configuration["OpenAI:ChatModel"] ?? "gpt-4o";
         _aiContext = aiContext;
         _aiUsageLimiter = aiUsageLimiter;
         _aiResilience = aiResilience;
@@ -79,15 +68,6 @@ public class OpenAiClientService
             ["max_tokens"] = maxTokens,
             ["messages"] = messages
         };
-        if (_useOpenRouter)
-        {
-            payload["provider"] = new
-            {
-                data_collection = "deny",
-                zdr = true
-            };
-        }
-
         return await _aiResilience.ExecuteAsync(isIntent ? "assistant.intent" : "assistant.chat", async innerCt =>
         {
             var httpClient = _httpClientFactory.CreateClient();

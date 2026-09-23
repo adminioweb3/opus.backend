@@ -10,13 +10,24 @@ namespace Citationly.Infrastructure.Services.Companies;
 /// </summary>
 public static class CompanyProfileSummarizer
 {
-    public record BiContext(string Industry, string Services, string TargetAudience, string BusinessModel, string Products, string Usp, string BrandPositioning, string Technologies, string Scale);
+    public record BiContext(
+        string Industry,
+        string Services,
+        string TargetAudience,
+        string BusinessModel,
+        string Products,
+        string Usp,
+        string BrandPositioning,
+        string Technologies,
+        string Scale,
+        string KnownCompetitors);
 
     public static BiContext ExtractContext(string? rawJson)
     {
         string ind = "Unknown", svc = "Unknown", aud = "Unknown", mod = "Unknown",
-            prod = "Unknown", usp = "Unknown", brand = "Unknown", tech = "Unknown", scale = "Unknown";
-        if (string.IsNullOrEmpty(rawJson)) return new BiContext(ind, svc, aud, mod, prod, usp, brand, tech, scale);
+            prod = "Unknown", usp = "Unknown", brand = "Unknown", tech = "Unknown", scale = "Unknown",
+            knownCompetitors = "Unknown";
+        if (string.IsNullOrEmpty(rawJson)) return new BiContext(ind, svc, aud, mod, prod, usp, brand, tech, scale, knownCompetitors);
 
         try
         {
@@ -49,11 +60,34 @@ public static class CompanyProfileSummarizer
 
             if (root.TryGetProperty("companyScale", out var scaleVal) && scaleVal.TryGetProperty("value", out var scaleStr))
                 scale = scaleStr.GetString() ?? "Unknown";
+
+            // Preserve authoritative onboarding answers even when the model leaves an inferred
+            // profile field blank. This server-authored object is persisted with every profile.
+            if (root.TryGetProperty("sourceContext", out var sourceContext))
+            {
+                var suppliedIndustry = ReadString(sourceContext, "industry");
+                var suppliedAudience = ReadString(sourceContext, "whoDoYouSellTo") ?? ReadString(sourceContext, "targetAudience");
+                var suppliedOffering = ReadString(sourceContext, "mainOffering");
+                knownCompetitors = ReadString(sourceContext, "knownCompetitors") ?? knownCompetitors;
+
+                if (IsUnknown(ind) && !string.IsNullOrWhiteSpace(suppliedIndustry)) ind = suppliedIndustry;
+                if (IsUnknown(aud) && !string.IsNullOrWhiteSpace(suppliedAudience)) aud = suppliedAudience;
+                if (IsUnknown(svc) && !string.IsNullOrWhiteSpace(suppliedOffering)) svc = suppliedOffering;
+                if (IsUnknown(prod) && !string.IsNullOrWhiteSpace(suppliedOffering)) prod = suppliedOffering;
+            }
         }
         catch { /* malformed/partial profile JSON — fall through with defaults */ }
 
-        return new BiContext(ind, svc, aud, mod, prod, usp, brand, tech, scale);
+        return new BiContext(ind, svc, aud, mod, prod, usp, brand, tech, scale, knownCompetitors);
     }
+
+    private static string? ReadString(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+    private static bool IsUnknown(string value) =>
+        string.IsNullOrWhiteSpace(value) || string.Equals(value, "Unknown", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Clean text blob for embedding — real prose, not raw JSON syntax noise.</summary>
     public static string BuildEmbeddingText(string companyName, string? rawProfileJson)

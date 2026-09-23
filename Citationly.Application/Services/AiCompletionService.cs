@@ -54,7 +54,7 @@ public sealed class AiCompletionService : IAiCompletionService
 
             if (!cacheHit)
             {
-                result = await provider.CompleteAsync(systemPrompt, userPrompt, cancellationToken);
+                result = await provider.CompleteAsync(systemPrompt, userPrompt, requireJson, cancellationToken);
             }
 
             if (result is null)

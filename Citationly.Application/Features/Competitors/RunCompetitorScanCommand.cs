@@ -16,6 +16,8 @@ public sealed record RunCompetitorScanResult(bool Success, string Message);
 public class RunCompetitorScanCommandHandler : IRequestHandler<RunCompetitorScanCommand, RunCompetitorScanResult>
 {
     private const int EvidenceLookbackDays = 90;
+    public const int MinimumResponseCount = 10;
+    public const int MinimumObservedMentionsForCompetitor = 2;
 
     private readonly IAiVisibilityRepository _visibilityRepo;
     private readonly IWebsiteRepository _websiteRepository;
@@ -89,10 +91,30 @@ public class RunCompetitorScanCommandHandler : IRequestHandler<RunCompetitorScan
             citations)));
 
         var scored = CompetitorEvidenceScorer.Score(inputs, responseCount);
+        var panelHasEnoughEvidence = responseCount >= MinimumResponseCount;
+        var competitorById = competitors.ToDictionary(competitor => competitor.Id);
+
+        bool IsRankEligible(CompetitorEvidenceScore score)
+        {
+            if (!panelHasEnoughEvidence || !HasEvidence(score)) return false;
+            if (score.IsYou) return true;
+            if (!score.CompetitorId.HasValue || !competitorById.TryGetValue(score.CompetitorId.Value, out var tracked)) return false;
+
+            // AI suggestions are not accepted as peers merely because they were generated. Repeated
+            // co-occurrence in captured answers upgrades them to observed evidence.
+            return string.Equals(tracked.DiscoverySource, "observed", StringComparison.OrdinalIgnoreCase) ||
+                   score.MentionCount >= MinimumObservedMentionsForCompetitor;
+        }
+
+        var rankEligible = scored.Where(IsRankEligible).ToList();
+        var benchmarkIsPublishable = panelHasEnoughEvidence && rankEligible.Count >= 2;
         var previousScanDate = await _snapshotRepo.GetLatestScanDateAsync(orgId);
         var previousSnapshots = previousScanDate.HasValue
             ? await _snapshotRepo.GetSnapshotsByScanDateAsync(orgId, previousScanDate.Value)
             : new List<CompetitorSnapshot>();
+        previousSnapshots = previousSnapshots
+            .Where(snapshot => snapshot.MethodologyVersion == CompetitorEvidenceScorer.MethodologyVersion)
+            .ToList();
         var previousYou = previousSnapshots.FirstOrDefault(snapshot => snapshot.IsYou);
         var previousByCompetitorId = previousSnapshots
             .Where(snapshot => snapshot.CompetitorId.HasValue)
@@ -114,6 +136,12 @@ public class RunCompetitorScanCommandHandler : IRequestHandler<RunCompetitorScan
             var competitor = current.CompetitorId.HasValue
                 ? competitors.FirstOrDefault(item => item.Id == current.CompetitorId.Value)
                 : null;
+            var currentIsRankEligible = IsRankEligible(current);
+            var discoverySource = current.IsYou
+                ? "self"
+                : current.MentionCount >= MinimumObservedMentionsForCompetitor
+                    ? "observed"
+                    : competitor?.DiscoverySource ?? "unknown";
 
             await _snapshotRepo.InsertSnapshotAsync(new CompetitorSnapshot
             {
@@ -124,8 +152,8 @@ public class RunCompetitorScanCommandHandler : IRequestHandler<RunCompetitorScan
                 Name = current.Name,
                 Score = current.Score,
                 // Do not award #1 merely because the brand is first in an all-zero tie.
-                Rank = HasEvidence(current)
-                    ? 1 + scored.Count(other => HasEvidence(other) && other.Score > current.Score)
+                Rank = benchmarkIsPublishable && currentIsRankEligible
+                    ? 1 + rankEligible.Count(other => other.Score > current.Score)
                     : 0,
                 ShareOfVoice = current.ShareOfVoice,
                 ShareOfVoiceChange = previous == null ? 0 : current.ShareOfVoice - previous.ShareOfVoice,
@@ -143,13 +171,15 @@ public class RunCompetitorScanCommandHandler : IRequestHandler<RunCompetitorScan
                 MeasurementSource = "openai-observed",
                 MethodologyVersion = CompetitorEvidenceScorer.MethodologyVersion,
                 ModelUsed = modelUsed,
-                DiscoverySource = current.IsYou ? "self" : competitor?.DiscoverySource ?? "unknown"
+                DiscoverySource = discoverySource
             });
         }
 
         return new RunCompetitorScanResult(
             true,
-            $"Competitor Watch calculated from {responseCount} measured OpenAI responses.");
+            benchmarkIsPublishable
+                ? $"Competitor Watch calculated from {responseCount} measured OpenAI responses; only evidence-validated brands were ranked."
+                : $"Captured {responseCount} measured OpenAI responses, but a rank requires at least {MinimumResponseCount} responses and two evidence-validated brands.");
     }
 
     private static CompetitorEvidenceInput BuildInput(

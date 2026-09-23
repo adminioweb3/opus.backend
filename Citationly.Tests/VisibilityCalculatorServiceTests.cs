@@ -46,7 +46,8 @@ public class VisibilityCalculatorServiceTests
         Assert.Equal(1, visibility.CitationCount);
         Assert.Equal(33, visibility.CitationShare);
         Assert.Equal(3, visibility.SampleCount);
-        Assert.Equal("prompt-visibility:v4-mention-share", visibility.MethodologyVersion);
+        Assert.Equal("prompt-visibility:v5-search-grounded-sampled", visibility.MethodologyVersion);
+        Assert.Equal("Preliminary", visibility.MeasurementStatus);
 
         var rival = Assert.Single(comparisons);
         Assert.Equal(67, rival.VisibilityScore);
@@ -134,6 +135,41 @@ public class VisibilityCalculatorServiceTests
         var mention = Assert.Single(mentions);
         Assert.True(mention.IsBrand);
         Assert.Equal(storedBrandName, mention.EntityName);
+    }
+
+    [Fact]
+    public void ExtractMentions_MatchesVerifiedDomainAlias()
+    {
+        var analysisId = Guid.NewGuid();
+        var response = new PromptResponse
+        {
+            Id = Guid.NewGuid(),
+            PromptAnalysisId = analysisId,
+            Platform = "Test",
+            ResponseText = "For this project, teams can also consider loweb3.com."
+        };
+
+        var mentions = new VisibilityCalculatorService()
+            .ExtractMentions(
+                analysisId,
+                new[] { response },
+                "Loweb 3 Technologies Private Limited",
+                Array.Empty<string>(),
+                new[] { "loweb3.com", "loweb3" })
+            .ToList();
+
+        Assert.True(Assert.Single(mentions).IsBrand);
+    }
+
+    [Fact]
+    public void ZeroOfFive_IsMeasuredZeroWithHonestUncertaintyInterval()
+    {
+        var visibility = new PromptVisibility { SampleCount = 5, MentionFrequency = 0 };
+
+        Assert.Equal("Measured", visibility.MeasurementStatus);
+        Assert.Equal(0, visibility.MentionedSampleCount);
+        Assert.Equal(0, visibility.ConfidenceLow);
+        Assert.InRange(visibility.ConfidenceHigh, 42, 44);
     }
 
     private static PromptMention Mention(Guid analysisId, PromptResponse response, string name, bool isBrand, int rank) => new()

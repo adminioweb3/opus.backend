@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Citationly.Application.Interfaces;
 using Citationly.Domain.Entities;
+using Microsoft.Extensions.Logging;
 
 namespace Citationly.Infrastructure.Services;
 
@@ -8,11 +9,16 @@ public class ScrapingJobService : IScrapingJobService
 {
     private readonly IScrapingJobRepository _repository;
     private readonly IScraperEngine _scraperEngine;
+    private readonly ILogger<ScrapingJobService> _logger;
 
-    public ScrapingJobService(IScrapingJobRepository repository, IScraperEngine scraperEngine)
+    public ScrapingJobService(
+        IScrapingJobRepository repository,
+        IScraperEngine scraperEngine,
+        ILogger<ScrapingJobService> logger)
     {
         _repository = repository;
         _scraperEngine = scraperEngine;
+        _logger = logger;
     }
 
     public async Task ProcessJobAsync(Guid jobId)
@@ -26,6 +32,7 @@ public class ScrapingJobService : IScrapingJobService
         if (job.Status == "Processing" || job.Status == "Completed") return;
 
         job.Status = "Processing";
+        job.ErrorMessage = null;
         job.StartedAt = DateTime.UtcNow;
         try
         {
@@ -33,7 +40,7 @@ public class ScrapingJobService : IScrapingJobService
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Failed to mark job {jobId} as Processing: {ex.Message}");
+            _logger.LogError(ex, "Failed to mark scraping job {JobId} as Processing", jobId);
             return;
         }
 
@@ -124,7 +131,7 @@ public class ScrapingJobService : IScrapingJobService
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Error processing page {page.Url}: {ex.Message}");
+                    _logger.LogWarning(ex, "Failed to persist scraped page {Url} for job {JobId}", page.Url, jobId);
                     job.FailedPages++;
                 }
             }
@@ -142,12 +149,16 @@ public class ScrapingJobService : IScrapingJobService
                 });
             }
 
+            if (job.SuccessfulPages == 0)
+                throw new InvalidOperationException("The website was reached, but no pages could be saved.");
+
             job.Status = "Completed";
         }
         catch (Exception ex)
         {
             job.Status = "Failed";
-            Console.WriteLine($"Scraping failed for job {jobId}: {ex.Message}");
+            job.ErrorMessage = ex.Message;
+            _logger.LogError(ex, "Scraping failed for job {JobId} ({Url})", jobId, job.Url);
         }
 
         job.CompletedAt = DateTime.UtcNow;
@@ -157,7 +168,7 @@ public class ScrapingJobService : IScrapingJobService
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Failed to mark job {jobId} as {job.Status}: {ex.Message}");
+            _logger.LogError(ex, "Failed to mark scraping job {JobId} as {Status}", jobId, job.Status);
         }
     }
     

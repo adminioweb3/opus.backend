@@ -124,6 +124,7 @@ public class PromptMention
 
 public class PromptVisibility
 {
+    public const int MinimumReliableSamples = 5;
     public Guid Id { get; set; }
     public Guid PromptAnalysisId { get; set; }
     public int OverallVisibilityScore { get; set; }
@@ -135,7 +136,29 @@ public class PromptVisibility
     public int CitationShare { get; set; }
     public int CompetitorCount { get; set; }
     public int SampleCount { get; set; }
-    public string MethodologyVersion { get; set; } = "prompt-visibility:v4-mention-share";
+    public string MethodologyVersion { get; set; } = "prompt-visibility:v5-search-grounded-sampled";
+    public int MentionedSampleCount => SampleCount <= 0
+        ? 0
+        : Math.Clamp((int)Math.Round(MentionFrequency / 100d * SampleCount), 0, SampleCount);
+    public string MeasurementStatus => SampleCount == 0
+        ? "Unavailable"
+        : SampleCount < MinimumReliableSamples ? "Preliminary" : "Measured";
+    public int ConfidenceLow => WilsonInterval().Low;
+    public int ConfidenceHigh => WilsonInterval().High;
+
+    private (int Low, int High) WilsonInterval()
+    {
+        if (SampleCount <= 0) return (0, 0);
+        const double z = 1.96;
+        var n = (double)SampleCount;
+        var p = MentionedSampleCount / n;
+        var denominator = 1 + z * z / n;
+        var centre = (p + z * z / (2 * n)) / denominator;
+        var margin = z * Math.Sqrt((p * (1 - p) + z * z / (4 * n)) / n) / denominator;
+        return (
+            Math.Clamp((int)Math.Round((centre - margin) * 100), 0, 100),
+            Math.Clamp((int)Math.Round((centre + margin) * 100), 0, 100));
+    }
 }
 
 public class PromptRecommendation

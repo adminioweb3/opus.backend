@@ -29,22 +29,10 @@ public class OpenAiEmbeddingService : IEmbeddingService
         IAiResilienceService aiResilience)
     {
         _httpClient = httpClient;
-        var openRouterKey = ConfigPlaceholderHelper.Resolve(configuration["OpenRouter:ApiKey"], "OPENROUTER_API_KEY");
-        var directOpenAiKey = ConfigPlaceholderHelper.Resolve(configuration["OpenAI:ApiKey"]);
-        _apiKey = openRouterKey ?? directOpenAiKey ?? string.Empty;
-        if (openRouterKey is not null)
-        {
-            var baseUrl = (configuration["OpenRouter:BaseUrl"] ?? "https://openrouter.ai/api/v1").TrimEnd('/');
-            _endpoint = $"{baseUrl}/embeddings";
-            _modelName = configuration["OpenRouter:EmbeddingModel"] ?? "openai/text-embedding-3-small";
-            _operationName = "openrouter.embedding";
-        }
-        else
-        {
-            _endpoint = "https://api.openai.com/v1/embeddings";
-            _modelName = "text-embedding-3-small";
-            _operationName = "openai.embedding";
-        }
+        _apiKey = ConfigPlaceholderHelper.Resolve(configuration["OpenAI:ApiKey"], "OPENAI_API_KEY") ?? string.Empty;
+        _endpoint = "https://api.openai.com/v1/embeddings";
+        _modelName = configuration["OpenAI:EmbeddingModel"] ?? "text-embedding-3-small";
+        _operationName = "openai.embedding";
         _aiContext = aiContext;
         _aiUsageLimiter = aiUsageLimiter;
         _aiResilience = aiResilience;

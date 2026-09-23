@@ -360,7 +360,7 @@ internal static class DatabaseMigrations
             WHERE MethodologyVersion IS NULL;
 
             ALTER TABLE PromptVisibility
-                ALTER COLUMN MethodologyVersion SET DEFAULT 'prompt-visibility:v4-mention-share',
+                ALTER COLUMN MethodologyVersion SET DEFAULT 'prompt-visibility:v5-search-grounded-sampled',
                 ALTER COLUMN MethodologyVersion SET NOT NULL;
             """),
         new(
@@ -404,6 +404,55 @@ internal static class DatabaseMigrations
             ALTER TABLE Integrations ADD COLUMN IF NOT EXISTS CredentialHint VARCHAR(255) NOT NULL DEFAULT '';
             ALTER TABLE Integrations ADD COLUMN IF NOT EXISTS LastVerifiedAt TIMESTAMP WITH TIME ZONE;
             ALTER TABLE Integrations ADD COLUMN IF NOT EXISTS LastError TEXT;
+            """),
+        new(
+            "202609160001_openrouter_promptresponse_provenance_repair",
+            "Add OpenRouter provenance fields to PromptResponses on existing databases",
+            """
+            ALTER TABLE PromptResponses
+                ADD COLUMN IF NOT EXISTS Gateway VARCHAR(50),
+                ADD COLUMN IF NOT EXISTS UpstreamProvider VARCHAR(100),
+                ADD COLUMN IF NOT EXISTS GenerationId VARCHAR(255),
+                ADD COLUMN IF NOT EXISTS LatencyMs BIGINT;
+
+            CREATE OR REPLACE FUNCTION trg_promptresponses_protect_evidence() RETURNS TRIGGER AS $body$
+            BEGIN
+                IF NEW.ResponseText IS DISTINCT FROM OLD.ResponseText
+                    OR NEW.ResponseLength IS DISTINCT FROM OLD.ResponseLength
+                    OR NEW.Platform IS DISTINCT FROM OLD.Platform
+                    OR NEW.PromptAnalysisId IS DISTINCT FROM OLD.PromptAnalysisId
+                    OR NEW.CreatedAt IS DISTINCT FROM OLD.CreatedAt
+                    OR NEW.ProviderKey IS DISTINCT FROM OLD.ProviderKey
+                    OR NEW.ModelUsed IS DISTINCT FROM OLD.ModelUsed
+                    OR NEW.PromptTokens IS DISTINCT FROM OLD.PromptTokens
+                    OR NEW.CompletionTokens IS DISTINCT FROM OLD.CompletionTokens
+                    OR NEW.CostUsd IS DISTINCT FROM OLD.CostUsd
+                    OR NEW.WasSearchGrounded IS DISTINCT FROM OLD.WasSearchGrounded
+                    OR NEW.SourceUrlsJson IS DISTINCT FROM OLD.SourceUrlsJson
+                    OR NEW.Gateway IS DISTINCT FROM OLD.Gateway
+                    OR NEW.UpstreamProvider IS DISTINCT FROM OLD.UpstreamProvider
+                    OR NEW.GenerationId IS DISTINCT FROM OLD.GenerationId
+                    OR NEW.LatencyMs IS DISTINCT FROM OLD.LatencyMs
+                    OR NEW.PromptVersion IS DISTINCT FROM OLD.PromptVersion
+                    OR NEW.IsError IS DISTINCT FROM OLD.IsError
+                    OR NEW.ErrorMessage IS DISTINCT FROM OLD.ErrorMessage
+                THEN
+                    RAISE EXCEPTION 'PromptResponses evidence fields are immutable once inserted - only Sentiment/SentimentQuote may be updated.';
+                END IF;
+                RETURN NEW;
+            END;
+            $body$ LANGUAGE plpgsql;
+
+            DROP TRIGGER IF EXISTS trg_protect_promptresponses_evidence ON PromptResponses;
+            CREATE TRIGGER trg_protect_promptresponses_evidence
+                BEFORE UPDATE ON PromptResponses
+                FOR EACH ROW EXECUTE FUNCTION trg_promptresponses_protect_evidence();
+            """),
+        new(
+            "202609170001_scraping_job_diagnostics",
+            "Persist website crawl failure details for onboarding diagnostics",
+            """
+            ALTER TABLE ScrapingJobs ADD COLUMN IF NOT EXISTS ErrorMessage TEXT;
             """)
     ];
 }

@@ -1,7 +1,17 @@
 namespace Citationly.Application.Dtos;
 
 // ── Score (existing shape, now typed) ───────────────────────────
-public record ScoreEntryDto(int Value, string Change, string Direction);
+public record ScoreEntryDto(
+    int? Value,
+    string? Change,
+    string Direction,
+    string Status,
+    string Source,
+    string Methodology,
+    int? Numerator,
+    int? Denominator,
+    int? SampleSize,
+    string Evidence);
 
 public record ScoreCardDto(
     ScoreEntryDto VisibilityScore,
@@ -15,11 +25,11 @@ public record ScoreCardDto(
 
 // ── Header ──────────────────────────────────────────────────────
 public record GeoDashboardHeaderDto(
-    int CompositeScore,
+    int? CompositeScore,
     string Grade,
-    int IndustryAverage,
-    int DeltaVsIndustry,
-    string CompositeChange,
+    int? IndustryAverage,
+    int? DeltaVsIndustry,
+    string? CompositeChange,
     int EnginesScanned,
     int PromptsTracked,
     string Status,

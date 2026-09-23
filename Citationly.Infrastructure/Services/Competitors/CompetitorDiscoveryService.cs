@@ -447,6 +447,7 @@ Products: {ctx.Products}
 Target customers: {ctx.TargetAudience}
 Business model: {ctx.BusinessModel}
 Unique selling proposition: {ctx.Usp}
+User-provided known competitors: {ctx.KnownCompetitors}
 
 CANDIDATES (id | name | industry | services | products | audience):
 {candidateLines}
@@ -572,7 +573,8 @@ Industry: {ctx.Industry}
 Services: {ctx.Services}
 Products: {ctx.Products}
 Target customers: {ctx.TargetAudience}
-Business model: {ctx.BusinessModel}{exclusions}{observedCandidates}
+Business model: {ctx.BusinessModel}
+User-provided known competitors: {ctx.KnownCompetitors}{exclusions}{observedCandidates}
 
 List {count + GenerationHeadroom} real companies you are confident have an official active website. They must be FAIR, comparable competitors to this
 business — similar in scale, maturity, and market position, actually competing for the same

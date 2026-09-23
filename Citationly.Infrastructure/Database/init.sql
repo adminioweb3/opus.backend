@@ -1086,14 +1086,14 @@ CREATE TABLE IF NOT EXISTS PromptVisibility (
     CitationShare INT NOT NULL DEFAULT 0,
     CompetitorCount INT NOT NULL DEFAULT 0,
     SampleCount INT NOT NULL DEFAULT 0,
-    MethodologyVersion VARCHAR(100) NOT NULL DEFAULT 'prompt-visibility:v4-mention-share'
+    MethodologyVersion VARCHAR(100) NOT NULL DEFAULT 'prompt-visibility:v5-search-grounded-sampled'
 );
 ALTER TABLE PromptVisibility ADD COLUMN IF NOT EXISTS VisibilityRank INT NOT NULL DEFAULT 0;
 ALTER TABLE PromptVisibility ADD COLUMN IF NOT EXISTS CitationShare INT NOT NULL DEFAULT 0;
 ALTER TABLE PromptVisibility ADD COLUMN IF NOT EXISTS SampleCount INT NOT NULL DEFAULT 0;
 ALTER TABLE PromptVisibility ADD COLUMN IF NOT EXISTS MethodologyVersion VARCHAR(100);
 UPDATE PromptVisibility SET MethodologyVersion = 'legacy-v2' WHERE MethodologyVersion IS NULL;
-ALTER TABLE PromptVisibility ALTER COLUMN MethodologyVersion SET DEFAULT 'prompt-visibility:v4-mention-share';
+ALTER TABLE PromptVisibility ALTER COLUMN MethodologyVersion SET DEFAULT 'prompt-visibility:v5-search-grounded-sampled';
 ALTER TABLE PromptVisibility ALTER COLUMN MethodologyVersion SET NOT NULL;
 
 CREATE TABLE IF NOT EXISTS PromptRecommendations (
@@ -1254,6 +1254,7 @@ CREATE TABLE IF NOT EXISTS ScrapingJobs (
     FolderId UUID REFERENCES SourceFolders(Id) ON DELETE SET NULL,
     Url VARCHAR(2048) NOT NULL,
     Status VARCHAR(50) DEFAULT 'Pending', -- Pending, Processing, Completed, Failed
+    ErrorMessage TEXT,
     ScrapeType VARCHAR(50) DEFAULT 'Single', -- Single, Website
     TotalPages INT DEFAULT 0,
     ProcessedPages INT DEFAULT 0,

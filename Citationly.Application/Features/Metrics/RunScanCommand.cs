@@ -35,7 +35,6 @@ public class RunScanCommandHandler : IRequestHandler<RunScanCommand, RunScanResu
 
     private readonly IAiVisibilityRepository _aiVisibilityRepo;
     private readonly IWebsiteRepository _websiteRepository;
-    private readonly IAiCompletionService _aiCompletionService;
     private readonly IPromptIntelligenceRepository _promptIntelligenceRepo;
     private readonly ICompetitorRankingService _competitorRankingService;
     private readonly IGeoTechnicalAuditService _geoTechnicalAuditService;
@@ -43,14 +42,12 @@ public class RunScanCommandHandler : IRequestHandler<RunScanCommand, RunScanResu
     public RunScanCommandHandler(
         IAiVisibilityRepository aiVisibilityRepo,
         IWebsiteRepository websiteRepository,
-        IAiCompletionService aiCompletionService,
         IPromptIntelligenceRepository promptIntelligenceRepo,
         ICompetitorRankingService competitorRankingService,
         IGeoTechnicalAuditService geoTechnicalAuditService)
     {
         _aiVisibilityRepo = aiVisibilityRepo;
         _websiteRepository = websiteRepository;
-        _aiCompletionService = aiCompletionService;
         _promptIntelligenceRepo = promptIntelligenceRepo;
         _competitorRankingService = competitorRankingService;
         _geoTechnicalAuditService = geoTechnicalAuditService;
@@ -75,12 +72,9 @@ public class RunScanCommandHandler : IRequestHandler<RunScanCommand, RunScanResu
             return new RunScanResult(false, "No analyzed data found yet for this organization. Complete onboarding analysis first, then run a GEO scan.");
         }
 
-        // Phase 3 A1: Visibility/Citation/Sentiment/Competitor are now real, deterministic
-        // computations over the org's actual prompt-intelligence history instead of a single LLM
-        // call inventing all 8 scores at once. Only the four that still have no real data source
-        // (pending Phase 4's technical GEO audit and Phase 5's fact-accuracy monitor) go to the
-        // model — and it is no longer told to "keep scores close to the previous scan", since that
-        // instruction only ever existed to paper over the fact that nothing was really measured.
+        // Evidence-only scoring: prompt metrics are computed from captured responses and technical
+        // readiness comes from the deterministic website audit. Unsupported metrics remain absent;
+        // this scan path does not ask a model to generate scorecard numbers.
         var since = DateTime.UtcNow.AddDays(-RealScoreLookbackDays);
         var realVisibilityScore = await ComputeRealVisibilityScoreAsync(orgId, since);
         var realCitationScore = await ComputeRealCitationScoreAsync(orgId, since);
@@ -89,22 +83,6 @@ public class RunScanCommandHandler : IRequestHandler<RunScanCommand, RunScanResu
         var geoAudit = profile == null
             ? null
             : await _geoTechnicalAuditService.AuditAsync(profile.WebsiteUrl, cancellationToken);
-
-        var (systemPrompt, userPrompt) = BuildPrompt(profile, executiveSummary, personaSummary, regionSummary, competitors, previousScan);
-        var completion = await _aiCompletionService.CompleteAsync(
-            orgId,
-            "geo.scan.technical_estimates",
-            userPrompt,
-            systemPrompt,
-            requireJson: true,
-            preferredProviderKey: "openai",
-            cancellationToken);
-        if (!completion.Success)
-        {
-            return new RunScanResult(false, completion.ErrorMessage ?? "GEO scan could not be completed because AI estimates were unavailable.");
-        }
-
-        var analysis = ParseAnalysis(completion.Content, previousScan);
 
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
 
@@ -116,11 +94,11 @@ public class RunScanCommandHandler : IRequestHandler<RunScanCommand, RunScanResu
             CitationScore = realCitationScore,
             SentimentScore = realSentimentScore,
             CompetitorScore = realCompetitorScore,
-            HallucinationRisk = analysis.HallucinationRisk,
-            SeoHealth = geoAudit?.SeoHealthScore ?? analysis.SeoHealth,
-            AeoReadiness = geoAudit?.AeoReadinessScore ?? analysis.AeoReadiness,
-            GeoReadiness = geoAudit?.OverallScore ?? analysis.GeoReadiness,
-            ScoringMethodVersion = geoAudit == null ? "v2-partial-real" : "v3-geo-audit",
+            HallucinationRisk = 0,
+            SeoHealth = geoAudit?.SeoHealthScore ?? 0,
+            AeoReadiness = geoAudit?.AeoReadinessScore ?? 0,
+            GeoReadiness = geoAudit?.OverallScore ?? 0,
+            ScoringMethodVersion = geoAudit == null ? "v4-evidence-only" : "v4-evidence-audit",
         };
         await _aiVisibilityRepo.InsertHistoricalScanAsync(scan);
 
@@ -132,37 +110,25 @@ public class RunScanCommandHandler : IRequestHandler<RunScanCommand, RunScanResu
         }
 
         // ── Geo pillars ──
-        foreach (var key in PillarKeys)
+        if (geoAudit != null)
         {
-            var (label, description) = PillarInfo[key];
-            var score = geoAudit?.PillarScores.GetValueOrDefault(key)
-                ?? (analysis.Pillars.TryGetValue(key, out var pScore) ? pScore : 50);
-            await _aiVisibilityRepo.InsertGeoPillarAsync(new GeoPillar
+            foreach (var key in PillarKeys)
             {
-                OrganizationId = orgId,
-                ScanDate = today,
-                PillarKey = key,
-                Label = label,
-                Description = description,
-                Score = score
-            });
+                var (label, description) = PillarInfo[key];
+                await _aiVisibilityRepo.InsertGeoPillarAsync(new GeoPillar
+                {
+                    OrganizationId = orgId,
+                    ScanDate = today,
+                    PillarKey = key,
+                    Label = label,
+                    Description = description,
+                    Score = geoAudit.PillarScores.GetValueOrDefault(key)
+                });
+            }
         }
 
         // ── Prompt-type coverage ──
-        foreach (var type in PromptTypes)
-        {
-            var coverage = analysis.PromptCoverage.TryGetValue(type, out var c) ? c : (Percentage: 50, Direction: "flat");
-            await _aiVisibilityRepo.InsertPromptCoverageAsync(new PromptCoverage
-            {
-                OrganizationId = orgId,
-                ScanDate = today,
-                PromptType = type,
-                Example = GetPromptExample(type),
-                Note = $"{coverage.Percentage}% coverage this scan",
-                Percentage = coverage.Percentage,
-                Direction = coverage.Direction
-            });
-        }
+        // No prompt-type percentages are persisted until a deterministic taxonomy denominator is available.
 
         // ── Win/loss event: only logged if there's a genuine, meaningful score swing ──
         if (previousScan != null)
@@ -372,20 +338,22 @@ public class RunScanCommandHandler : IRequestHandler<RunScanCommand, RunScanResu
 
     /// <summary>Average of OverallVisibilityScore across the org's real prompt-intelligence
     /// executions (VisibilityCalculatorService's deterministic formula) in the lookback window.
-    /// 50 (neutral, not a guess) if the org hasn't run any prompts yet.</summary>
+    /// Zero is persisted as an unavailable sentinel when the org has no prompt evidence; the
+    /// evidence-aware API returns null/N/A rather than presenting that sentinel as a score.</summary>
     private async Task<int> ComputeRealVisibilityScoreAsync(Guid organizationId, DateTime since)
     {
         var rows = (await _promptIntelligenceRepo.GetVisibilitySummaryDataAsync(organizationId, since)).ToList();
-        return rows.Count == 0 ? 50 : (int)Math.Round(rows.Average(r => r.OverallVisibilityScore));
+        return rows.Count == 0 ? 0 : (int)Math.Round(rows.Average(r => r.OverallVisibilityScore));
     }
 
     /// <summary>Real "citation coverage": the percentage of the org's captured AI-response
     /// analyses that included at least one citation to the org's own ("Owned") domain, per
-    /// CitationExtractorService's real regex extraction. 50 if there's no analysis history yet.</summary>
+    /// CitationExtractorService's real regex extraction. Zero is an unavailable sentinel when
+    /// there is no analysis history and a genuine measured zero when analyses exist.</summary>
     private async Task<int> ComputeRealCitationScoreAsync(Guid organizationId, DateTime since)
     {
         var visibilityRows = (await _promptIntelligenceRepo.GetVisibilitySummaryDataAsync(organizationId, since)).ToList();
-        if (visibilityRows.Count == 0) return 50;
+        if (visibilityRows.Count == 0) return 0;
 
         var citationRows = (await _promptIntelligenceRepo.GetCitationSummaryDataAsync(organizationId, since)).ToList();
         var analysesWithOwnedCitation = citationRows
@@ -399,13 +367,13 @@ public class RunScanCommandHandler : IRequestHandler<RunScanCommand, RunScanResu
 
     /// <summary>Real net-sentiment score from SentimentClassifierService's per-response
     /// classifications: 50 (neutral) plus a swing toward 100/0 based on the positive-minus-
-    /// negative share of classified responses. 50 if nothing has been classified yet.</summary>
+    /// negative share of classified responses. Zero is an unavailable sentinel if nothing was classified.</summary>
     private async Task<int> ComputeRealSentimentScoreAsync(Guid organizationId, DateTime since)
     {
         var rows = (await _promptIntelligenceRepo.GetSentimentSummaryDataAsync(organizationId, since))
             .Where(r => !string.IsNullOrWhiteSpace(r.Sentiment))
             .ToList();
-        if (rows.Count == 0) return 50;
+        if (rows.Count == 0) return 0;
 
         var positive = rows.Count(r => r.Sentiment == "pos");
         var negative = rows.Count(r => r.Sentiment == "neg");

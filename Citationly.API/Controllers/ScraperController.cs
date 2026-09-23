@@ -145,9 +145,12 @@ public class ScraperController : ControllerBase
         return Ok(new
         {
             job.Status,
+            job.ErrorMessage,
             job.ProcessedPages,
             job.TotalPages,
             job.MaxPages,
+            job.SuccessfulPages,
+            job.FailedPages,
             job.StartedAt,
             job.CompletedAt
         });

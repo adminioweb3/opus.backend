@@ -101,32 +101,8 @@ public static class DependencyInjection
         // Application Services
         services.AddScoped<IEmbeddingService, OpenAiEmbeddingService>();
 
-        // AI provider abstraction (Phase 2) - one real implementation per vendor. Each is
-        // IsConfigured=false (and simply excluded by AiProviderRegistry.GetConfiguredProviders())
-        // until its own API key is set - no provider ever fabricates another vendor's response.
+        // All AI completion traffic uses the direct OpenAI API.
         services.AddScoped<Citationly.Application.Interfaces.IAiProvider, Citationly.Infrastructure.Services.AiProviders.OpenAiProvider>();
-        services.AddScoped<Citationly.Application.Interfaces.IAiProvider, Citationly.Infrastructure.Services.AiProviders.AnthropicProvider>();
-        services.AddScoped<Citationly.Application.Interfaces.IAiProvider, Citationly.Infrastructure.Services.AiProviders.GoogleGeminiProvider>();
-        services.AddScoped<Citationly.Application.Interfaces.IAiProvider, Citationly.Infrastructure.Services.AiProviders.PerplexityProvider>();
-        services.AddHttpClient("OpenRouter", client => client.Timeout = TimeSpan.FromSeconds(60));
-        foreach (var modelSection in configuration.GetSection("OpenRouter:Models").GetChildren())
-        {
-            var definition = new OpenRouterModelDefinition(
-                modelSection["Key"] ?? string.Empty,
-                modelSection["PlatformLabel"] ?? "AI model API",
-                modelSection["Model"] ?? string.Empty,
-                modelSection.GetValue("Enabled", false),
-                Math.Clamp(modelSection.GetValue("MaxOutputTokens", 800), 64, 8192));
-
-            services.AddScoped<Citationly.Application.Interfaces.IAiProvider>(sp =>
-                new OpenRouterProvider(
-                    sp.GetRequiredService<IHttpClientFactory>().CreateClient("OpenRouter"),
-                    configuration,
-                    definition,
-                    sp.GetRequiredService<Citationly.Application.Interfaces.IAiRequestContextAccessor>(),
-                    sp.GetRequiredService<Citationly.Application.Interfaces.IAiUsageLimiter>(),
-                    sp.GetRequiredService<Citationly.Application.Interfaces.IAiResilienceService>()));
-        }
         services.AddScoped<Citationly.Application.Interfaces.IAiProviderRegistry, Citationly.Infrastructure.Services.AiProviders.AiProviderRegistry>();
         services.AddHttpClient<Citationly.Application.Interfaces.IWebEvidenceProvider, ExaEvidenceProvider>(client =>
         {

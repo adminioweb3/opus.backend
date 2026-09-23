@@ -38,9 +38,9 @@ public sealed class OpenAiProvider : IAiProvider
         IAiResilienceService aiResilience)
     {
         _httpClient = httpClient;
-        _apiKey = ConfigPlaceholderHelper.Resolve(configuration["OpenAI:ApiKey"]);
+        _apiKey = ConfigPlaceholderHelper.Resolve(configuration["OpenAI:ApiKey"], "OPENAI_API_KEY");
         _model = ConfigPlaceholderHelper.Resolve(configuration["OpenAI:Model"]) ?? "gpt-4o-mini";
-        _searchModel = ConfigPlaceholderHelper.Resolve(configuration["OpenAI:SearchModel"]) ?? "gpt-4o-mini";
+        _searchModel = ConfigPlaceholderHelper.Resolve(configuration["OpenAI:SearchModel"]) ?? "gpt-5-search-api";
         _maxTokens = configuration.GetValue("OpenAI:MaxTokens", 4096);
         _searchMaxTokens = configuration.GetValue("OpenAI:SearchMaxTokens", _maxTokens);
         _enableWebSearch = configuration.GetValue("OpenAI:EnableWebSearch", true);
@@ -49,32 +49,28 @@ public sealed class OpenAiProvider : IAiProvider
         _aiResilience = aiResilience;
     }
 
-    public string PlatformName => "ChatGPT";
+    public string PlatformName => "OpenAI API";
     public string ProviderKey => "openai";
     public bool IsConfigured => _apiKey is not null;
     public bool SupportsWebSearch => _enableWebSearch;
 
-    public async Task<AiProviderResult> CompleteAsync(string systemPrompt, string userPrompt, CancellationToken cancellationToken = default)
+    public Task<AiProviderResult> CompleteAsync(
+        string systemPrompt,
+        string userPrompt,
+        CancellationToken cancellationToken = default) =>
+        CompleteAsync(systemPrompt, userPrompt, requireJson: false, cancellationToken);
+
+    public async Task<AiProviderResult> CompleteAsync(
+        string systemPrompt,
+        string userPrompt,
+        bool requireJson,
+        CancellationToken cancellationToken = default)
     {
         if (!IsConfigured) throw new InvalidOperationException("OpenAI is not configured.");
 
         await _aiUsageLimiter.EnsureWithinLimitsAsync(_aiContext.OrganizationId, "provider:openai", cancellationToken);
 
-        if (_enableWebSearch)
-        {
-            return await CompleteWithResponsesWebSearchAsync(systemPrompt, userPrompt, cancellationToken);
-        }
-
-        var body = new
-        {
-            model = _model,
-            messages = new[]
-            {
-                new { role = "system", content = systemPrompt },
-                new { role = "user", content = userPrompt }
-            },
-            max_tokens = _maxTokens
-        };
+        var body = CreateChatCompletionBody(_model, systemPrompt, userPrompt, _maxTokens, requireJson);
 
         return await _aiResilience.ExecuteAsync("provider:openai", async ct =>
         {
@@ -114,23 +110,23 @@ public sealed class OpenAiProvider : IAiProvider
         }, cancellationToken);
     }
 
-    private async Task<AiProviderResult> CompleteWithResponsesWebSearchAsync(string systemPrompt, string userPrompt, CancellationToken cancellationToken)
+    public Task<AiProviderResult> CompleteWithWebSearchAsync(
+        string systemPrompt,
+        string userPrompt,
+        CancellationToken cancellationToken = default) =>
+        _enableWebSearch
+            ? CompleteWithSearchModelAsync(systemPrompt, userPrompt, cancellationToken)
+            : CompleteAsync(systemPrompt, userPrompt, cancellationToken);
+
+    private async Task<AiProviderResult> CompleteWithSearchModelAsync(
+        string systemPrompt,
+        string userPrompt,
+        CancellationToken cancellationToken)
     {
-        // NOTE: gpt-4o-mini previously used a preview search model.
-        // endpoint (the Responses API rejects it with model_not_found). The web_search
-        // tool is the Chat-Completions equivalent of the Responses-API web_search_preview.
-        var body = new
-        {
-            model = _searchModel,
-            messages = new[]
-            {
-                new { role = "system", content = systemPrompt },
-                new { role = "user", content = userPrompt }
-            },
-            // The "web_search" tool is no longer available on standard chat completions models.
-            // tools = new[] { new { type = "web_search" } },
-            max_tokens = _searchMaxTokens
-        };
+        // OpenAI's Chat Completions search model always retrieves from the web. Keep this path
+        // exclusive to observation runs; JSON extraction and other internal synthesis calls use
+        // the normal model and must not silently incur search calls.
+        var body = CreateChatCompletionBody(_searchModel, systemPrompt, userPrompt, _searchMaxTokens, requireJson: false);
 
         return await _aiResilience.ExecuteAsync("provider:openai", async ct =>
         {
@@ -154,20 +150,52 @@ public sealed class OpenAiProvider : IAiProvider
             var content = ExtractChatCompletionsOutputText(doc.RootElement);
 
             int? promptTokens = null, completionTokens = null;
+            // Search-model pricing includes tool-call charges that cannot be reconstructed from
+            // token counts alone. Leave cost null instead of recording an understated fake cost.
             decimal? cost = null;
             if (doc.RootElement.TryGetProperty("usage", out var usage))
             {
                 promptTokens = usage.TryGetProperty("prompt_tokens", out var pt) ? pt.GetInt32() : null;
                 completionTokens = usage.TryGetProperty("completion_tokens", out var cpt) ? cpt.GetInt32() : null;
-                if (promptTokens.HasValue && completionTokens.HasValue)
-                {
-                    cost = (promptTokens.Value * InputCostPerMillionTokens + completionTokens.Value * OutputCostPerMillionTokens) / 1_000_000m;
-                }
             }
 
             await _aiUsageLimiter.RecordEstimatedCostAsync(_aiContext.OrganizationId, cost, "provider:openai", ct);
-            return new AiProviderResult(content, _searchModel, promptTokens, completionTokens, cost, WasSearchGrounded: false);
+            var citations = ExtractChatCompletionCitationUrls(doc.RootElement);
+            return new AiProviderResult(
+                content,
+                _searchModel,
+                promptTokens,
+                completionTokens,
+                cost,
+                WasSearchGrounded: true,
+                Citations: citations);
         }, cancellationToken);
+    }
+
+    private static Dictionary<string, object?> CreateChatCompletionBody(
+        string model,
+        string systemPrompt,
+        string userPrompt,
+        int maxTokens,
+        bool requireJson)
+    {
+        var body = new Dictionary<string, object?>
+        {
+            ["model"] = model,
+            ["messages"] = new[]
+            {
+                new { role = "system", content = systemPrompt },
+                new { role = "user", content = userPrompt }
+            },
+            [model.StartsWith("gpt-5", StringComparison.OrdinalIgnoreCase)
+                ? "max_completion_tokens"
+                : "max_tokens"] = maxTokens
+        };
+
+        if (requireJson)
+            body["response_format"] = new { type = "json_object" };
+
+        return body;
     }
 
     private static string ExtractChatCompletionsOutputText(JsonElement root)
@@ -183,5 +211,34 @@ public sealed class OpenAiProvider : IAiProvider
             }
         }
         return string.Empty;
+    }
+
+    private static IReadOnlyList<string> ExtractChatCompletionCitationUrls(JsonElement root)
+    {
+        var urls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (!root.TryGetProperty("choices", out var choices)
+            || choices.ValueKind != JsonValueKind.Array
+            || choices.GetArrayLength() == 0
+            || !choices[0].TryGetProperty("message", out var message)
+            || !message.TryGetProperty("annotations", out var annotations)
+            || annotations.ValueKind != JsonValueKind.Array)
+            return urls.ToList();
+
+        foreach (var annotation in annotations.EnumerateArray())
+        {
+            string? url = null;
+            if (annotation.TryGetProperty("url", out var directUrl) && directUrl.ValueKind == JsonValueKind.String)
+                url = directUrl.GetString();
+            else if (annotation.TryGetProperty("url_citation", out var citation)
+                     && citation.TryGetProperty("url", out var nestedUrl)
+                     && nestedUrl.ValueKind == JsonValueKind.String)
+                url = nestedUrl.GetString();
+
+            if (Uri.TryCreate(url, UriKind.Absolute, out var uri)
+                && uri.Scheme is "http" or "https")
+                urls.Add(uri.AbsoluteUri);
+        }
+
+        return urls.ToList();
     }
 }

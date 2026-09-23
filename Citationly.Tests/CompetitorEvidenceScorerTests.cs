@@ -23,12 +23,12 @@ public class CompetitorEvidenceScorerTests
         Assert.Equal(4, user.ResponseCount);
         Assert.Equal(20, user.AveragePosition);
         Assert.Equal(40, user.ShareOfVoice);
-        Assert.Equal(48, user.Score);
+        Assert.Equal(50, user.Score);
         Assert.Equal(1, user.RecommendationCount);
 
         Assert.Equal(3, rival.MentionCount);
         Assert.Equal(60, rival.ShareOfVoice);
-        Assert.Equal(65, rival.Score);
+        Assert.Equal(75, rival.Score);
         Assert.Equal(2, rival.RecommendationCount);
         Assert.Equal("Rival", result[0].Name);
     }
@@ -71,5 +71,21 @@ public class CompetitorEvidenceScorerTests
         var result = CompetitorEvidenceScorer.Score(inputs, responseCount: 3);
 
         Assert.Equal(100, result.Sum(score => score.ShareOfVoice));
+    }
+
+    [Fact]
+    public void Score_DoesNotLetRecommendationsPositionsOrCitationsOverrideMentionRate()
+    {
+        var inputs = new List<CompetitorEvidenceInput>
+        {
+            new(null, true, "Your Brand", "you.example", new[] { 1, 2 }, new[] { 1, 2 }, 10),
+            new(Guid.NewGuid(), false, "Rival", "rival.example", new[] { 50, 60, 70 }, Array.Empty<int>(), 0),
+        };
+
+        var result = CompetitorEvidenceScorer.Score(inputs, responseCount: 10);
+
+        Assert.Equal("Rival", result[0].Name);
+        Assert.Equal(30, result[0].Score);
+        Assert.Equal(20, result[1].Score);
     }
 }

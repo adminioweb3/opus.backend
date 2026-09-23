@@ -24,7 +24,7 @@ public sealed record CompetitorEvidenceScore(
 
 public static class CompetitorEvidenceScorer
 {
-    public const string MethodologyVersion = "openai-observed-v3-unranked-zero-evidence";
+    public const string MethodologyVersion = "openai-observed-v5-mention-rate-ranking";
 
     public static IReadOnlyList<CompetitorEvidenceScore> Score(
         IReadOnlyList<CompetitorEvidenceInput> entities,
@@ -34,26 +34,19 @@ public static class CompetitorEvidenceScorer
 
         responseCount = Math.Max(0, responseCount);
         var totalMentions = entities.Sum(e => e.MentionPositions.Count);
-        var totalCitations = entities.Sum(e => Math.Max(0, e.CitationCount));
-
         var raw = entities.Select(entity =>
         {
             var mentionCount = entity.MentionPositions.Count;
             var mentionRate = responseCount == 0 ? 0 : mentionCount * 100d / responseCount;
             var recommendationCount = entity.RecommendationPositions.Count;
-            var recommendationRate = responseCount == 0 ? 0 : recommendationCount * 100d / responseCount;
             var averagePosition = mentionCount == 0
                 ? 100
                 : (int)Math.Round(entity.MentionPositions.Average(position => Math.Clamp(position, 0, 100)));
-            var prominence = mentionCount == 0 ? 0 : 100 - averagePosition;
-            var citationShare = totalCitations == 0 ? 0 : Math.Max(0, entity.CitationCount) * 100d / totalCitations;
 
-            // Every component is derived from stored OpenAI responses. When the response panel has
-            // no tracked-domain citations, redistribute that unavailable signal instead of giving
-            // every company a hidden ten-point penalty.
-            var score = totalCitations == 0
-                ? (int)Math.Round((mentionRate * 0.60) + (recommendationRate * 0.30) + (prominence * 0.10))
-                : (int)Math.Round((mentionRate * 0.55) + (recommendationRate * 0.25) + (prominence * 0.10) + (citationShare * 0.10));
+            // Rank by one client-auditable signal: the percentage of captured responses that
+            // mention the entity. Recommendation, position, citation, and share-of-voice metrics
+            // remain available as separate evidence and cannot invisibly boost the rank.
+            var score = (int)Math.Round(mentionRate);
             var shareOfVoice = totalMentions == 0 ? 0 : (int)Math.Round(mentionCount * 100d / totalMentions);
 
             return new CompetitorEvidenceScore(

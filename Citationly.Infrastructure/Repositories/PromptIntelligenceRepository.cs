@@ -6,7 +6,7 @@ namespace Citationly.Infrastructure.Repositories;
 
 public class PromptIntelligenceRepository : IPromptIntelligenceRepository
 {
-    private const string CurrentVisibilityMethodology = "prompt-visibility:v4-mention-share";
+    private const string CurrentVisibilityMethodology = "prompt-visibility:v5-search-grounded-sampled";
     private readonly IDbConnectionFactory _dbConnectionFactory;
 
     public PromptIntelligenceRepository(IDbConnectionFactory dbConnectionFactory)
@@ -375,7 +375,7 @@ public class PromptIntelligenceRepository : IPromptIntelligenceRepository
         // brand was mentioned there) rather than PromptMentions alone, so platforms with zero
         // mentions still count toward the denominator instead of silently vanishing.
         var sql = @"
-            SELECT r.PromptAnalysisId AS AnalysisId, r.Platform, a.RunAt AS RunAt,
+            SELECT r.PromptAnalysisId AS AnalysisId, r.Platform, r.IsError, a.RunAt AS RunAt,
                    EXISTS(SELECT 1 FROM PromptMentions m WHERE (m.PromptResponseId = r.Id OR (m.PromptResponseId IS NULL AND m.PromptAnalysisId = r.PromptAnalysisId AND m.Platform = r.Platform)) AND m.IsBrand = TRUE) AS IsBrandMentioned,
                    (SELECT MIN(m2.Position) FROM PromptMentions m2 WHERE (m2.PromptResponseId = r.Id OR (m2.PromptResponseId IS NULL AND m2.PromptAnalysisId = r.PromptAnalysisId AND m2.Platform = r.Platform)) AND m2.IsBrand = TRUE) AS BrandPosition,
                    (SELECT COUNT(*) FROM PromptMentions m3 WHERE m3.PromptResponseId = r.Id OR (m3.PromptResponseId IS NULL AND m3.PromptAnalysisId = r.PromptAnalysisId AND m3.Platform = r.Platform)) AS TotalMentionsOnPlatform,

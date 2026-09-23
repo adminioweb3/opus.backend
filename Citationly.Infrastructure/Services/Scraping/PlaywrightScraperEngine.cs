@@ -5,7 +5,9 @@ using Citationly.Application.Interfaces.Security;
 using Citationly.Domain.Entities;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Web;
+using Microsoft.Extensions.Logging;
 
 namespace Citationly.Infrastructure.Services.Scraping;
 
@@ -13,11 +15,16 @@ public class PlaywrightScraperEngine : IScraperEngine
 {
     private readonly IMarkdownGeneratorService _markdownGenerator;
     private readonly IOutboundUrlSafetyValidator _urlSafetyValidator;
+    private readonly ILogger<PlaywrightScraperEngine> _logger;
 
-    public PlaywrightScraperEngine(IMarkdownGeneratorService markdownGenerator, IOutboundUrlSafetyValidator urlSafetyValidator)
+    public PlaywrightScraperEngine(
+        IMarkdownGeneratorService markdownGenerator,
+        IOutboundUrlSafetyValidator urlSafetyValidator,
+        ILogger<PlaywrightScraperEngine> logger)
     {
         _markdownGenerator = markdownGenerator;
         _urlSafetyValidator = urlSafetyValidator;
+        _logger = logger;
     }
 
     public async Task<ScrapedPage> ScrapeSinglePageAsync(string url, Guid jobId)
@@ -43,17 +50,16 @@ public class PlaywrightScraperEngine : IScraperEngine
 
         try
         {
-            await page.GotoAsync(url, new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle, Timeout = 30000 });
+            url = await NavigateAsync(page, url);
+            var title = await page.TitleAsync();
+            var html = await page.ContentAsync();
+
+            return ParsePageToScrapedPage(url, jobId, title, html);
         }
-        catch
+        finally
         {
-            await page.GotoAsync(url, new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 20000 });
+            await page.CloseAsync();
         }
-
-        var title = await page.TitleAsync();
-        var html = await page.ContentAsync();
-
-        return ParsePageToScrapedPage(url, jobId, title, html);
     }
 
     public async Task<List<ScrapedPage>> ScrapeWebsiteAsync(string startUrl, Guid jobId, int maxPages, Action<int>? progressCallback = null)
@@ -68,7 +74,7 @@ public class PlaywrightScraperEngine : IScraperEngine
         var visitedUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var queue = new Queue<string>();
         var results = new List<ScrapedPage>();
-        var baseUri = new Uri(startUrl);
+        string? canonicalHost = null;
 
         queue.Enqueue(NormalizeUrl(startUrl));
 
@@ -95,50 +101,202 @@ public class PlaywrightScraperEngine : IScraperEngine
                 url = urlSafety.NormalizedUrl!;
 
                 var page = await browser.NewPageAsync();
-                await AttachUrlSafetyRouteAsync(page);
                 try
                 {
-                    await page.GotoAsync(url, new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle, Timeout = 30000 });
-                }
-                catch
-                {
-                    await page.GotoAsync(url, new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 20000 });
-                }
-
-                var title = await page.TitleAsync();
-                var html = await page.ContentAsync();
-                await page.CloseAsync();
-
-                var scrapedPage = ParsePageToScrapedPage(url, jobId, title, html);
-                results.Add(scrapedPage);
-                progressCallback?.Invoke(results.Count);
-
-                // Enqueue discovered internal links
-                var internalLinks = TryDeserialize<List<string>>(scrapedPage.InternalLinks) ?? new();
-                foreach (var link in internalLinks)
-                {
-                    var normalized = NormalizeUrl(link);
-                    if (string.IsNullOrEmpty(normalized)) continue;
-
-                    // Only follow same-domain links
-                    try
+                    await AttachUrlSafetyRouteAsync(page);
+                    var finalUrl = await NavigateAsync(page, url);
+                    var finalUri = new Uri(finalUrl);
+                    canonicalHost ??= NormalizeHost(finalUri.Host);
+                    if (!string.Equals(NormalizeHost(finalUri.Host), canonicalHost, StringComparison.OrdinalIgnoreCase))
                     {
-                        var linkUri = new Uri(normalized);
-                        if (linkUri.Host != baseUri.Host) continue;
+                        _logger.LogWarning("Skipping crawl URL {Url} because it redirected outside {CanonicalHost}", finalUrl, canonicalHost);
+                        continue;
                     }
-                    catch { continue; }
 
-                    if (!visitedUrls.Contains(normalized) && !queue.Contains(normalized))
-                        queue.Enqueue(normalized);
+                    visitedUrls.Add(NormalizeUrl(finalUrl));
+                    var title = await page.TitleAsync();
+                    var html = await page.ContentAsync();
+
+                    var scrapedPage = ParsePageToScrapedPage(finalUrl, jobId, title, html);
+                    results.Add(scrapedPage);
+                    progressCallback?.Invoke(results.Count);
+
+                    // Navigation-only discovery misses pages on sparse homepages and JS-heavy
+                    // sites. On the first page, augment real anchor links with URLs published in
+                    // the site's sitemap, then prioritize business pages before blog archives.
+                    var discoveredLinks = TryDeserialize<List<string>>(scrapedPage.InternalLinks) ?? new();
+                    if (results.Count == 1)
+                    {
+                        discoveredLinks.AddRange(await DiscoverSitemapPageUrlsAsync(
+                            browser,
+                            finalUri,
+                            canonicalHost,
+                            Math.Max(maxPages * 3, 30)));
+                    }
+
+                    foreach (var link in OrderCrawlCandidates(discoveredLinks))
+                    {
+                        var normalized = NormalizeUrl(link);
+                        if (string.IsNullOrEmpty(normalized)) continue;
+
+                        try
+                        {
+                            var linkUri = new Uri(normalized);
+                            if (!string.Equals(NormalizeHost(linkUri.Host), canonicalHost, StringComparison.OrdinalIgnoreCase)) continue;
+                        }
+                        catch { continue; }
+
+                        if (!visitedUrls.Contains(normalized) && !queue.Contains(normalized))
+                            queue.Enqueue(normalized);
+                    }
+                }
+                finally
+                {
+                    await page.CloseAsync();
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[Scraper] Failed to scrape {url}: {ex.Message}");
+                _logger.LogWarning(ex, "Failed to scrape {Url} for job {JobId}", url, jobId);
             }
         }
 
+        if (results.Count == 0)
+            throw new InvalidOperationException("The crawler could not retrieve any public pages from this website.");
+
         return results;
+    }
+
+    private async Task<List<string>> DiscoverSitemapPageUrlsAsync(
+        IBrowser browser,
+        Uri siteUri,
+        string canonicalHost,
+        int maxUrls)
+    {
+        var root = $"{siteUri.Scheme}://{siteUri.Authority}";
+        var sitemapQueue = new Queue<string>(new[] { $"{root}/sitemap.xml", $"{root}/sitemap_index.xml" });
+        var visitedSitemaps = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var pageUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        while (sitemapQueue.Count > 0 && visitedSitemaps.Count < 8 && pageUrls.Count < maxUrls)
+        {
+            var sitemapUrl = sitemapQueue.Dequeue();
+            if (!visitedSitemaps.Add(sitemapUrl)) continue;
+
+            var safety = await _urlSafetyValidator.ValidateForHttpFetchAsync(sitemapUrl, allowMissingScheme: false);
+            if (!safety.IsAllowed) continue;
+
+            var page = await browser.NewPageAsync();
+            try
+            {
+                await AttachUrlSafetyRouteAsync(page);
+                var response = await page.GotoAsync(safety.NormalizedUrl!, new PageGotoOptions
+                {
+                    WaitUntil = WaitUntilState.DOMContentLoaded,
+                    Timeout = 15000
+                });
+                if (response == null || !response.Ok) continue;
+
+                var finalSafety = await _urlSafetyValidator.ValidateForHttpFetchAsync(page.Url, allowMissingScheme: false);
+                if (!finalSafety.IsAllowed) continue;
+
+                var content = await page.ContentAsync();
+                var bodyText = await page.Locator("body").TextContentAsync() ?? string.Empty;
+                foreach (var discoveredUrl in ExtractSitemapUrls(content + "\n" + bodyText, canonicalHost))
+                {
+                    if (IsSitemapUrl(discoveredUrl))
+                    {
+                        if (visitedSitemaps.Count + sitemapQueue.Count < 8)
+                            sitemapQueue.Enqueue(discoveredUrl);
+                    }
+                    else
+                    {
+                        pageUrls.Add(discoveredUrl);
+                        if (pageUrls.Count >= maxUrls) break;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Could not read sitemap {SitemapUrl}", sitemapUrl);
+            }
+            finally
+            {
+                await page.CloseAsync();
+            }
+        }
+
+        return pageUrls.ToList();
+    }
+
+    internal static IReadOnlyList<string> ExtractSitemapUrls(string content, string canonicalHost)
+    {
+        if (string.IsNullOrWhiteSpace(content)) return Array.Empty<string>();
+
+        var urls = Regex.Matches(HttpUtility.HtmlDecode(content), @"https?://[^\s<>\""']+", RegexOptions.IgnoreCase)
+            .Select(match => match.Value.TrimEnd('.', ',', ';', ')', ']', '}'))
+            .Select(NormalizeUrl)
+            .Where(url => Uri.TryCreate(url, UriKind.Absolute, out var uri)
+                          && string.Equals(NormalizeHost(uri.Host), canonicalHost, StringComparison.OrdinalIgnoreCase))
+            .Where(url => !IsAssetUrl(url))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return urls;
+    }
+
+    private static IEnumerable<string> OrderCrawlCandidates(IEnumerable<string> urls) =>
+        urls.Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(GetCrawlPriority)
+            .ThenBy(url => url.Length);
+
+    private static int GetCrawlPriority(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return 0;
+        var path = uri.AbsolutePath.ToLowerInvariant();
+        if (path is "/" or "/home") return 100;
+        if (new[] { "/about", "/product", "/service", "/solution", "/pricing", "/feature", "/industry", "/customer", "/case-stud", "/contact", "/faq" }.Any(path.Contains)) return 80;
+        if (new[] { "/docs", "/resource", "/help", "/support" }.Any(path.Contains)) return 60;
+        if (new[] { "/privacy", "/terms", "/cookie", "/tag/", "/author/", "/page/" }.Any(path.Contains)) return 5;
+        return 40;
+    }
+
+    private static bool IsSitemapUrl(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri)
+        && uri.AbsolutePath.EndsWith(".xml", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsAssetUrl(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return true;
+        var path = uri.AbsolutePath.ToLowerInvariant();
+        return new[] { ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".css", ".js", ".pdf", ".zip", ".mp4", ".woff", ".woff2" }
+            .Any(path.EndsWith);
+    }
+
+    private async Task<string> NavigateAsync(IPage page, string url)
+    {
+        // DOMContentLoaded is deterministic for crawling. Waiting for NetworkIdle as the primary
+        // condition stalls on analytics, chat widgets, and long-polling used by modern sites.
+        await page.GotoAsync(url, new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.DOMContentLoaded,
+            Timeout = 20000
+        });
+
+        try
+        {
+            await page.WaitForLoadStateAsync(LoadState.NetworkIdle, new PageWaitForLoadStateOptions { Timeout = 5000 });
+        }
+        catch (TimeoutException)
+        {
+            _logger.LogDebug("Page {Url} remained network-active; continuing after DOMContentLoaded", page.Url);
+        }
+
+        var finalSafety = await _urlSafetyValidator.ValidateForHttpFetchAsync(page.Url, allowMissingScheme: false);
+        if (!finalSafety.IsAllowed)
+            throw new InvalidOperationException(finalSafety.Reason ?? "Redirected URL is not allowed.");
+
+        return NormalizeUrl(finalSafety.NormalizedUrl!);
     }
 
     // ── Core parser: HTML → ScrapedPage with rich Markdown ──────────────────
@@ -147,6 +305,12 @@ public class PlaywrightScraperEngine : IScraperEngine
     {
         await page.RouteAsync("**/*", async route =>
         {
+            if (route.Request.ResourceType is "image" or "media" or "font")
+            {
+                await route.AbortAsync();
+                return;
+            }
+
             var safety = await _urlSafetyValidator.ValidateForHttpFetchAsync(route.Request.Url, allowMissingScheme: false);
             if (!safety.IsAllowed)
             {
@@ -499,7 +663,7 @@ public class PlaywrightScraperEngine : IScraperEngine
         return images;
     }
 
-    private static (List<string> internalLinks, List<string> externalLinks) ExtractLinks(HtmlDocument doc, string baseUrl)
+    internal static (List<string> internalLinks, List<string> externalLinks) ExtractLinks(HtmlDocument doc, string baseUrl)
     {
         var internalLinks = new List<string>();
         var externalLinks = new List<string>();
@@ -510,31 +674,29 @@ public class PlaywrightScraperEngine : IScraperEngine
         foreach (var a in nodes)
         {
             var href = a.GetAttributeValue("href", "").Trim();
-            if (string.IsNullOrEmpty(href) || href.StartsWith("#") || href.StartsWith("mailto:") || href.StartsWith("tel:")) continue;
+            if (string.IsNullOrEmpty(href)
+                || href.StartsWith("#")
+                || href.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase)
+                || href.StartsWith("tel:", StringComparison.OrdinalIgnoreCase)
+                || href.StartsWith("javascript:", StringComparison.OrdinalIgnoreCase)) continue;
 
-            if (href.StartsWith("/"))
+            try
             {
-                var absolute = $"{baseUri.Scheme}://{baseUri.Host}{href}";
-                internalLinks.Add(NormalizeUrl(absolute));
+                var linkUri = new Uri(baseUri, href);
+                if (linkUri.Scheme is not ("http" or "https")) continue;
+
+                if (string.Equals(NormalizeHost(linkUri.Host), NormalizeHost(baseUri.Host), StringComparison.OrdinalIgnoreCase))
+                    internalLinks.Add(NormalizeUrl(linkUri.AbsoluteUri));
+                else
+                    externalLinks.Add(linkUri.AbsoluteUri);
             }
-            else if (href.StartsWith("http"))
-            {
-                try
-                {
-                    var linkUri = new Uri(href);
-                    if (linkUri.Host == baseUri.Host)
-                        internalLinks.Add(NormalizeUrl(href));
-                    else
-                        externalLinks.Add(href);
-                }
-                catch { }
-            }
+            catch { }
         }
 
         return (internalLinks.Distinct().ToList(), externalLinks.Distinct().ToList());
     }
 
-    private static string NormalizeUrl(string url)
+    internal static string NormalizeUrl(string url)
     {
         try
         {
@@ -548,6 +710,9 @@ public class PlaywrightScraperEngine : IScraperEngine
         }
         catch { return url; }
     }
+
+    internal static string NormalizeHost(string host) =>
+        host.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? host[4..] : host;
 
     private static T? TryDeserialize<T>(string? json) where T : class
     {

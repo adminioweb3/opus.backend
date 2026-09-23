@@ -668,6 +668,7 @@ public class ScrapingJob
     public Guid? FolderId { get; set; }
     public string Url { get; set; } = string.Empty;
     public string Status { get; set; } = "Pending";
+    public string? ErrorMessage { get; set; }
     public string ScrapeType { get; set; } = "Single";
     public int TotalPages { get; set; } = 0;
     public int ProcessedPages { get; set; } = 0;

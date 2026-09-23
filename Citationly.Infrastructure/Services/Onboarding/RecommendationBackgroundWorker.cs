@@ -18,15 +18,18 @@ public class RecommendationBackgroundWorker
 {
     private readonly IWebsiteRepository _websiteRepository;
     private readonly IAiCompletionService _aiCompletionService;
+    private readonly IWebEvidenceProvider _webEvidenceProvider;
     private readonly ILogger<RecommendationBackgroundWorker> _logger;
 
     public RecommendationBackgroundWorker(
         IWebsiteRepository websiteRepository, 
         IAiCompletionService aiCompletionService,
+        IWebEvidenceProvider webEvidenceProvider,
         ILogger<RecommendationBackgroundWorker> logger)
     {
         _websiteRepository = websiteRepository;
         _aiCompletionService = aiCompletionService;
+        _webEvidenceProvider = webEvidenceProvider;
         _logger = logger;
     }
 
@@ -85,7 +88,7 @@ Provide:
 2. Business Impact (Why this matters)
 3. Action Items (List of specific string steps to execute this)
 4. Example Resources (List of tools, websites, or reference examples as strings)
-5. Reference Links (List of URLs to official docs or guides as strings)
+5. Do not invent reference links. Citationly retrieves observed resources separately.
 
 Return ONLY valid JSON matching this schema exactly. No markdown blocks.
 
@@ -94,7 +97,7 @@ Return ONLY valid JSON matching this schema exactly. No markdown blocks.
   ""businessImpact"": """",
   ""actionItems"": [""Step 1"", ""Step 2""],
   ""exampleResources"": [""Tool A"", ""Guide B""],
-  ""referenceLinks"": [""https://..."", ""https://...""]
+  ""referenceLinks"": []
 }}";
 
         var completion = await _aiCompletionService.CompleteAsync(
@@ -118,10 +121,39 @@ Return ONLY valid JSON matching this schema exactly. No markdown blocks.
             rec.ExpandedGuidance = parsed.ExpandedGuidance ?? string.Empty;
             rec.BusinessImpact = parsed.BusinessImpact ?? string.Empty;
             rec.ActionItemsJson = parsed.ActionItems.ValueKind != JsonValueKind.Undefined ? JsonSerializer.Serialize(parsed.ActionItems, options) : "[]";
-            rec.ExampleResourcesJson = parsed.ExampleResources.ValueKind != JsonValueKind.Undefined ? JsonSerializer.Serialize(parsed.ExampleResources, options) : "[]";
-            rec.ReferenceLinksJson = parsed.ReferenceLinks.ValueKind != JsonValueKind.Undefined ? JsonSerializer.Serialize(parsed.ReferenceLinks, options) : "[]";
+            var observedResources = await FindObservedResourcesAsync(organizationId, rec);
+            rec.ExampleResourcesJson = JsonSerializer.Serialize(
+                observedResources.Select(item => item.Title).ToList(),
+                options);
+            rec.ReferenceLinksJson = JsonSerializer.Serialize(
+                observedResources.Select(item => item.Url).ToList(),
+                options);
             rec.IsEnriched = true;
             rec.EnrichedAt = DateTime.UtcNow;
         }
+    }
+
+    private async Task<IReadOnlyList<WebEvidenceItem>> FindObservedResourcesAsync(
+        Guid organizationId,
+        GeoRecommendation recommendation)
+    {
+        if (!_webEvidenceProvider.IsConfigured) return Array.Empty<WebEvidenceItem>();
+
+        var result = await _webEvidenceProvider.SearchAsync(
+            organizationId,
+            new WebEvidenceQuery(
+                $"{recommendation.Title} {recommendation.Category} official documentation implementation guide",
+                ResultCount: 5));
+
+        if (!result.Success)
+        {
+            _logger.LogWarning(
+                "No Exa resources found for recommendation {RecommendationId}: {Error}",
+                recommendation.RecommendationId,
+                result.ErrorMessage);
+            return Array.Empty<WebEvidenceItem>();
+        }
+
+        return result.Items;
     }
 }

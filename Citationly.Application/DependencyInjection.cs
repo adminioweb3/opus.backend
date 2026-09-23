@@ -50,6 +50,7 @@ public static class DependencyInjection
         services.AddScoped<Citationly.Application.Interfaces.GeoDashboard.IPromptCoverageService, Citationly.Application.Features.GeoDashboard.PromptCoverageService>();
         services.AddScoped<Citationly.Application.Interfaces.GeoDashboard.IActivityFeedService, Citationly.Application.Features.GeoDashboard.ActivityFeedService>();
         services.AddScoped<Citationly.Application.Interfaces.GeoDashboard.IEngineScanService, Citationly.Application.Features.GeoDashboard.EngineScanService>();
+        services.AddScoped<Citationly.Application.Features.GeoDashboard.IGeoScoreEvidenceService, Citationly.Application.Features.GeoDashboard.GeoScoreEvidenceService>();
 
         // Command Center
         services.AddScoped<Citationly.Application.Features.CommandCenter.CommandCenterAggregator>();

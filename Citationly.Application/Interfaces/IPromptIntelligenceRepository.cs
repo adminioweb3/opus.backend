@@ -97,6 +97,7 @@ public class PromptPlatformSummaryRow
 {
     public Guid AnalysisId { get; set; }
     public string Platform { get; set; } = string.Empty;
+    public bool IsError { get; set; }
     public bool IsBrandMentioned { get; set; }
     public int? BrandPosition { get; set; }
     public int TotalMentionsOnPlatform { get; set; }

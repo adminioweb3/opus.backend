@@ -10,9 +10,9 @@ public interface ITopicPromptGeneratorService
 }
 
 /// <summary>
-/// Generates a stable mixed prompt panel: roughly 20% brand-aware validation questions and 80%
-/// brand-neutral questions that real prospects would ask. The two kinds answer different product
-/// questions: named-brand understanding versus organic discovery.
+/// Generates a stable brand-neutral prompt panel for organic visibility measurement. Branded
+/// comparison questions are a different metric and must not be inserted into this panel because
+/// naming the tracked brand structurally increases its mention rate.
 ///
 /// Phase 3 B2: exact-string dedup only ever ran once, during initial topic seeding
 /// (PromptTopicSeedingService) - a repeat call to this generator had no protection at all, so
@@ -46,15 +46,13 @@ public class TopicPromptGeneratorService : ITopicPromptGeneratorService
 
     public async Task<List<string>> GeneratePromptsAsync(Guid organizationId, Guid topicId, string topicName, int count, CancellationToken ct, string? brandName = null, string? brandWebsite = null)
     {
-        // Keep the panel useful for both measurements: roughly 20% brand-aware validation
-        // prompts establish whether engines understand the named company, while the remaining
-        // 80% stay brand-neutral and measure genuine organic discovery.
-        var branded = BuildBrandAwarePrompts(topicName, brandName, count);
-        var neutralTarget = Math.Max(0, count - branded.Count);
-        var raw = neutralTarget == 0
+        var neutralTarget = count;
+        var neutralFoundation = BuildNeutralFoundationPrompts(topicName, neutralTarget);
+        var remainingNeutral = Math.Max(0, neutralTarget - neutralFoundation.Count);
+        var raw = remainingNeutral == 0
             ? new List<string>()
-            : await GenerateRawAsync(organizationId, topicName, neutralTarget + GenerationHeadroom, ct, brandName, brandWebsite);
-        var candidates = branded.Concat(raw).ToList();
+            : await GenerateRawAsync(organizationId, topicName, remainingNeutral + GenerationHeadroom, ct, brandName, brandWebsite);
+        var candidates = neutralFoundation.Concat(raw).ToList();
         if (candidates.Count == 0) return candidates;
 
         var existingQuestions = await _repo.GetQuestionsByTopicAsync(topicId);
@@ -63,25 +61,26 @@ public class TopicPromptGeneratorService : ITopicPromptGeneratorService
         return await DeduplicateAsync(candidates, existingTexts, count, ct);
     }
 
-    private static List<string> BuildBrandAwarePrompts(string topicName, string? brandName, int totalCount)
+    private static List<string> BuildNeutralFoundationPrompts(string topicName, int targetCount)
     {
-        if (string.IsNullOrWhiteSpace(brandName) || totalCount <= 0) return new List<string>();
+        if (targetCount <= 0) return new List<string>();
 
-        var brand = brandName.Trim();
-        var brandWordCount = brand.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
-        var maxTopicWords = Math.Max(2, 18 - brandWordCount);
-        var conciseTopic = string.Join(' ', topicName.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(maxTopicWords));
-        var desiredCount = Math.Max(1, (int)Math.Round(totalCount * 0.20, MidpointRounding.AwayFromZero));
-
+        var conciseTopic = string.Join(' ', topicName
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Take(14));
         var templates = new[]
         {
-            $"How does {brand} compare with other {conciseTopic} providers?",
-            $"Is {brand} a strong choice for {conciseTopic}?",
-            $"What are the strengths and limitations of {brand} for {conciseTopic}?",
-            $"Which alternatives to {brand} should buyers consider for {conciseTopic}?",
+            $"Which companies specialize in {conciseTopic}?",
+            $"What are the best providers for {conciseTopic}?",
+            $"Which {conciseTopic} companies should buyers shortlist?",
+            $"Which providers offer end-to-end {conciseTopic} services?",
+            $"How do leading {conciseTopic} companies compare?",
+            $"Who are reputable specialists in {conciseTopic}?",
+            $"Which companies have demonstrated experience in {conciseTopic}?",
+            $"What {conciseTopic} providers are worth considering?",
         };
 
-        return templates.Take(Math.Min(desiredCount, templates.Length)).ToList();
+        return templates.Take(Math.Min(targetCount, templates.Length)).ToList();
     }
 
     private async Task<List<string>> GenerateRawAsync(Guid organizationId, string topicName, int requestCount, CancellationToken ct, string? brandName, string? brandWebsite)
@@ -97,7 +96,8 @@ Each prompt should:
 - Sound like a genuine conversational question under 25 words
 - Ask the assistant to discover, shortlist, compare, or recommend providers/products
 - Be specific enough that multiple real niche providers, not only mega-brands, are eligible
-- Include a concrete buyer need, audience, constraint, use case, or geography where natural
+- Prefer broad category discovery. Add at most one audience, constraint, use case, or geography only when it is explicitly present in the topic text
+- Never invent or stack company stage, industry, geography, budget, technology, or compliance requirements
 - Exclude educational questions answerable without naming a provider
 - Exclude the tracked brand, known vendor names, invented companies, and leading language tailored to one company
 - Cover a balanced mix of discovery, best-provider, requirements, alternatives, comparisons, and commercial intent

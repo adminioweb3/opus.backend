@@ -9,7 +9,8 @@ public interface IVisibilityCalculatorService
         Guid analysisId,
         IEnumerable<PromptResponse> responses,
         string brandName,
-        IEnumerable<string> competitors);
+        IEnumerable<string> competitors,
+        IEnumerable<string>? brandAliases = null);
 
     (PromptVisibility Visibility, IEnumerable<PromptMention> Mentions, IEnumerable<CompetitorComparison> CompetitorComparisons) CalculateVisibilityMetrics(
         Guid analysisId,
@@ -17,7 +18,8 @@ public interface IVisibilityCalculatorService
         string brandName,
         IEnumerable<string> competitors,
         IEnumerable<PromptMention>? classifiedMentions = null,
-        IEnumerable<PromptCitation>? citations = null);
+        IEnumerable<PromptCitation>? citations = null,
+        IEnumerable<string>? brandAliases = null);
 }
 
 /// <summary>
@@ -39,8 +41,13 @@ public class VisibilityCalculatorService : IVisibilityCalculatorService
         Guid analysisId,
         IEnumerable<PromptResponse> responses,
         string brandName,
-        IEnumerable<string> competitors)
+        IEnumerable<string> competitors,
+        IEnumerable<string>? brandAliases = null)
     {
+        var resolvedBrandAliases = BuildBrandAliases(brandName)
+            .Concat((brandAliases ?? Array.Empty<string>()).SelectMany(BuildBrandAliases))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
         var entities = new[] { (Name: brandName, IsBrand: true) }
             .Concat(competitors
                 .Where(name => !string.IsNullOrWhiteSpace(name))
@@ -56,7 +63,9 @@ public class VisibilityCalculatorService : IVisibilityCalculatorService
                 .Select(entity => (
                     entity.Name,
                     entity.IsBrand,
-                    Index: (entity.IsBrand ? BuildBrandAliases(entity.Name) : new[] { entity.Name })
+                    Index: (entity.IsBrand
+                            ? resolvedBrandAliases.AsEnumerable()
+                            : new[] { entity.Name }.AsEnumerable())
                         .Select(alias => FindEntity(text, alias))
                         .Where(index => index >= 0)
                         .DefaultIfEmpty(-1)
@@ -93,14 +102,15 @@ public class VisibilityCalculatorService : IVisibilityCalculatorService
         string brandName,
         IEnumerable<string> competitors,
         IEnumerable<PromptMention>? classifiedMentions = null,
-        IEnumerable<PromptCitation>? citations = null)
+        IEnumerable<PromptCitation>? citations = null,
+        IEnumerable<string>? brandAliases = null)
     {
         var responseList = responses.Where(response => !response.IsError).ToList();
         var competitorList = competitors
             .Where(name => !string.IsNullOrWhiteSpace(name))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
-        var mentions = (classifiedMentions ?? ExtractMentions(analysisId, responseList, brandName, competitorList)).ToList();
+        var mentions = (classifiedMentions ?? ExtractMentions(analysisId, responseList, brandName, competitorList, brandAliases)).ToList();
         var citationList = citations?.ToList() ?? new List<PromptCitation>();
         var sampleCount = responseList.Count;
 
@@ -166,7 +176,7 @@ public class VisibilityCalculatorService : IVisibilityCalculatorService
             CitationShare = citationShare,
             CompetitorCount = competitorList.Count,
             SampleCount = sampleCount,
-            MethodologyVersion = "prompt-visibility:v4-mention-share",
+            MethodologyVersion = "prompt-visibility:v5-search-grounded-sampled",
         };
 
         var comparisons = competitorList.Select(name => new CompetitorComparison

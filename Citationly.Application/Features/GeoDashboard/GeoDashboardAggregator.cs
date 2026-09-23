@@ -2,6 +2,7 @@ using MediatR;
 using Citationly.Application.Dtos;
 using Citationly.Application.Helpers;
 using Citationly.Application.Features.Metrics;
+using Citationly.Application.Features.Competitors;
 using Citationly.Application.Interfaces;
 using Citationly.Application.Interfaces.GeoDashboard;
 using Citationly.Domain.Entities;
@@ -16,24 +17,24 @@ public class GeoDashboardAggregator
 {
     private readonly IAiVisibilityRepository _visibilityRepo;
     private readonly IGeoPillarService _pillarService;
-    private readonly IPromptCoverageService _coverageService;
     private readonly IActivityFeedService _activityService;
     private readonly IEngineScanService _engineScanService;
+    private readonly IGeoScoreEvidenceService _scoreEvidenceService;
     private readonly IMediator _mediator;
 
     public GeoDashboardAggregator(
         IAiVisibilityRepository visibilityRepo,
         IGeoPillarService pillarService,
-        IPromptCoverageService coverageService,
         IActivityFeedService activityService,
         IEngineScanService engineScanService,
+        IGeoScoreEvidenceService scoreEvidenceService,
         IMediator mediator)
     {
         _visibilityRepo = visibilityRepo;
         _pillarService = pillarService;
-        _coverageService = coverageService;
         _activityService = activityService;
         _engineScanService = engineScanService;
+        _scoreEvidenceService = scoreEvidenceService;
         _mediator = mediator;
     }
 
@@ -53,19 +54,19 @@ public class GeoDashboardAggregator
         var sovTask         = _visibilityRepo.GetShareOfVoiceByOrgAsync(organizationId);
         var competitorsTask = _visibilityRepo.GetCompetitorsByOrgAsync(organizationId);
         var pillarsTask     = _pillarService.GetPillarsAsync(organizationId, range);
-        var coverageTask    = _coverageService.GetCoverageAsync(organizationId, range);
         var activityTask    = _activityService.GetRecentEventsAsync(organizationId);
         var engineTask      = _engineScanService.GetScanStatsAsync(organizationId);
+        var evidenceTask    = _scoreEvidenceService.GetAsync(organizationId, DateTime.UtcNow.AddDays(-30));
 
-        await Task.WhenAll(scansTask, sovTask, competitorsTask, pillarsTask, coverageTask, activityTask, engineTask);
+        await Task.WhenAll(scansTask, sovTask, competitorsTask, pillarsTask, activityTask, engineTask, evidenceTask);
 
         var scans       = scansTask.Result.Where(IsUsableScan).ToList();
         var sovDb       = sovTask.Result;
         var competitors = competitorsTask.Result;
         var pillars     = pillarsTask.Result;
-        var coverage    = coverageTask.Result;
         var activity    = activityTask.Result;
         var (enginesScanned, promptsTracked) = engineTask.Result;
+        var evidence     = evidenceTask.Result;
 
         // ── Scores ────────────────────────────────────────────────────
         var latestScan   = scans.LastOrDefault();
@@ -78,21 +79,53 @@ public class GeoDashboardAggregator
         {
             // No scan exists (the org has no onboarding analysis to bootstrap from either) —
             // an honest zeroed-out state rather than fabricated numbers.
-            var empty = new ScoreEntryDto(0, "+0%", "up");
+            var empty = Unavailable("No completed scan or measured evidence is available.");
             scores = new ScoreCardDto(empty, empty, empty, empty, empty, empty, empty, empty);
         }
         else
         {
+            var isLegacyAiScan = latestScan.ScoringMethodVersion == "v1-ai-generated";
+            var hasTechnicalAudit = latestScan.ScoringMethodVersion is "v3-geo-audit" or "v4-evidence-audit";
+            var visibility = isLegacyAiScan || evidence.AnalysisCount == 0
+                ? Unavailable("No measured prompt analyses are available for this score.")
+                : Measured(latestScan.VisibilityScore, previousScan?.VisibilityScore, "derived", "Captured AI responses", "prompt-visibility:v5-search-grounded-sampled", null, null, evidence.AnalysisCount,
+                    $"Average brand mention coverage across {evidence.AnalysisCount} prompt analyses in the 30-day scoring window.");
+            var citation = isLegacyAiScan || evidence.AnalysisCount == 0
+                ? Unavailable("No citation-eligible prompt analyses are available.")
+                : Measured(latestScan.CitationScore, previousScan?.CitationScore,
+                    evidence.OwnedCitationAnalysisCount == 0 ? "observed-zero" : "derived",
+                    "Extracted response citations", "owned-citation-analysis-coverage:v1",
+                    evidence.OwnedCitationAnalysisCount, evidence.AnalysisCount, evidence.AnalysisCount,
+                    $"{evidence.OwnedCitationAnalysisCount} of {evidence.AnalysisCount} analyzed prompts contained a citation to the owned domain.");
+            var sentiment = isLegacyAiScan || evidence.ClassifiedResponseCount == 0
+                ? Unavailable("No response-level sentiment classifications are available.")
+                : Measured(latestScan.SentimentScore, previousScan?.SentimentScore, "derived", "Captured AI responses", "net-sentiment:v1", null, null, evidence.ClassifiedResponseCount,
+                    $"Calculated from {evidence.ClassifiedResponseCount} classified AI responses; classification may use an AI judge when deterministic rules are inconclusive.");
+            var competitor = isLegacyAiScan || evidence.CompetitorResponseCount < RunCompetitorScanCommandHandler.MinimumResponseCount || evidence.RankedBrandCount < 2
+                ? Unavailable($"A rank requires at least {RunCompetitorScanCommandHandler.MinimumResponseCount} responses and two evidence-validated brands. Current evidence: {evidence.CompetitorResponseCount} responses, {evidence.RankedBrandCount} ranked brands.", "insufficient-evidence")
+                : Measured(latestScan.CompetitorScore, previousScan?.CompetitorScore, "derived", "Evidence-validated OpenAI competitor benchmark", CompetitorEvidenceScorer.MethodologyVersion, null, null, evidence.CompetitorResponseCount,
+                    $"Relative percentile across {evidence.RankedBrandCount} evidence-validated brands from {evidence.CompetitorResponseCount} OpenAI responses; not a market-wide rank.");
+
             scores = new ScoreCardDto(
-                new ScoreEntryDto(latestScan.VisibilityScore,   GetChangeStr(latestScan.VisibilityScore,   previousScan?.VisibilityScore),   GetDirection(latestScan.VisibilityScore,   previousScan?.VisibilityScore)),
-                new ScoreEntryDto(latestScan.CitationScore,     GetChangeStr(latestScan.CitationScore,     previousScan?.CitationScore),     GetDirection(latestScan.CitationScore,     previousScan?.CitationScore)),
-                new ScoreEntryDto(latestScan.SentimentScore,    GetChangeStr(latestScan.SentimentScore,    previousScan?.SentimentScore),    GetDirection(latestScan.SentimentScore,    previousScan?.SentimentScore)),
-                new ScoreEntryDto(latestScan.CompetitorScore,   GetChangeStr(latestScan.CompetitorScore,   previousScan?.CompetitorScore),   GetDirection(latestScan.CompetitorScore,   previousScan?.CompetitorScore)),
-                new ScoreEntryDto(latestScan.HallucinationRisk, GetChangeStr(latestScan.HallucinationRisk, previousScan?.HallucinationRisk), GetDirection(latestScan.HallucinationRisk, previousScan?.HallucinationRisk)),
-                new ScoreEntryDto(latestScan.SeoHealth,         GetChangeStr(latestScan.SeoHealth,         previousScan?.SeoHealth),         GetDirection(latestScan.SeoHealth,         previousScan?.SeoHealth)),
-                new ScoreEntryDto(latestScan.AeoReadiness,      GetChangeStr(latestScan.AeoReadiness,      previousScan?.AeoReadiness),      GetDirection(latestScan.AeoReadiness,      previousScan?.AeoReadiness)),
-                new ScoreEntryDto(latestScan.GeoReadiness,      GetChangeStr(latestScan.GeoReadiness,      previousScan?.GeoReadiness),      GetDirection(latestScan.GeoReadiness,      previousScan?.GeoReadiness)));
+                visibility,
+                citation,
+                sentiment,
+                competitor,
+                Unavailable("No claim-level fact-checking monitor exists yet, so an honest hallucination-risk score cannot be reported."),
+                hasTechnicalAudit
+                    ? Measured(latestScan.SeoHealth, previousScan?.SeoHealth, "audited", "Deterministic website audit", "geo-technical-audit:v1", null, null, null, "Weighted audit of crawler access, sitemap, canonical, headings, metadata, and server-rendered content.")
+                    : Unavailable("A deterministic website audit has not been completed for this scan."),
+                hasTechnicalAudit
+                    ? Measured(latestScan.AeoReadiness, previousScan?.AeoReadiness, "audited", "Deterministic website audit", "geo-technical-audit:v1", null, null, null, "Weighted audit of answer structure, schema coverage, extractability, and entity clarity.")
+                    : Unavailable("A deterministic website audit has not been completed for this scan."),
+                hasTechnicalAudit
+                    ? Measured(latestScan.GeoReadiness, previousScan?.GeoReadiness, "audited", "Deterministic website audit", "geo-technical-audit:v1", null, null, null, "Weighted technical GEO audit; no AI-generated value is used for this score.")
+                    : Unavailable("A deterministic website audit has not been completed for this scan."));
         }
+
+        var latestHasVerifiedAudit = latestScan?.ScoringMethodVersion is "v3-geo-audit" or "v4-evidence-audit";
+        var verifiedPillars = latestHasVerifiedAudit ? pillars : new List<GeoPillarDto>();
+        var verifiedCoverage = new List<PromptTypeCoverageDto>();
 
         // ── Trend ─────────────────────────────────────────────────────
         var trend = scans
@@ -114,33 +147,33 @@ public class GeoDashboardAggregator
             : new List<ShareOfVoiceEntryDto>();
 
         // ── Header (composite from scorecard) ───────────────────────
-        int compositeScore = (int)Math.Round(new[]
+        var compositeValues = new[]
         {
             scores.VisibilityScore.Value,
             scores.CitationScore.Value,
             scores.SentimentScore.Value,
             scores.CompetitorScore.Value,
-            scores.HallucinationRisk.Value,
             scores.SeoHealth.Value,
             scores.AeoReadiness.Value,
             scores.GeoReadiness.Value
-        }.Average());
+        }.Where(value => value.HasValue).Select(value => value!.Value).ToList();
+        int? compositeScore = compositeValues.Count == 0
+            ? null
+            : (int)Math.Round(compositeValues.Average());
 
         // For composite change, use the GeoReadiness change as a proxy (it represents overall GEO)
         var compositeChange = scores.GeoReadiness.Change;
 
-        // Industry average is approximated from tracked competitors' real authority scores
-        // (there's no external cross-tenant benchmark data source). With no competitors tracked
-        // yet, there's nothing honest to compare against, so it matches the composite (zero delta).
-        var industryAverage = competitors.Count > 0
-            ? (int)Math.Round(competitors.Average(c => c.Authority))
-            : compositeScore;
+        // No licensed or cross-tenant industry benchmark exists. Do not relabel tracked competitor
+        // authority as an industry average.
+        int? industryAverage = null;
+        int? deltaVsIndustry = null;
 
         var header = new GeoDashboardHeaderDto(
             CompositeScore:  compositeScore,
-            Grade:           GradeCalculator.ToGrade(compositeScore),
+            Grade:           compositeScore.HasValue ? GradeCalculator.ToGrade(compositeScore.Value) : "N/A",
             IndustryAverage: industryAverage,
-            DeltaVsIndustry: compositeScore - industryAverage,
+            DeltaVsIndustry: deltaVsIndustry,
             CompositeChange: compositeChange,
             EnginesScanned:  enginesScanned,
             PromptsTracked:  promptsTracked,
@@ -149,9 +182,9 @@ public class GeoDashboardAggregator
 
         // ── Weakest pillar insight (derived) ────────────────────────
         WeakestPillarInsightDto? weakestInsight = null;
-        if (pillars.Count > 0)
+        if (verifiedPillars.Count > 0)
         {
-            var weakest = pillars.MinBy(p => p.Score)!;
+            var weakest = verifiedPillars.MinBy(p => p.Score)!;
             weakestInsight = new WeakestPillarInsightDto(
                 PillarKey: weakest.Key,
                 Score:     weakest.Score,
@@ -162,9 +195,9 @@ public class GeoDashboardAggregator
 
         // ── Opportunity insight (derived) ───────────────────────────
         OpportunityInsightDto? opportunityInsight = null;
-        if (coverage.Count > 0)
+        if (verifiedCoverage.Count > 0)
         {
-            var lowestCoverage = coverage.MinBy(c => c.Percentage)!;
+            var lowestCoverage = verifiedCoverage.MinBy(c => c.Percentage)!;
             opportunityInsight = new OpportunityInsightDto(
                 Message:  $"{lowestCoverage.Type} prompts ({lowestCoverage.Percentage}%) are your biggest untapped surface — turn them into prioritized missions.",
                 CtaLabel: "Open Opportunity Finder",
@@ -184,31 +217,57 @@ public class GeoDashboardAggregator
             Trend:                trend,
             ShareOfVoice:         shareOfVoice,
             Header:               header,
-            Pillars:              pillars,
+            Pillars:              verifiedPillars,
             WeakestPillarInsight: weakestInsight,
-            PromptTypeCoverage:   coverage,
+            PromptTypeCoverage:   verifiedCoverage,
             OpportunityInsight:   opportunityInsight,
             WinsAndLosses:        activity,
             VerifyInsight:        verifyInsight);
     }
 
     // ── Private helpers (moved from controller) ─────────────────────
-    private static string GetChangeStr(int current, int? prev)
+    private static string? GetChangeStr(int current, int? prev)
     {
-        if (prev is null or 0) return "+0%";
+        if (prev is null) return null;
+        if (prev == 0) return current == 0 ? "0 pts" : $"+{current} pts";
         var diff = current - prev.Value;
         var pct = Math.Round((decimal)diff / prev.Value * 100, 1);
         return pct >= 0 ? $"+{pct}%" : $"{pct}%";
     }
 
+    private static ScoreEntryDto Measured(
+        int value,
+        int? previous,
+        string status,
+        string source,
+        string methodology,
+        int? numerator,
+        int? denominator,
+        int? sampleSize,
+        string evidence) => new(
+            value,
+            GetChangeStr(value, previous),
+            GetDirection(value, previous),
+            status,
+            source,
+            methodology,
+            numerator,
+            denominator,
+            sampleSize,
+            evidence);
+
+    private static ScoreEntryDto Unavailable(string evidence, string status = "no-data") =>
+        new(null, null, "flat", status, "No verified source", "unavailable", null, null, null, evidence);
+
     private static string GetDirection(int current, int? prev)
     {
-        if (prev == null) return "up";
-        return current >= prev.Value ? "up" : "down";
+        if (prev == null || current == prev.Value) return "flat";
+        return current > prev.Value ? "up" : "down";
     }
 
     private static bool IsUsableScan(HistoricalScan scan)
     {
+        if (scan.ScoringMethodVersion.StartsWith("v4-evidence-", StringComparison.Ordinal)) return true;
         return new[]
         {
             scan.VisibilityScore,

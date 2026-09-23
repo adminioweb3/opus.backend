@@ -18,8 +18,8 @@ public class ScrapingJobRepository : IScrapingJobRepository
     {
         using var connection = _dbConnectionFactory.CreateConnection();
         var sql = @"
-            INSERT INTO ScrapingJobs (OrganizationId, WebsiteId, KnowledgeBaseId, Url, Status, ScrapeType, TotalPages, ProcessedPages, MaxPages, SuccessfulPages, FailedPages, TotalWords, TotalImages, TotalLinks, StartedAt, CompletedAt, CreatedAt)
-            VALUES (@OrganizationId, @WebsiteId, @KnowledgeBaseId, @Url, @Status, @ScrapeType, @TotalPages, @ProcessedPages, @MaxPages, @SuccessfulPages, @FailedPages, @TotalWords, @TotalImages, @TotalLinks, @StartedAt, @CompletedAt, NOW())
+            INSERT INTO ScrapingJobs (OrganizationId, WebsiteId, KnowledgeBaseId, Url, Status, ErrorMessage, ScrapeType, TotalPages, ProcessedPages, MaxPages, SuccessfulPages, FailedPages, TotalWords, TotalImages, TotalLinks, StartedAt, CompletedAt, CreatedAt)
+            VALUES (@OrganizationId, @WebsiteId, @KnowledgeBaseId, @Url, @Status, @ErrorMessage, @ScrapeType, @TotalPages, @ProcessedPages, @MaxPages, @SuccessfulPages, @FailedPages, @TotalWords, @TotalImages, @TotalLinks, @StartedAt, @CompletedAt, NOW())
             RETURNING Id;";
         return await connection.QuerySingleAsync<Guid>(sql, job);
     }
@@ -30,6 +30,7 @@ public class ScrapingJobRepository : IScrapingJobRepository
         var sql = @"
             UPDATE ScrapingJobs 
             SET Status = @Status,
+                ErrorMessage = @ErrorMessage,
                 TotalPages = @TotalPages,
                 ProcessedPages = @ProcessedPages,
                 SuccessfulPages = @SuccessfulPages,

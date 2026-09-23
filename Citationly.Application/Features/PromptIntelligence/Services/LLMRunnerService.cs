@@ -22,9 +22,7 @@ public class LLMRunnerService : ILLMRunnerService
 {
     public const int LegacySamplesPerProvider = 3;
     public const int SamplesPerProvider = LegacySamplesPerProvider;
-    private static readonly TimeSpan CacheFreshness = TimeSpan.FromHours(6);
     private readonly IAiProviderRegistry _providerRegistry;
-    private readonly IAiCompletionCache _completionCache;
     private readonly int _samplesPerProvider;
 
     public LLMRunnerService(IAiProviderRegistry providerRegistry, IAiCompletionCache completionCache)
@@ -36,14 +34,13 @@ public class LLMRunnerService : ILLMRunnerService
         IAiProviderRegistry providerRegistry,
         IAiCompletionCache completionCache,
         IConfiguration configuration)
-        : this(providerRegistry, completionCache, Math.Clamp(configuration.GetValue("OpenRouter:ObservationSamples", 1), 1, 5))
+        : this(providerRegistry, completionCache, Math.Clamp(configuration.GetValue("OpenAI:ObservationSamples", 1), 1, 5))
     {
     }
 
     private LLMRunnerService(IAiProviderRegistry providerRegistry, IAiCompletionCache completionCache, int samplesPerProvider)
     {
         _providerRegistry = providerRegistry;
-        _completionCache = completionCache;
         _samplesPerProvider = samplesPerProvider;
     }
 
@@ -60,35 +57,31 @@ public class LLMRunnerService : ILLMRunnerService
                     Id = Guid.NewGuid(),
                     PromptAnalysisId = analysisId,
                     Platform = "none",
-                    ResponseText = "[Error] No AI providers are configured. Set at least one of OpenAI/Anthropic/Google/Perplexity's API key.",
+                    ResponseText = "[Error] OpenAI is not configured. Set OpenAI:ApiKey.",
                     ResponseLength = 0,
                     CreatedAt = DateTime.UtcNow,
                     PromptVersion = "prompt-intelligence:v1",
                     IsError = true,
-                    ErrorMessage = "No AI providers are configured. Set at least one of OpenAI/Anthropic/Google/Perplexity's API key."
+                    ErrorMessage = "OpenAI is not configured. Set OpenAI:ApiKey."
                 }
             };
         }
 
         var tasks = providers.SelectMany(provider =>
             Enumerable.Range(1, _samplesPerProvider)
-                .Select(sampleIndex => ExecuteProviderAsync(
-                    organizationId,
+                .Select(_ => ExecuteProviderAsync(
                     analysisId,
                     provider,
                     promptText,
-                    sampleIndex,
                     ct,
                     personaSystemPrompt)));
         return await Task.WhenAll(tasks);
     }
 
     private async Task<PromptResponse> ExecuteProviderAsync(
-        Guid organizationId,
         Guid analysisId,
         IAiProvider provider,
         string promptText,
-        int sampleIndex,
         CancellationToken ct,
         string? personaSystemPrompt)
     {
@@ -98,34 +91,20 @@ public class LLMRunnerService : ILLMRunnerService
 
         try
         {
-            var result = await _completionCache.TryGetAsync(
-                organizationId,
-                operationName: $"prompt-intelligence.analysis.sample-{sampleIndex}",
-                provider.ProviderKey,
-                systemPrompt,
-                promptText,
-                CacheFreshness,
-                ct);
-
-            if (result == null)
-            {
-                result = await provider.CompleteAsync(systemPrompt, promptText, ct);
-                await _completionCache.StoreAsync(
-                    organizationId,
-                    operationName: $"prompt-intelligence.analysis.sample-{sampleIndex}",
-                    provider.ProviderKey,
-                    systemPrompt,
-                    promptText,
-                    result,
-                    CacheFreshness,
-                    ct);
-            }
+            // Visibility is a time-sensitive observation. A cached completion would make a
+            // user-triggered rerun appear current while silently replaying an older answer.
+            var result = provider.SupportsWebSearch
+                ? await provider.CompleteWithWebSearchAsync(systemPrompt, promptText, ct)
+                : await provider.CompleteAsync(systemPrompt, promptText, ct);
 
             return new PromptResponse
             {
                 Id = Guid.NewGuid(),
                 PromptAnalysisId = analysisId,
-                Platform = provider.PlatformName,
+                Platform = result.WasSearchGrounded &&
+                           provider.ProviderKey.Equals("openai", StringComparison.OrdinalIgnoreCase)
+                    ? "OpenAI Search API"
+                    : provider.PlatformName,
                 ResponseText = result.Content,
                 ResponseLength = result.Content.Length,
                 CreatedAt = DateTime.UtcNow,
@@ -140,7 +119,7 @@ public class LLMRunnerService : ILLMRunnerService
                 UpstreamProvider = result.UpstreamProvider,
                 GenerationId = result.GenerationId,
                 LatencyMs = result.LatencyMs,
-                PromptVersion = "prompt-intelligence:v2-sampled",
+                PromptVersion = "prompt-intelligence:v3-search-grounded-sampled",
                 IsError = false,
             };
         }
@@ -155,7 +134,7 @@ public class LLMRunnerService : ILLMRunnerService
                 ResponseLength = 0,
                 CreatedAt = DateTime.UtcNow,
                 ProviderKey = provider.ProviderKey,
-                PromptVersion = "prompt-intelligence:v2-sampled",
+                PromptVersion = "prompt-intelligence:v3-search-grounded-sampled",
                 IsError = true,
                 ErrorMessage = ex.Message
             };

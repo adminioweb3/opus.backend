@@ -41,6 +41,7 @@ public static class SelfHealingMigrations
         CREATE INDEX IF NOT EXISTS idx_shareofvoice_org_scandate_desc ON ShareOfVoice (OrganizationId, ScanDate DESC);
         CREATE INDEX IF NOT EXISTS idx_scrapingjobs_org_created ON ScrapingJobs (OrganizationId, CreatedAt DESC);
         CREATE INDEX IF NOT EXISTS idx_scrapingjobs_org_kb_created ON ScrapingJobs (OrganizationId, KnowledgeBaseId, CreatedAt DESC);
+        ALTER TABLE ScrapingJobs ADD COLUMN IF NOT EXISTS ErrorMessage TEXT;
         CREATE INDEX IF NOT EXISTS idx_users_org_created ON Users (OrganizationId, CreatedAt DESC);
         CREATE INDEX IF NOT EXISTS idx_users_lower_email ON Users (LOWER(Email));
 
@@ -1191,14 +1192,14 @@ public static class SelfHealingMigrations
             CitationShare INT NOT NULL DEFAULT 0,
             CompetitorCount INT NOT NULL DEFAULT 0,
             SampleCount INT NOT NULL DEFAULT 0,
-            MethodologyVersion VARCHAR(100) NOT NULL DEFAULT 'prompt-visibility:v4-mention-share'
+            MethodologyVersion VARCHAR(100) NOT NULL DEFAULT 'prompt-visibility:v5-search-grounded-sampled'
         );
         ALTER TABLE PromptVisibility ADD COLUMN IF NOT EXISTS VisibilityRank INT NOT NULL DEFAULT 0;
         ALTER TABLE PromptVisibility ADD COLUMN IF NOT EXISTS CitationShare INT NOT NULL DEFAULT 0;
         ALTER TABLE PromptVisibility ADD COLUMN IF NOT EXISTS SampleCount INT NOT NULL DEFAULT 0;
         ALTER TABLE PromptVisibility ADD COLUMN IF NOT EXISTS MethodologyVersion VARCHAR(100);
         UPDATE PromptVisibility SET MethodologyVersion = 'legacy-v2' WHERE MethodologyVersion IS NULL;
-        ALTER TABLE PromptVisibility ALTER COLUMN MethodologyVersion SET DEFAULT 'prompt-visibility:v4-mention-share';
+        ALTER TABLE PromptVisibility ALTER COLUMN MethodologyVersion SET DEFAULT 'prompt-visibility:v5-search-grounded-sampled';
         ALTER TABLE PromptVisibility ALTER COLUMN MethodologyVersion SET NOT NULL;
 
         CREATE TABLE IF NOT EXISTS PromptRecommendations (

@@ -99,7 +99,13 @@ public class PromptExecutionService : IPromptExecutionService
         var trackedCompetitors = await _websiteRepo.GetCompetitorsAsync(organizationId);
         var competitors = trackedCompetitors.Select(c => c.Name).Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
         var competitorDomains = trackedCompetitors.Select(c => c.WebsiteUrl).Where(u => !string.IsNullOrWhiteSpace(u)).ToList();
-        var mentionList = _calculator.ExtractMentions(analysisId, successfulResponses, brandName, competitors).ToList();
+        var brandAliases = BuildBrandAliases(brandName, ownDomain);
+        var mentionList = _calculator.ExtractMentions(
+            analysisId,
+            successfulResponses,
+            brandName,
+            competitors,
+            brandAliases).ToList();
 
         foreach (var response in successfulResponses)
         {
@@ -143,7 +149,8 @@ public class PromptExecutionService : IPromptExecutionService
             brandName,
             competitors,
             mentionList,
-            citations);
+            citations,
+            brandAliases);
 
         await _repo.InsertMentionsAsync(mentionList);
         await _repo.InsertVisibilityAsync(visibility);
@@ -190,6 +197,20 @@ public class PromptExecutionService : IPromptExecutionService
         return Uri.TryCreate(candidate, UriKind.Absolute, out var uri)
             ? (uri.Host.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? uri.Host[4..] : uri.Host)
             : null;
+    }
+
+    private static IReadOnlyCollection<string> BuildBrandAliases(string brandName, string? ownDomain)
+    {
+        var aliases = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { brandName };
+        if (!string.IsNullOrWhiteSpace(ownDomain))
+        {
+            aliases.Add(ownDomain);
+            var domainLabel = ownDomain.Split('.', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(domainLabel) && domainLabel.Length >= 3)
+                aliases.Add(domainLabel);
+        }
+
+        return aliases;
     }
 
     private static IReadOnlyCollection<string> ParseSourceUrls(string? json)

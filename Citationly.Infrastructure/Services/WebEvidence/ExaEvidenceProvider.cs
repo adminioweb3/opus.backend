@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using Citationly.Application.Interfaces;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 
 namespace Citationly.Infrastructure.Services.WebEvidence;
 
@@ -20,12 +21,14 @@ public sealed class ExaEvidenceProvider : IWebEvidenceProvider
     private readonly decimal _reservedCostPerSearchUsd;
     private readonly IAiUsageLimiter _usageLimiter;
     private readonly IAiResilienceService _resilience;
+    private readonly ILogger<ExaEvidenceProvider>? _logger;
 
     public ExaEvidenceProvider(
         HttpClient httpClient,
         IConfiguration configuration,
         IAiUsageLimiter usageLimiter,
-        IAiResilienceService resilience)
+        IAiResilienceService resilience,
+        ILogger<ExaEvidenceProvider>? logger = null)
     {
         _httpClient = httpClient;
         _apiKey = ConfigPlaceholderHelper.Resolve(configuration["Exa:ApiKey"], "EXA_API_KEY");
@@ -37,6 +40,7 @@ public sealed class ExaEvidenceProvider : IWebEvidenceProvider
         _reservedCostPerSearchUsd = Math.Max(0.000001m, configuration.GetValue("Exa:ReservedCostPerSearchUsd", 0.012m));
         _usageLimiter = usageLimiter;
         _resilience = resilience;
+        _logger = logger;
     }
 
     public string ProviderKey => "exa";
@@ -83,6 +87,8 @@ public sealed class ExaEvidenceProvider : IWebEvidenceProvider
         };
         if (query.PublishedAfter.HasValue)
             body["startPublishedDate"] = query.PublishedAfter.Value.UtcDateTime.ToString("O");
+        if (!string.IsNullOrWhiteSpace(query.Country))
+            body["userLocation"] = query.Country.Trim().ToUpperInvariant();
 
         try
         {
@@ -138,11 +144,17 @@ public sealed class ExaEvidenceProvider : IWebEvidenceProvider
                 }
                 var resultValue = new WebEvidenceResult(true, ProviderKey, requestId, items, cost, false, null);
                 Cache[cacheKey] = new CacheEntry(resultValue, DateTimeOffset.UtcNow.Add(_cacheFreshness));
+                _logger?.LogInformation(
+                    "Exa search {RequestId} returned {ResultCount} evidence results for organization {OrganizationId}",
+                    requestId,
+                    items.Count,
+                    organizationId);
                 return resultValue;
             }, cancellationToken);
         }
         catch (Exception ex)
         {
+            _logger?.LogWarning(ex, "Exa search failed for organization {OrganizationId}", organizationId);
             return WebEvidenceResult.Unavailable(ProviderKey, ex.Message);
         }
     }

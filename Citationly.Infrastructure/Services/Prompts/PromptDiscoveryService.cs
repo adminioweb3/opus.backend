@@ -62,14 +62,86 @@ public class PromptDiscoveryService : IPromptDiscoveryService
         var comparisonItems = await DiscoverComparisonBatchAsync(organizationId, businessName, competitorNames, ctx, systemPrompt);
         AppendTopic(entities, seen, organizationId, businessName, comparisonTopic, comparisonItems, allowBrandName: true);
 
-        // Topics 2-5: real business/service lines, generic non-branded prompts.
-        var batchTasks = topicNames.Select(name => DiscoverBusinessLineBatchAsync(organizationId, businessName, name, ctx, systemPrompt));
-        var batchResults = await Task.WhenAll(batchTasks);
+        // Topics 2-5: deterministic, evidence-grounded prompt panels. Broad category questions
+        // come first; narrower questions use no more than one qualifier that was actually present
+        // in the scraped/onboarding profile. This avoids invented or over-stacked constraints.
+        var batchResults = topicNames
+            .Select(name => BuildEvidenceGroundedBatch(name, ctx))
+            .ToList();
 
         for (int i = 0; i < topicNames.Count; i++)
             AppendTopic(entities, seen, organizationId, businessName, topicNames[i], batchResults[i], allowBrandName: false);
 
         return entities;
+    }
+
+    private static List<DiscoveryPromptItem> BuildEvidenceGroundedBatch(
+        string topicName,
+        CompanyProfileSummarizer.BiContext ctx)
+    {
+        var topic = string.Join(' ', topicName
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Take(14));
+        var prompts = new List<string>
+        {
+            $"Which companies specialize in {topic}?",
+            $"What are the best providers for {topic}?",
+            $"Which {topic} companies should buyers shortlist?",
+            $"Which providers offer end-to-end {topic} services?",
+            $"How do leading {topic} companies compare?",
+        };
+
+        AddQualifiedPrompt(prompts, topic, "industry", FirstVerifiedValue(ctx.Industry));
+        AddQualifiedPrompt(prompts, topic, "audience", FirstVerifiedValue(ctx.TargetAudience));
+        AddQualifiedPrompt(prompts, topic, "technology", FirstVerifiedValue(ctx.Technologies));
+
+        var broadFallbacks = new[]
+        {
+            $"Who are reputable specialists in {topic}?",
+            $"Which companies have demonstrated experience in {topic}?",
+            $"What {topic} providers are worth considering?",
+        };
+        foreach (var fallback in broadFallbacks)
+        {
+            if (prompts.Count >= PromptsPerTopic) break;
+            prompts.Add(fallback);
+        }
+
+        return prompts
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(PromptsPerTopic)
+            .Select((prompt, index) => new DiscoveryPromptItem
+            {
+                promptId = $"PROMPT-{index + 1:000}",
+                prompt = prompt,
+            })
+            .ToList();
+    }
+
+    private static void AddQualifiedPrompt(List<string> prompts, string topic, string qualifierType, string? qualifier)
+    {
+        if (string.IsNullOrWhiteSpace(qualifier)) return;
+
+        prompts.Add(qualifierType switch
+        {
+            "industry" => $"Which {topic} companies have experience in {qualifier}?",
+            "audience" => $"Which {topic} providers work with {qualifier}?",
+            "technology" => $"Which {topic} companies have expertise in {qualifier}?",
+            _ => $"Which companies provide {topic}?",
+        });
+    }
+
+    private static string? FirstVerifiedValue(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)
+            || string.Equals(value.Trim(), "Unknown", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        var first = value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(first)) return null;
+
+        return string.Join(' ', first.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(6));
     }
 
     private static void AppendTopic(List<AiSearchPrompt> entities, HashSet<string> seen, Guid organizationId, string businessName, string topicName, List<DiscoveryPromptItem> items, bool allowBrandName)

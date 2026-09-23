@@ -25,8 +25,16 @@ public class LLMRunnerServiceTests
         Assert.All(responses, response =>
         {
             Assert.Equal("openai", response.ProviderKey);
-            Assert.Equal("prompt-intelligence:v2-sampled", response.PromptVersion);
+            Assert.Equal("prompt-intelligence:v3-search-grounded-sampled", response.PromptVersion);
         });
+
+        await runner.RunPromptAcrossModelsAsync(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "Which product should I choose?",
+            CancellationToken.None);
+
+        Assert.Equal(LLMRunnerService.SamplesPerProvider * 2, provider.CallCount);
     }
 
     private sealed class RegistryStub : IAiProviderRegistry

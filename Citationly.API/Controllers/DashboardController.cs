@@ -84,7 +84,8 @@ public class DashboardController : ControllerBase
             CitationScore = latestScan.CitationScore,
             SentimentScore = latestScan.SentimentScore,
             CompetitorScore = latestScan.CompetitorScore,
-            CurrentRank = 1, // Example calculation based on competitor scores vs self
+            CurrentRank = (int?)null,
+            RankStatus = "Use Competitor Watch after the minimum observed-evidence threshold is met.",
             CompetitorCount = competitors.Count,
             LastScanDate = latestScan.ScanDate
         });
@@ -225,14 +226,17 @@ public class DashboardController : ControllerBase
         }
 
         var latest = await _snapshotRepository.GetSnapshotsByScanDateAsync(orgGuid, latestScanDate.Value);
-        latest = latest.Where(snapshot => snapshot.MeasurementSource == "openai-observed").ToList();
+        latest = latest.Where(snapshot =>
+                snapshot.MeasurementSource == "openai-observed" &&
+                snapshot.MethodologyVersion == CompetitorEvidenceScorer.MethodologyVersion)
+            .ToList();
         if (latest.Count == 0)
         {
             return Ok(new
             {
                 you = (object?)null,
                 comps = Array.Empty<object>(),
-                message = "Run Prompt Intelligence to collect measured OpenAI responses for Competitor Watch."
+                message = "Recalculate Competitor Watch to apply the current mention-rate ranking methodology."
             });
         }
 
@@ -246,6 +250,9 @@ public class DashboardController : ControllerBase
             .OrderBy(s => s.Rank == 0 ? int.MaxValue : s.Rank)
             .ThenByDescending(s => s.Visibility)
             .ToList();
+        var rankedBrandCount = latest.Count(snapshot => snapshot.Rank > 0);
+        var measuredResponseCount = youSnap?.ResponseCount ?? latest.Max(snapshot => snapshot.ResponseCount);
+        var rankingReady = measuredResponseCount >= RunCompetitorScanCommandHandler.MinimumResponseCount && rankedBrandCount >= 2;
 
         var rangeDays = ParseRangeDays(range);
         var cutoff = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-(rangeDays - 1));
@@ -287,6 +294,10 @@ public class DashboardController : ControllerBase
             measurementSource = youSnap.MeasurementSource,
             discoverySource = youSnap.DiscoverySource,
             modelUsed = youSnap.ModelUsed,
+            rankEligible = youSnap.Rank > 0,
+            rankReason = youSnap.Rank > 0
+                ? "Ranked within the evidence-validated workspace benchmark."
+                : $"A rank requires at least {RunCompetitorScanCommandHandler.MinimumResponseCount} responses and two evidence-validated brands.",
             trend = BuildTrend(null, true)
         };
 
@@ -315,6 +326,12 @@ public class DashboardController : ControllerBase
             measurementSource = s.MeasurementSource,
             discoverySource = s.DiscoverySource,
             modelUsed = s.ModelUsed,
+            rankEligible = s.Rank > 0,
+            rankReason = s.Rank > 0
+                ? "Validated by repeated appearance in captured OpenAI responses."
+                : s.DiscoverySource == "generated"
+                    ? "AI-suggested peer; not ranked until repeated response evidence validates it."
+                    : "Not enough observed evidence to publish a rank.",
             trend = BuildTrend(s.CompetitorId, false)
         }).ToList();
 
@@ -326,7 +343,11 @@ public class DashboardController : ControllerBase
             {
                 provider = "OpenAI",
                 model = youSnap?.ModelUsed ?? latest.First().ModelUsed ?? "OpenAI",
-                responseCount = youSnap?.ResponseCount ?? latest.Max(snapshot => snapshot.ResponseCount),
+                responseCount = measuredResponseCount,
+                rankedBrandCount,
+                rankingReady,
+                minimumResponseCount = RunCompetitorScanCommandHandler.MinimumResponseCount,
+                benchmarkScope = "Workspace benchmark from captured OpenAI responses; not a market or industry ranking.",
                 lastMeasured = latestScanDate.Value.ToString("yyyy-MM-dd"),
                 methodologyVersion = CompetitorEvidenceScorer.MethodologyVersion,
                 evidenceWindowDays = 90,

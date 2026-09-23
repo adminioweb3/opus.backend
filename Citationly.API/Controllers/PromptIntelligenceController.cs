@@ -5,6 +5,7 @@ using Citationly.Domain.Utils;
 using Citationly.Application.Features.PromptIntelligence.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using System.Text.Json;
 
 namespace Citationly.API.Controllers;
 
@@ -180,7 +181,18 @@ public class PromptIntelligenceController : ControllerBase
                 response.Sentiment,
                 response.SentimentQuote,
                 response.CreatedAt,
+                response.ProviderKey,
+                response.ModelUsed,
                 response.WasSearchGrounded,
+                SourceUrls = ParseStringArray(response.SourceUrlsJson),
+                response.Gateway,
+                response.UpstreamProvider,
+                response.PromptTokens,
+                response.CompletionTokens,
+                response.CostUsd,
+                response.GenerationId,
+                response.LatencyMs,
+                response.PromptVersion,
                 response.IsError,
                 response.ErrorMessage
             })
@@ -493,39 +505,54 @@ public class PromptIntelligenceController : ControllerBase
 
         var totalCitations = citationRows.Count;
         var citationsByPlatform = citationRows.GroupBy(c => c.Platform).ToDictionary(g => g.Key, g => g.Count());
-        var totalResponsesByPlatform = rows.GroupBy(r => r.Platform).ToDictionary(g => g.Key, g => g.Count());
+        var successfulResponsesByPlatform = rows
+            .Where(r => !r.IsError)
+            .GroupBy(r => r.Platform)
+            .ToDictionary(g => g.Key, g => g.Count());
 
-        double ScoreFor(int mentionCount, int totalResponses, IEnumerable<int> positions)
-        {
-            var mentionFrequency = totalResponses == 0 ? 0 : (double)mentionCount / totalResponses * 100;
-            var avgPosition = positions.DefaultIfEmpty(0).Average();
-            return Math.Clamp((mentionFrequency * 2) - (avgPosition / 2), 0, 100);
-        }
+        static double ScoreFor(int mentionCount, int totalResponses) =>
+            totalResponses == 0 ? 0 : (double)mentionCount / totalResponses * 100;
 
         var platforms = rows
             .GroupBy(r => r.Platform)
             .Select(g =>
             {
-                var total = g.Count();
-                var mentioned = g.Count(r => r.IsBrandMentioned);
-                var avgPosition = g.Where(r => r.BrandPosition.HasValue).Select(r => r.BrandPosition!.Value).DefaultIfEmpty(0).Average();
-                var score = ScoreFor(mentioned, total, g.Where(r => r.BrandPosition.HasValue).Select(r => r.BrandPosition!.Value));
-                var totalMentions = g.Sum(r => r.TotalMentionsOnPlatform);
-                var brandMentions = g.Sum(r => r.BrandMentionsOnPlatform);
-                var shareOfVoice = totalMentions == 0 ? 0 : (double)brandMentions / totalMentions * 100;
+                var successful = g.Where(r => !r.IsError).ToList();
+                var successfulSamples = successful.Count;
+                var failedSamples = g.Count(r => r.IsError);
+                var mentioned = successful.Count(r => r.IsBrandMentioned);
+                var positions = successful
+                    .Where(r => r.BrandPosition.HasValue)
+                    .Select(r => r.BrandPosition!.Value)
+                    .ToList();
+                var avgPosition = positions.Count == 0 ? 0 : positions.Average();
+                var score = successfulSamples == 0
+                    ? (double?)null
+                    : ScoreFor(mentioned, successfulSamples);
+                var totalMentions = successful.Sum(r => r.TotalMentionsOnPlatform);
+                var brandMentions = successful.Sum(r => r.BrandMentionsOnPlatform);
+                var shareOfVoice = successfulSamples == 0
+                    ? (double?)null
+                    : totalMentions == 0 ? 0 : (double)brandMentions / totalMentions * 100;
                 var citationCount = citationsByPlatform.GetValueOrDefault(g.Key, 0);
-                var citationShare = totalCitations == 0 ? 0 : (double)citationCount / totalCitations * 100;
+                var citationShare = successfulSamples == 0
+                    ? (double?)null
+                    : totalCitations == 0 ? 0 : (double)citationCount / totalCitations * 100;
 
                 return new
                 {
                     platform = g.Key,
-                    score = Math.Round(score, 1),
-                    shareOfVoice = Math.Round(shareOfVoice, 1),
-                    averagePosition = Math.Round(avgPosition, 1),
-                    citationShare = Math.Round(citationShare, 1),
+                    score = score.HasValue ? Math.Round(score.Value, 1) : (double?)null,
+                    shareOfVoice = shareOfVoice.HasValue ? Math.Round(shareOfVoice.Value, 1) : (double?)null,
+                    averagePosition = successfulSamples > 0 ? Math.Round(avgPosition, 1) : (double?)null,
+                    citationShare = citationShare.HasValue ? Math.Round(citationShare.Value, 1) : (double?)null,
+                    successfulSamples,
+                    failedSamples,
+                    availability = successfulSamples == 0 ? "unavailable" : failedSamples > 0 ? "partial" : "available",
                 };
             })
-            .OrderByDescending(p => p.score)
+            .OrderBy(p => p.score.HasValue ? 0 : 1)
+            .ThenByDescending(p => p.score)
             .ToList();
 
         // Real competitor x platform matrix — PromptMentions already carries Platform per
@@ -555,8 +582,10 @@ public class PromptIntelligenceController : ControllerBase
                 values = platformNames.Select(p =>
                 {
                     var onPlatform = g.Where(r => r.Platform == p).ToList();
-                    var total = totalResponsesByPlatform.GetValueOrDefault(p, 0);
-                    return Math.Round(ScoreFor(onPlatform.Count, total, onPlatform.Select(r => r.Position)), 1);
+                    var total = successfulResponsesByPlatform.GetValueOrDefault(p, 0);
+                    return total == 0
+                        ? (double?)null
+                        : Math.Round(ScoreFor(onPlatform.Count, total), 1);
                 }).ToList(),
             })
             .Cast<object>());
@@ -905,6 +934,19 @@ public class PromptIntelligenceController : ControllerBase
 
         var history = await _repo.GetExecutionHistoryAsync(questionId);
         return Ok(history);
+    }
+
+    private static IReadOnlyList<string> ParseStringArray(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return Array.Empty<string>();
+        try
+        {
+            return JsonSerializer.Deserialize<List<string>>(json) ?? new List<string>();
+        }
+        catch (JsonException)
+        {
+            return Array.Empty<string>();
+        }
     }
 }
 

@@ -91,6 +91,12 @@ internal class StubEngineScanService : IEngineScanService
         Task.FromResult((7, 25));
 }
 
+internal class StubGeoScoreEvidenceService : IGeoScoreEvidenceService
+{
+    public GeoScoreEvidenceSnapshot Evidence { get; set; } = new(12, 3, 24, 20, 3);
+    public Task<GeoScoreEvidenceSnapshot> GetAsync(Guid organizationId, DateTime since) => Task.FromResult(Evidence);
+}
+
 // ── Tests ───────────────────────────────────────────────────────
 
 public class GeoDashboardAggregatorTests
@@ -99,12 +105,24 @@ public class GeoDashboardAggregatorTests
 
     private GeoDashboardAggregator CreateAggregator(
         StubPillarService? pillarService = null,
-        StubPromptCoverageService? coverageService = null,
         StubVisibilityRepository? visibilityRepo = null,
+        StubGeoScoreEvidenceService? evidenceService = null,
         StubMediator? mediator = null)
     {
         return new GeoDashboardAggregator(
-            visibilityRepo ?? new StubVisibilityRepository(),
+            visibilityRepo ?? new StubVisibilityRepository
+            {
+                Scans = new List<HistoricalScan>
+                {
+                    new()
+                    {
+                        OrganizationId = _orgId,
+                        ScanDate = DateOnly.FromDateTime(DateTime.UtcNow),
+                        VisibilityScore = 50,
+                        ScoringMethodVersion = "v3-geo-audit"
+                    }
+                }
+            },
             pillarService ?? new StubPillarService
             {
                 Pillars = new List<GeoPillarDto>
@@ -114,17 +132,9 @@ public class GeoDashboardAggregatorTests
                     new("freshness", "Freshness", "desc", 83)
                 }
             },
-            coverageService ?? new StubPromptCoverageService
-            {
-                Coverage = new List<PromptTypeCoverageDto>
-                {
-                    new("Informational", "ex", "note", 81, "up"),
-                    new("Transactional", "ex", "note", 43, "flat"),
-                    new("Local", "ex", "note", 70, "up")
-                }
-            },
             new StubActivityFeedService(),
             new StubEngineScanService(),
+            evidenceService ?? new StubGeoScoreEvidenceService(),
             mediator ?? new StubMediator());
     }
 
@@ -141,15 +151,13 @@ public class GeoDashboardAggregatorTests
     }
 
     [Fact]
-    public async Task OpportunityInsight_IdentifiesLowestPercentagePromptType()
+    public async Task OpportunityInsight_HidesUnverifiedPromptCoverage()
     {
         var aggregator = CreateAggregator();
         var result = await aggregator.BuildAsync(_orgId, "30D");
 
-        Assert.Contains("Transactional", result.OpportunityInsight.Message);
-        Assert.Contains("43%", result.OpportunityInsight.Message);
-        Assert.Equal("Open Opportunity Finder", result.OpportunityInsight.CtaLabel);
-        Assert.Equal("/opportunity-finder", result.OpportunityInsight.CtaLink);
+        Assert.Null(result.OpportunityInsight);
+        Assert.Empty(result.PromptTypeCoverage);
     }
 
     [Fact]
@@ -174,7 +182,7 @@ public class GeoDashboardAggregatorTests
     }
 
     [Fact]
-    public async Task OpportunityInsight_WhenAllTied_PicksFirst()
+    public async Task OpportunityInsight_DoesNotPublishLegacyEstimatedCoverage()
     {
         var coverage = new StubPromptCoverageService
         {
@@ -186,11 +194,11 @@ public class GeoDashboardAggregatorTests
             }
         };
 
-        var aggregator = CreateAggregator(coverageService: coverage);
+        var aggregator = CreateAggregator();
         var result = await aggregator.BuildAsync(_orgId, "30D");
 
-        Assert.Contains("TypeA", result.OpportunityInsight.Message);
-        Assert.Contains("30%", result.OpportunityInsight.Message);
+        Assert.Null(result.OpportunityInsight);
+        Assert.Empty(result.PromptTypeCoverage);
     }
 
     [Fact]
@@ -211,7 +219,8 @@ public class GeoDashboardAggregatorTests
                     HallucinationRisk = 8,
                     SeoHealth = 94,
                     AeoReadiness = 76,
-                    GeoReadiness = 81
+                    GeoReadiness = 81,
+                    ScoringMethodVersion = "v3-geo-audit"
                 }
             }
         };
@@ -220,8 +229,7 @@ public class GeoDashboardAggregatorTests
         var result = await aggregator.BuildAsync(_orgId, "30D");
 
         // Mock scores: 64, 89, 52, 68, 8, 94, 76, 81 → average = 66.5 → rounded to 66
-        Assert.Equal(66, result.Header.CompositeScore);
-        Assert.Equal("D", result.Header.Grade);
+        Assert.Equal(75, result.Header.CompositeScore);
     }
 
     [Fact]
@@ -244,6 +252,66 @@ public class GeoDashboardAggregatorTests
         Assert.NotNull(result.Scores);
         Assert.NotNull(result.Trend);
         Assert.NotNull(result.ShareOfVoice);
+    }
+
+    [Fact]
+    public async Task CitationZero_RemainsMeasuredZeroWhenDenominatorExists()
+    {
+        var visibilityRepo = new StubVisibilityRepository
+        {
+            Scans = new List<HistoricalScan>
+            {
+                new()
+                {
+                    OrganizationId = _orgId,
+                    ScanDate = DateOnly.FromDateTime(DateTime.UtcNow),
+                    VisibilityScore = 25,
+                    CitationScore = 0,
+                    ScoringMethodVersion = "v4-evidence-only"
+                }
+            }
+        };
+        var evidenceService = new StubGeoScoreEvidenceService
+        {
+            Evidence = new GeoScoreEvidenceSnapshot(12, 0, 0, 0, 0)
+        };
+
+        var result = await CreateAggregator(visibilityRepo: visibilityRepo, evidenceService: evidenceService)
+            .BuildAsync(_orgId, "30D");
+
+        Assert.Equal(0, result.Scores.CitationScore.Value);
+        Assert.Equal("observed-zero", result.Scores.CitationScore.Status);
+        Assert.Equal(0, result.Scores.CitationScore.Numerator);
+        Assert.Equal(12, result.Scores.CitationScore.Denominator);
+    }
+
+    [Fact]
+    public async Task MissingEvidence_IsUnavailableInsteadOfZeroOrNeutralDefault()
+    {
+        var visibilityRepo = new StubVisibilityRepository
+        {
+            Scans = new List<HistoricalScan>
+            {
+                new()
+                {
+                    OrganizationId = _orgId,
+                    ScanDate = DateOnly.FromDateTime(DateTime.UtcNow),
+                    VisibilityScore = 50,
+                    ScoringMethodVersion = "v4-evidence-only"
+                }
+            }
+        };
+        var evidenceService = new StubGeoScoreEvidenceService
+        {
+            Evidence = new GeoScoreEvidenceSnapshot(0, 0, 0, 0, 0)
+        };
+
+        var result = await CreateAggregator(visibilityRepo: visibilityRepo, evidenceService: evidenceService)
+            .BuildAsync(_orgId, "30D");
+
+        Assert.Null(result.Scores.VisibilityScore.Value);
+        Assert.Equal("no-data", result.Scores.VisibilityScore.Status);
+        Assert.Null(result.Scores.CitationScore.Value);
     }
 
     [Fact]

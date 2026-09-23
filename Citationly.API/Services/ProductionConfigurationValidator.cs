@@ -31,14 +31,9 @@ public static class ProductionConfigurationValidator
 
         if (configuration.GetValue<bool>("AI:RequireOpenAI"))
         {
-            Require(configuration["OpenAI:ApiKey"], "OpenAI:ApiKey", missing);
-        }
-
-        if (configuration.GetSection("OpenRouter:Models").GetChildren().Any(x => x.GetValue<bool>("Enabled")))
-        {
             Require(
-                Resolve(configuration["OpenRouter:ApiKey"]) ?? Environment.GetEnvironmentVariable("OPENROUTER_API_KEY"),
-                "OPENROUTER_API_KEY or OpenRouter:ApiKey",
+                Resolve(configuration["OpenAI:ApiKey"]) ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY"),
+                "OpenAI:ApiKey or OPENAI_API_KEY",
                 missing);
         }
 

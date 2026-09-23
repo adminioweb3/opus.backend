@@ -45,7 +45,31 @@ public class OnboardingAnalysisResult
     /// </summary>
     public ConfidentString CompanyScale { get; set; } = new();
 
+    /// <summary>
+    /// Server-authored provenance for this profile. Downstream onboarding stages receive the
+    /// submitted answers and the exact crawl used for analysis.
+    /// </summary>
+    public OnboardingSourceContext SourceContext { get; set; } = new();
+
     public int OverallConfidence { get; set; }
+}
+
+public class OnboardingSourceContext
+{
+    public string WebsiteUrl { get; set; } = string.Empty;
+    public string BusinessName { get; set; } = string.Empty;
+    public string Industry { get; set; } = string.Empty;
+    public string TargetAudience { get; set; } = string.Empty;
+    public string Keywords { get; set; } = string.Empty;
+    public string WhoDoYouSellTo { get; set; } = string.Empty;
+    public string KnownCompetitors { get; set; } = string.Empty;
+    public string MainOffering { get; set; } = string.Empty;
+    public Guid? ScrapeJobId { get; set; }
+    public DateTime? ScrapeCompletedAt { get; set; }
+    public int CrawledPageCount { get; set; }
+    public List<string> CrawledPageUrls { get; set; } = new();
+    public string CrawlStatus { get; set; } = "Unavailable";
+    public string AnalysisBasis { get; set; } = "Submitted onboarding answers only";
 }
 
 public class ConfidentString { public string Value { get; set; } = string.Empty; public int Confidence { get; set; } }
@@ -96,41 +120,45 @@ public class AnalyzeOnboardingCommandHandler : IRequestHandler<AnalyzeOnboarding
 
     public async Task<OnboardingAnalysisResult> Handle(AnalyzeOnboardingCommand request, CancellationToken cancellationToken)
     {
-        // 0. Check if WebsiteProfile already exists
-        if (request.OrganizationId != Guid.Empty)
+        var sourceContext = new OnboardingSourceContext
         {
-            try
-            {
-                var existingProfile = await _websiteRepository.GetLatestWebsiteProfileAsync(request.OrganizationId);
-                if (existingProfile != null && (existingProfile.WebsiteUrl.Contains(request.WebsiteUrl) || request.WebsiteUrl.Contains(existingProfile.WebsiteUrl)))
-                {
-                    try
-                    {
-                        var cachedResult = JsonSerializer.Deserialize<OnboardingAnalysisResult>(existingProfile.RawProfileJson, CreateJsonSerializerOptions());
-                        if (cachedResult != null) return cachedResult;
-                    }
-                    catch { }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error fetching cached onboarding profile: {ex.Message}");
-            }
-        }
+            WebsiteUrl = request.WebsiteUrl,
+            BusinessName = request.BusinessName,
+            Industry = request.Industry,
+            TargetAudience = request.TargetAudience,
+            Keywords = request.Keywords,
+            WhoDoYouSellTo = request.WhoDoYouSellTo,
+            KnownCompetitors = request.KnownCompetitors,
+            MainOffering = request.MainOffering
+        };
 
-        // 1. Fetch scraped data and build optimized context
+        // Rebuild on every onboarding run. The old URL-only cache returned stale analysis when a
+        // newer crawl existed or the user changed form answers.
         string websiteContent = "";
         try
         {
             var jobs = await _scrapingRepository.GetAllJobsByOrgAsync(request.OrganizationId);
-            // Get the most recent job for this URL
-            var job = jobs.Where(j => j.Url.Contains(request.WebsiteUrl) || request.WebsiteUrl.Contains(j.Url))
+            var job = jobs.Where(j => j.Status == "Completed"
+                                      && j.SuccessfulPages > 0
+                                      && IsSameWebsite(j.Url, request.WebsiteUrl))
                           .OrderByDescending(j => j.CreatedAt)
                           .FirstOrDefault();
 
             if (job != null)
             {
                 var pages = await _scrapingRepository.GetPagesByJobIdAsync(job.Id);
+                sourceContext.ScrapeJobId = job.Id;
+                sourceContext.ScrapeCompletedAt = job.CompletedAt;
+                sourceContext.CrawledPageCount = pages.Count;
+                sourceContext.CrawledPageUrls = pages.Select(p => p.Url)
+                    .Where(url => !string.IsNullOrWhiteSpace(url))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Take(50)
+                    .ToList();
+                sourceContext.CrawlStatus = pages.Count > 0 ? "Completed" : "CompletedWithoutSavedPages";
+                sourceContext.AnalysisBasis = pages.Count > 0
+                    ? $"Submitted onboarding answers plus {pages.Count} saved website pages"
+                    : "Submitted onboarding answers only";
 
                 // Pipeline Step 1 & 2: Classify and Score
                 var rankedPages = new List<(ScrapedPage Page, Citationly.Domain.Enums.PageCategory Category, int Score)>();
@@ -163,6 +191,7 @@ public class AnalyzeOnboardingCommandHandler : IRequestHandler<AnalyzeOnboarding
         catch (Exception ex)
         {
             Console.WriteLine($"Error fetching scraped data: {ex.Message}");
+            sourceContext.CrawlStatus = "ReadFailed";
         }
 
         var systemPrompt = "You are an expert Business Intelligence, SEO, and Website Analysis AI. Return JSON exactly matching the requested schema. No markdown.";
@@ -176,6 +205,8 @@ Target Audience: {request.TargetAudience}
 Main Offering: {request.MainOffering}
 Who They Sell To: {request.WhoDoYouSellTo}
 Known Competitors: {request.KnownCompetitors}
+Crawl status: {sourceContext.CrawlStatus}
+Saved pages used: {sourceContext.CrawledPageCount}
 
 [Website Content]
 {websiteContent}
@@ -187,6 +218,8 @@ INSTRUCTIONS:
 3. Every object needs a 'value' and 'confidence' (0-100).
 4. Include deeper SEO (metadata, headings, internal links), structural (nav, UX), brand (mission, values), and market (ICP, pain points, tech stack) insights in the relevant fields (e.g. SEO recommendations, Brand Positioning, Strengths).
 5. Only detect technologies explicitly found in crawl content or supplied business inputs. Do not hallucinate.
+6. Treat submitted inputs as user-provided facts and crawl content as first-party website evidence. If neither supports a claim, leave it empty or lower confidence; never invent a fact.
+7. Domain authority is only an on-page estimate, not a measured backlink/domain-rating metric. State that limitation in its reason.
 6. For companyScale, judge from real signals on the site — team/about page size, number of case
    studies or logos, funding/press mentions, pricing tier language (built for small teams vs
    enterprise-grade). Value must be exactly one of: ""Startup"", ""SMB"", ""Mid-Market"", ""Enterprise"".
@@ -229,12 +262,12 @@ SCHEMA (Return ONLY this JSON):
         catch (Exception ex)
         {
             Console.WriteLine($"Error during AI Onboarding analysis: {ex.Message}");
-            return await PersistFallbackAnalysisResultAsync(request);
+            return await PersistFallbackAnalysisResultAsync(request, sourceContext);
         }
 
         if (!completion.Success)
         {
-            return await PersistFallbackAnalysisResultAsync(request);
+            return await PersistFallbackAnalysisResultAsync(request, sourceContext);
         }
 
         // Clean up markdown just in case the LLM disobeys "no markdown wrapper"
@@ -257,7 +290,10 @@ SCHEMA (Return ONLY this JSON):
             var result = JsonSerializer.Deserialize<OnboardingAnalysisResult>(responseContent, CreateJsonSerializerOptions());
             if (result != null)
             {
-                await TryPersistAnalysisResultAsync(request, responseContent);
+                result.SourceContext = sourceContext;
+                await TryPersistAnalysisResultAsync(
+                    request,
+                    JsonSerializer.Serialize(result, CreateJsonSerializerOptions()));
 
                 return result;
             }
@@ -267,12 +303,15 @@ SCHEMA (Return ONLY this JSON):
             Console.WriteLine($"Invalid AI Onboarding analysis JSON: {ex.Message}");
         }
 
-        return await PersistFallbackAnalysisResultAsync(request);
+        return await PersistFallbackAnalysisResultAsync(request, sourceContext);
     }
 
-    private async Task<OnboardingAnalysisResult> PersistFallbackAnalysisResultAsync(AnalyzeOnboardingCommand request)
+    private async Task<OnboardingAnalysisResult> PersistFallbackAnalysisResultAsync(
+        AnalyzeOnboardingCommand request,
+        OnboardingSourceContext sourceContext)
     {
         var result = CreateFallbackAnalysisResult(request);
+        result.SourceContext = sourceContext;
         var json = JsonSerializer.Serialize(result, CreateJsonSerializerOptions());
         await TryPersistAnalysisResultAsync(request, json);
         return result;
@@ -327,6 +366,21 @@ SCHEMA (Return ONLY this JSON):
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
     };
+
+    private static bool IsSameWebsite(string left, string right)
+    {
+        if (!Uri.TryCreate(left, UriKind.Absolute, out var leftUri)
+            || !Uri.TryCreate(right, UriKind.Absolute, out var rightUri))
+            return string.Equals(left.TrimEnd('/'), right.TrimEnd('/'), StringComparison.OrdinalIgnoreCase);
+
+        static string NormalizeHost(string host) =>
+            host.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? host[4..] : host;
+
+        return string.Equals(
+            NormalizeHost(leftUri.Host),
+            NormalizeHost(rightUri.Host),
+            StringComparison.OrdinalIgnoreCase);
+    }
 
     private static OnboardingAnalysisResult CreateFallbackAnalysisResult(AnalyzeOnboardingCommand request)
     {
