@@ -22,19 +22,22 @@ public class RunCitationScanCommandHandler : IRequestHandler<RunCitationScanComm
     private readonly ICitationEnrichmentService _enrichmentService;
     private readonly ICitationScanSnapshotRepository _snapshotRepo;
     private readonly IVisibilitySnapshotRepository _visibilitySnapshotRepo;
+    private readonly IAgentAutomationService _agentAutomation;
 
     public RunCitationScanCommandHandler(
         IWebsiteRepository websiteRepository,
         ICitationDiscoveryService discoveryService,
         ICitationEnrichmentService enrichmentService,
         ICitationScanSnapshotRepository snapshotRepo,
-        IVisibilitySnapshotRepository visibilitySnapshotRepo)
+        IVisibilitySnapshotRepository visibilitySnapshotRepo,
+        IAgentAutomationService agentAutomation)
     {
         _websiteRepository = websiteRepository;
         _discoveryService = discoveryService;
         _enrichmentService = enrichmentService;
         _snapshotRepo = snapshotRepo;
         _visibilitySnapshotRepo = visibilitySnapshotRepo;
+        _agentAutomation = agentAutomation;
     }
 
     public async Task<RunCitationScanResult> Handle(RunCitationScanCommand request, CancellationToken cancellationToken)
@@ -129,6 +132,8 @@ public class RunCitationScanCommandHandler : IRequestHandler<RunCitationScanComm
                 Reason = source.Reason
             });
         }
+
+        await _agentAutomation.ProcessCompletedScanAsync(orgId, AgentScanTypes.Citations, today, cancellationToken);
 
         return new RunCitationScanResult(true, "Citation scan complete.");
     }

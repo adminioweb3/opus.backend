@@ -34,7 +34,7 @@ public class IntentDetectionService
     {
         var prompt = $@"Classify the intent of this user message: ""{userMessage}""
 Respond ONLY with valid JSON.
-Fields required: intent (string), requiredTools (array of strings from: Visibility Tool, Competitor Tool, SEO Tool, Website Tool, Alerts Tool, Knowledge Base Tool, Content Tool, Opportunity Tool, Prompt Intelligence Tool), confidence (number 0-1), priority (Low/Normal/High), responseMode (Quick Answer/Consultant/Research/Coding/Report).";
+Fields required: intent (string), requiredTools (array of strings from: Visibility Tool, Competitor Tool, SEO Tool, Website Tool, Alerts Tool, Knowledge Base Tool, Content Tool, Opportunity Tool, Prompt Intelligence Tool, Agent Evidence Tool), confidence (number 0-1), priority (Low/Normal/High), responseMode (Quick Answer/Consultant/Research/Coding/Report).";
 
         try
         {
@@ -43,7 +43,8 @@ Fields required: intent (string), requiredTools (array of strings from: Visibili
             var allowedTools = new HashSet<string>(StringComparer.Ordinal)
             {
                 "Visibility Tool", "Competitor Tool", "SEO Tool", "Website Tool", "Alerts Tool",
-                "Knowledge Base Tool", "Content Tool", "Opportunity Tool", "Prompt Intelligence Tool"
+                "Knowledge Base Tool", "Content Tool", "Opportunity Tool", "Prompt Intelligence Tool",
+                "Agent Evidence Tool"
             };
             result.RequiredTools = (result.RequiredTools ?? Array.Empty<string>()).Where(allowedTools.Contains).Distinct().ToArray();
             result.Confidence = Math.Clamp(result.Confidence, 0, 1);

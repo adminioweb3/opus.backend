@@ -23,17 +23,20 @@ public class RunCompetitorScanCommandHandler : IRequestHandler<RunCompetitorScan
     private readonly IWebsiteRepository _websiteRepository;
     private readonly ICompetitorSnapshotRepository _snapshotRepo;
     private readonly IPromptIntelligenceRepository _promptIntelligenceRepository;
+    private readonly IAgentAutomationService _agentAutomation;
 
     public RunCompetitorScanCommandHandler(
         IAiVisibilityRepository visibilityRepo,
         IWebsiteRepository websiteRepository,
         ICompetitorSnapshotRepository snapshotRepo,
-        IPromptIntelligenceRepository promptIntelligenceRepository)
+        IPromptIntelligenceRepository promptIntelligenceRepository,
+        IAgentAutomationService agentAutomation)
     {
         _visibilityRepo = visibilityRepo;
         _websiteRepository = websiteRepository;
         _snapshotRepo = snapshotRepo;
         _promptIntelligenceRepository = promptIntelligenceRepository;
+        _agentAutomation = agentAutomation;
     }
 
     public async Task<RunCompetitorScanResult> Handle(RunCompetitorScanCommand request, CancellationToken cancellationToken)
@@ -174,6 +177,8 @@ public class RunCompetitorScanCommandHandler : IRequestHandler<RunCompetitorScan
                 DiscoverySource = discoverySource
             });
         }
+
+        await _agentAutomation.ProcessCompletedScanAsync(orgId, AgentScanTypes.Competitors, today, cancellationToken);
 
         return new RunCompetitorScanResult(
             true,

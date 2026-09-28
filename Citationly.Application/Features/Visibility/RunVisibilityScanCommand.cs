@@ -20,19 +20,22 @@ public class RunVisibilityScanCommandHandler : IRequestHandler<RunVisibilityScan
     private readonly IVisibilityRankingService _rankingService;
     private readonly IVisibilitySnapshotRepository _snapshotRepo;
     private readonly IAiCompletionService _aiCompletionService;
+    private readonly IAgentAutomationService _agentAutomation;
 
     public RunVisibilityScanCommandHandler(
         IWebsiteRepository websiteRepository,
         IVisibilityScoringService scoringService,
         IVisibilityRankingService rankingService,
         IVisibilitySnapshotRepository snapshotRepo,
-        IAiCompletionService aiCompletionService)
+        IAiCompletionService aiCompletionService,
+        IAgentAutomationService agentAutomation)
     {
         _websiteRepository = websiteRepository;
         _scoringService = scoringService;
         _rankingService = rankingService;
         _snapshotRepo = snapshotRepo;
         _aiCompletionService = aiCompletionService;
+        _agentAutomation = agentAutomation;
     }
 
     public async Task<RunVisibilityScanResult> Handle(RunVisibilityScanCommand request, CancellationToken cancellationToken)
@@ -94,6 +97,8 @@ public class RunVisibilityScanCommandHandler : IRequestHandler<RunVisibilityScan
                 Status = StatusFor(platform.VisibilityScore)
             });
         }
+
+        await _agentAutomation.ProcessCompletedScanAsync(orgId, AgentScanTypes.Visibility, today, cancellationToken);
 
         return new RunVisibilityScanResult(true, "Visibility scan complete.");
     }

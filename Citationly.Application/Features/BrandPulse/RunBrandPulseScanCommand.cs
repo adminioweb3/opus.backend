@@ -21,6 +21,7 @@ public class RunBrandPulseScanCommandHandler : IRequestHandler<RunBrandPulseScan
     private readonly IVisibilitySnapshotRepository _visibilitySnapshotRepo;
     private readonly IBrandPulseSnapshotRepository _snapshotRepo;
     private readonly IAiCompletionService _aiCompletionService;
+    private readonly IAgentAutomationService _agentAutomation;
 
     public RunBrandPulseScanCommandHandler(
         IWebsiteRepository websiteRepository,
@@ -28,7 +29,8 @@ public class RunBrandPulseScanCommandHandler : IRequestHandler<RunBrandPulseScan
         ICompetitorSnapshotRepository competitorSnapshotRepo,
         IVisibilitySnapshotRepository visibilitySnapshotRepo,
         IBrandPulseSnapshotRepository snapshotRepo,
-        IAiCompletionService aiCompletionService)
+        IAiCompletionService aiCompletionService,
+        IAgentAutomationService agentAutomation)
     {
         _websiteRepository = websiteRepository;
         _visibilityRepo = visibilityRepo;
@@ -36,6 +38,7 @@ public class RunBrandPulseScanCommandHandler : IRequestHandler<RunBrandPulseScan
         _visibilitySnapshotRepo = visibilitySnapshotRepo;
         _snapshotRepo = snapshotRepo;
         _aiCompletionService = aiCompletionService;
+        _agentAutomation = agentAutomation;
     }
 
     public async Task<RunBrandPulseScanResult> Handle(RunBrandPulseScanCommand request, CancellationToken cancellationToken)
@@ -118,6 +121,8 @@ public class RunBrandPulseScanCommandHandler : IRequestHandler<RunBrandPulseScan
             AccuracyFlagsJson = JsonSerializer.Serialize(judged.AccuracyFlags),
             PromptEvidenceJson = JsonSerializer.Serialize(judged.PromptEvidence)
         });
+
+        await _agentAutomation.ProcessCompletedScanAsync(orgId, AgentScanTypes.BrandPulse, today, cancellationToken);
 
         return new RunBrandPulseScanResult(true, "Brand pulse scan complete.");
     }

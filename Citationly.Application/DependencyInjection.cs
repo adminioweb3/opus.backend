@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using System.Reflection;
 using Citationly.Application.Behaviors;
 using Citationly.Application.Features.Assistant.Pipeline;
+using Citationly.Application.Features.Assistant.Agents;
 using Citationly.Application.Features.Assistant.Services;
 using Citationly.Application.Interfaces;
 using Citationly.Application.Interfaces.Security;
@@ -27,6 +28,7 @@ public static class DependencyInjection
         services.AddScoped<AnalyticsEngineService>();
         services.AddScoped<PromptBuilderService>();
         services.AddScoped<AgentOrchestrator>();
+        services.AddScoped<IAgentAutomationService, AgentAutomationService>();
         services.AddSingleton<IAiCompletionCache, InMemoryAiCompletionCache>();
         services.AddScoped<IAiCompletionService, AiCompletionService>();
         

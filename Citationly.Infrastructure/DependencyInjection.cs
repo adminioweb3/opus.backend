@@ -32,6 +32,7 @@ public static class DependencyInjection
         services.AddSingleton<IIntegrationCredentialProtector, IntegrationCredentialProtector>();
         services.AddTransient<IApiKeyRepository, ApiKeyRepository>();
         services.AddTransient<IAlertRepository, AlertRepository>();
+        services.AddScoped<IAgentControlPlaneRepository, AgentControlPlaneRepository>();
         services.AddTransient<IAuditLogRepository, AuditLogRepository>();
         services.AddTransient<IBetaFeedbackRepository, BetaFeedbackRepository>();
         services.AddScoped<IAssistantConversationRepository, AssistantConversationRepository>();

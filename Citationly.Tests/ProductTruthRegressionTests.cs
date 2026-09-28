@@ -164,6 +164,7 @@ public partial class ProductTruthRegressionTests
             ["DataLifecycleController.cs"] = new[] { "[RequireOrgRole(\"Admin\")", "[RequireOrgRole(\"Owner\")", "[AuditAction(\"data_lifecycle.deletion_request.create\"" },
             ["EnterpriseSsoController.cs"] = new[] { "[RequireOrgRole(\"Admin\")", "[AuditAction(\"enterprise.sso.upsert\"", "[AuditAction(\"enterprise.scim_token.rotate\"" },
             ["AgencyController.cs"] = new[] { "[RequireOrgRole(\"Admin\")", "[RequireOrgRole(\"Manager\")", "[AuditAction(\"agency.report_link.create\"", "[AuditAction(\"agency.report_link.revoke\"" },
+            ["AgentsController.cs"] = new[] { "[RequireOrgRole(\"Manager\")", "[AuditAction(\"agent.approval.decide\"", "[AuditAction(\"agent.schedule.update\"", "[AuditAction(\"agent.settings.update\"", "[AuditAction(\"agent.run.cancel\"", "[AuditAction(\"agent.run.retry\"" },
         };
 
         var missing = new List<string>();

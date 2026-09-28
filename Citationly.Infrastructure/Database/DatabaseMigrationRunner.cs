@@ -453,6 +453,376 @@ internal static class DatabaseMigrations
             "Persist website crawl failure details for onboarding diagnostics",
             """
             ALTER TABLE ScrapingJobs ADD COLUMN IF NOT EXISTS ErrorMessage TEXT;
+            """),
+        new(
+            "202609250001_agent_control_plane",
+            "Add organization-scoped agent definitions, settings, schedules, runs, findings, and approvals",
+            """
+            CREATE TABLE IF NOT EXISTS AgentDefinitions (
+                AgentKey VARCHAR(100) PRIMARY KEY,
+                Name VARCHAR(150) NOT NULL,
+                Stage VARCHAR(50) NOT NULL,
+                Description TEXT NOT NULL,
+                Version VARCHAR(50) NOT NULL DEFAULT '1.0',
+                DefaultAutonomyLevel VARCHAR(20) NOT NULL DEFAULT 'Assist'
+                    CHECK (DefaultAutonomyLevel IN ('Observe', 'Assist', 'Autopilot')),
+                DefaultTriggerType VARCHAR(50) NOT NULL DEFAULT 'Event',
+                DefaultSchedule VARCHAR(255) NOT NULL DEFAULT '',
+                CapabilitiesJson JSONB NOT NULL DEFAULT '[]'::jsonb,
+                IsAvailable BOOLEAN NOT NULL DEFAULT TRUE,
+                SortOrder INT NOT NULL DEFAULT 0,
+                CreatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UpdatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            INSERT INTO AgentDefinitions
+                (AgentKey, Name, Stage, Description, Version, DefaultAutonomyLevel,
+                 DefaultTriggerType, DefaultSchedule, CapabilitiesJson, IsAvailable, SortOrder)
+            VALUES
+                ('visibility-monitor', 'Visibility Monitor', 'Monitor',
+                 'Detects meaningful visibility, citation, competitor, sentiment, and data-quality changes.',
+                 '1.0', 'Assist', 'Event', 'scan.completed',
+                 '["visibility.read","citations.read","competitors.read","alerts.propose"]'::jsonb, TRUE, 10),
+                ('intelligence-analyst', 'Intelligence Analyst', 'Explain',
+                 'Explains workspace changes using dated, organization-scoped evidence.',
+                 '1.0', 'Assist', 'Event', 'finding.important',
+                 '["workspace.read","findings.explain","assistant.respond"]'::jsonb, TRUE, 20),
+                ('geo-strategy', 'GEO Strategy Agent', 'Recommend',
+                 'Creates deduplicated and prioritized GEO recommendations from explained findings.',
+                 '1.0', 'Assist', 'Cron', '0 9 * * 1',
+                 '["findings.read","recommendations.propose","roadmap.propose"]'::jsonb, TRUE, 30),
+                ('content-execution', 'Content Execution Agent', 'Execute',
+                 'Prepares grounded briefs and drafts while keeping live publishing approval-gated.',
+                 '1.0', 'Assist', 'Event', 'recommendation.approved',
+                 '["knowledge.read","content.draft","content.optimize","publishing.propose"]'::jsonb, TRUE, 40),
+                ('impact-reporting', 'Impact & Reporting Agent', 'Measure',
+                 'Measures implemented recommendations and produces evidence-linked impact summaries.',
+                 '1.0', 'Assist', 'Event', 'recommendation.implemented',
+                 '["baselines.read","impact.measure","reports.prepare"]'::jsonb, TRUE, 50)
+            ON CONFLICT (AgentKey) DO UPDATE SET
+                Name = EXCLUDED.Name,
+                Stage = EXCLUDED.Stage,
+                Description = EXCLUDED.Description,
+                Version = EXCLUDED.Version,
+                DefaultAutonomyLevel = EXCLUDED.DefaultAutonomyLevel,
+                DefaultTriggerType = EXCLUDED.DefaultTriggerType,
+                DefaultSchedule = EXCLUDED.DefaultSchedule,
+                CapabilitiesJson = EXCLUDED.CapabilitiesJson,
+                IsAvailable = EXCLUDED.IsAvailable,
+                SortOrder = EXCLUDED.SortOrder,
+                UpdatedAt = CURRENT_TIMESTAMP;
+
+            CREATE TABLE IF NOT EXISTS AgentSettings (
+                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                OrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,
+                AgentKey VARCHAR(100) NOT NULL REFERENCES AgentDefinitions(AgentKey),
+                IsEnabled BOOLEAN NOT NULL DEFAULT TRUE,
+                AutonomyLevel VARCHAR(20) NOT NULL DEFAULT 'Assist'
+                    CHECK (AutonomyLevel IN ('Observe', 'Assist', 'Autopilot')),
+                MaxRunsPerDay INT NOT NULL DEFAULT 5 CHECK (MaxRunsPerDay BETWEEN 0 AND 10000),
+                MaxCostMicroUsdPerRun BIGINT NOT NULL DEFAULT 100000 CHECK (MaxCostMicroUsdPerRun >= 0),
+                AllowedActionsJson JSONB NOT NULL DEFAULT '[]'::jsonb,
+                CreatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UpdatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (OrganizationId, AgentKey)
+            );
+            CREATE INDEX IF NOT EXISTS idx_agentsettings_org ON AgentSettings (OrganizationId, AgentKey);
+
+            CREATE TABLE IF NOT EXISTS AgentSchedules (
+                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                OrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,
+                AgentKey VARCHAR(100) NOT NULL REFERENCES AgentDefinitions(AgentKey),
+                TriggerType VARCHAR(50) NOT NULL CHECK (TriggerType IN ('Event', 'Cron', 'Manual')),
+                TriggerExpression VARCHAR(255) NOT NULL DEFAULT '',
+                TimeZone VARCHAR(100) NOT NULL DEFAULT 'UTC',
+                IsEnabled BOOLEAN NOT NULL DEFAULT TRUE,
+                LastRunAt TIMESTAMP WITH TIME ZONE,
+                NextRunAt TIMESTAMP WITH TIME ZONE,
+                CreatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UpdatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (OrganizationId, AgentKey, TriggerType, TriggerExpression)
+            );
+            CREATE INDEX IF NOT EXISTS idx_agentschedules_due
+                ON AgentSchedules (IsEnabled, NextRunAt) WHERE NextRunAt IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_agentschedules_org ON AgentSchedules (OrganizationId, AgentKey);
+
+            INSERT INTO AgentSettings
+                (OrganizationId, AgentKey, IsEnabled, AutonomyLevel, MaxRunsPerDay, MaxCostMicroUsdPerRun, AllowedActionsJson)
+            SELECT o.Id, d.AgentKey, TRUE, d.DefaultAutonomyLevel, 5, 100000, d.CapabilitiesJson
+            FROM Organizations o
+            CROSS JOIN AgentDefinitions d
+            WHERE d.IsAvailable = TRUE
+            ON CONFLICT (OrganizationId, AgentKey) DO NOTHING;
+
+            INSERT INTO AgentSchedules
+                (OrganizationId, AgentKey, TriggerType, TriggerExpression, TimeZone, IsEnabled)
+            SELECT o.Id, d.AgentKey, d.DefaultTriggerType, d.DefaultSchedule, 'UTC', TRUE
+            FROM Organizations o
+            CROSS JOIN AgentDefinitions d
+            WHERE d.IsAvailable = TRUE AND d.DefaultSchedule <> ''
+            ON CONFLICT (OrganizationId, AgentKey, TriggerType, TriggerExpression) DO NOTHING;
+
+            CREATE TABLE IF NOT EXISTS AgentRuns (
+                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                OrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,
+                AgentKey VARCHAR(100) NOT NULL REFERENCES AgentDefinitions(AgentKey),
+                InitiatedByUserId UUID REFERENCES Users(Id) ON DELETE SET NULL,
+                ParentRunId UUID REFERENCES AgentRuns(Id) ON DELETE SET NULL,
+                TriggerType VARCHAR(50) NOT NULL DEFAULT 'Event',
+                TriggerReference VARCHAR(255) NOT NULL DEFAULT '',
+                Status VARCHAR(50) NOT NULL DEFAULT 'Queued'
+                    CHECK (Status IN ('Queued', 'Running', 'WaitingForApproval', 'CancellationRequested', 'Completed', 'Failed', 'Cancelled')),
+                IdempotencyKey VARCHAR(255) NOT NULL,
+                InputJson JSONB NOT NULL DEFAULT '{}'::jsonb,
+                OutputJson JSONB NOT NULL DEFAULT '{}'::jsonb,
+                Provider VARCHAR(100) NOT NULL DEFAULT '',
+                Model VARCHAR(150) NOT NULL DEFAULT '',
+                PromptTokens INT NOT NULL DEFAULT 0 CHECK (PromptTokens >= 0),
+                CompletionTokens INT NOT NULL DEFAULT 0 CHECK (CompletionTokens >= 0),
+                CostMicroUsd BIGINT NOT NULL DEFAULT 0 CHECK (CostMicroUsd >= 0),
+                Attempt INT NOT NULL DEFAULT 1 CHECK (Attempt >= 1),
+                MaxAttempts INT NOT NULL DEFAULT 3 CHECK (MaxAttempts BETWEEN 1 AND 10),
+                ErrorCode VARCHAR(100) NOT NULL DEFAULT '',
+                ErrorMessage TEXT NOT NULL DEFAULT '',
+                QueuedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                StartedAt TIMESTAMP WITH TIME ZONE,
+                CompletedAt TIMESTAMP WITH TIME ZONE,
+                CancelRequestedAt TIMESTAMP WITH TIME ZONE,
+                UpdatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (OrganizationId, IdempotencyKey)
+            );
+            CREATE INDEX IF NOT EXISTS idx_agentruns_org_queued ON AgentRuns (OrganizationId, QueuedAt DESC);
+            CREATE INDEX IF NOT EXISTS idx_agentruns_agent_status ON AgentRuns (OrganizationId, AgentKey, Status, QueuedAt DESC);
+            CREATE INDEX IF NOT EXISTS idx_agentruns_queue ON AgentRuns (Status, QueuedAt) WHERE Status = 'Queued';
+
+            CREATE TABLE IF NOT EXISTS AgentRunEvents (
+                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                OrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,
+                RunId UUID NOT NULL REFERENCES AgentRuns(Id) ON DELETE CASCADE,
+                EventType VARCHAR(100) NOT NULL,
+                Status VARCHAR(50) NOT NULL DEFAULT '',
+                Message TEXT NOT NULL DEFAULT '',
+                DataJson JSONB NOT NULL DEFAULT '{}'::jsonb,
+                CreatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_agentrunevents_org_created ON AgentRunEvents (OrganizationId, CreatedAt DESC);
+            CREATE INDEX IF NOT EXISTS idx_agentrunevents_run_created ON AgentRunEvents (RunId, CreatedAt);
+
+            CREATE TABLE IF NOT EXISTS AgentFindings (
+                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                OrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,
+                RunId UUID REFERENCES AgentRuns(Id) ON DELETE SET NULL,
+                AgentKey VARCHAR(100) NOT NULL REFERENCES AgentDefinitions(AgentKey),
+                FindingType VARCHAR(100) NOT NULL,
+                Severity VARCHAR(30) NOT NULL DEFAULT 'Info'
+                    CHECK (Severity IN ('Info', 'Low', 'Medium', 'High', 'Critical', 'Good')),
+                Title VARCHAR(255) NOT NULL,
+                Summary TEXT NOT NULL DEFAULT '',
+                EntityType VARCHAR(100) NOT NULL DEFAULT '',
+                EntityIdsJson JSONB NOT NULL DEFAULT '[]'::jsonb,
+                EvidenceJson JSONB NOT NULL DEFAULT '[]'::jsonb,
+                ObservationStartedAt TIMESTAMP WITH TIME ZONE,
+                ObservationEndedAt TIMESTAMP WITH TIME ZONE,
+                Confidence NUMERIC(5,4) NOT NULL DEFAULT 0 CHECK (Confidence BETWEEN 0 AND 1),
+                DeduplicationKey VARCHAR(255) NOT NULL,
+                Status VARCHAR(30) NOT NULL DEFAULT 'Open'
+                    CHECK (Status IN ('Open', 'Investigating', 'Explained', 'Dismissed', 'Resolved')),
+                CreatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UpdatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                ResolvedAt TIMESTAMP WITH TIME ZONE,
+                UNIQUE (OrganizationId, DeduplicationKey)
+            );
+            CREATE INDEX IF NOT EXISTS idx_agentfindings_org_status ON AgentFindings (OrganizationId, Status, UpdatedAt DESC);
+            CREATE INDEX IF NOT EXISTS idx_agentfindings_agent_updated ON AgentFindings (OrganizationId, AgentKey, UpdatedAt DESC);
+
+            CREATE TABLE IF NOT EXISTS AgentApprovals (
+                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                OrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,
+                RunId UUID NOT NULL REFERENCES AgentRuns(Id) ON DELETE CASCADE,
+                FindingId UUID REFERENCES AgentFindings(Id) ON DELETE SET NULL,
+                AgentKey VARCHAR(100) NOT NULL REFERENCES AgentDefinitions(AgentKey),
+                ActionType VARCHAR(100) NOT NULL,
+                Title VARCHAR(255) NOT NULL,
+                Description TEXT NOT NULL DEFAULT '',
+                PayloadJson JSONB NOT NULL DEFAULT '{}'::jsonb,
+                RiskLevel VARCHAR(30) NOT NULL DEFAULT 'Medium'
+                    CHECK (RiskLevel IN ('Low', 'Medium', 'High', 'Critical')),
+                Status VARCHAR(30) NOT NULL DEFAULT 'Pending'
+                    CHECK (Status IN ('Pending', 'Approved', 'Rejected', 'Expired', 'Executed', 'Failed')),
+                IdempotencyKey VARCHAR(255) NOT NULL,
+                RequestedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                ExpiresAt TIMESTAMP WITH TIME ZONE,
+                DecidedByUserId UUID REFERENCES Users(Id) ON DELETE SET NULL,
+                DecidedAt TIMESTAMP WITH TIME ZONE,
+                DecisionNote TEXT NOT NULL DEFAULT '',
+                ExecutedAt TIMESTAMP WITH TIME ZONE,
+                UNIQUE (OrganizationId, IdempotencyKey)
+            );
+            CREATE INDEX IF NOT EXISTS idx_agentapprovals_pending ON AgentApprovals (OrganizationId, RequestedAt DESC)
+                WHERE Status = 'Pending';
+            CREATE INDEX IF NOT EXISTS idx_agentapprovals_run ON AgentApprovals (RunId, RequestedAt DESC);
+
+            INSERT INTO PlanLimits (PlanKey, FeatureKey, LimitValue) VALUES
+                ('Trial', 'agent_autopilot', 0),
+                ('Trial', 'agent_runs_per_day', 5),
+                ('Trial', 'agent_cost_micro_usd_per_run', 100000),
+                ('Starter', 'agent_autopilot', 0),
+                ('Starter', 'agent_runs_per_day', 20),
+                ('Starter', 'agent_cost_micro_usd_per_run', 500000),
+                ('Pro', 'agent_autopilot', 1),
+                ('Pro', 'agent_runs_per_day', 100),
+                ('Pro', 'agent_cost_micro_usd_per_run', 2000000),
+                ('Enterprise', 'agent_autopilot', 1),
+                ('Enterprise', 'agent_runs_per_day', 500),
+                ('Enterprise', 'agent_cost_micro_usd_per_run', 10000000)
+            ON CONFLICT (PlanKey, FeatureKey) DO NOTHING;
+            """),
+        new(
+            "202609250002_agent_recommendations",
+            "Add evidence-linked GEO strategy recommendations with approval, ownership, and lifecycle state",
+            """
+            CREATE TABLE IF NOT EXISTS AgentRecommendations (
+                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                OrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,
+                RunId UUID NOT NULL REFERENCES AgentRuns(Id) ON DELETE CASCADE,
+                FindingId UUID NOT NULL REFERENCES AgentFindings(Id) ON DELETE CASCADE,
+                ApprovalId UUID REFERENCES AgentApprovals(Id) ON DELETE SET NULL,
+                AgentKey VARCHAR(100) NOT NULL REFERENCES AgentDefinitions(AgentKey),
+                RecommendationType VARCHAR(100) NOT NULL,
+                Category VARCHAR(100) NOT NULL,
+                Title VARCHAR(255) NOT NULL,
+                Summary TEXT NOT NULL DEFAULT '',
+                Rationale TEXT NOT NULL DEFAULT '',
+                TargetType VARCHAR(100) NOT NULL DEFAULT '',
+                TargetKey VARCHAR(255) NOT NULL DEFAULT '',
+                EvidenceJson JSONB NOT NULL DEFAULT '{}'::jsonb,
+                ActionPlanJson JSONB NOT NULL DEFAULT '[]'::jsonb,
+                ValidationPlanJson JSONB NOT NULL DEFAULT '{}'::jsonb,
+                ExpectedImpact TEXT NOT NULL DEFAULT '',
+                ImpactScore INT NOT NULL CHECK (ImpactScore BETWEEN 0 AND 100),
+                EffortScore INT NOT NULL CHECK (EffortScore BETWEEN 0 AND 100),
+                UrgencyScore INT NOT NULL CHECK (UrgencyScore BETWEEN 0 AND 100),
+                GoalAlignmentScore INT NOT NULL CHECK (GoalAlignmentScore BETWEEN 0 AND 100),
+                Confidence NUMERIC(5,4) NOT NULL CHECK (Confidence BETWEEN 0 AND 1),
+                PriorityScore NUMERIC(6,2) NOT NULL CHECK (PriorityScore BETWEEN 0 AND 100),
+                Status VARCHAR(30) NOT NULL DEFAULT 'AwaitingApproval'
+                    CHECK (Status IN ('AwaitingApproval', 'Approved', 'Rejected', 'Assigned', 'InProgress', 'Implemented', 'Dismissed')),
+                AssignedToUserId UUID REFERENCES Users(Id) ON DELETE SET NULL,
+                RejectionReason TEXT NOT NULL DEFAULT '',
+                DeduplicationKey VARCHAR(255) NOT NULL,
+                CreatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UpdatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                ApprovedAt TIMESTAMP WITH TIME ZONE,
+                AssignedAt TIMESTAMP WITH TIME ZONE,
+                ImplementedAt TIMESTAMP WITH TIME ZONE,
+                UNIQUE (OrganizationId, DeduplicationKey)
+            );
+            CREATE INDEX IF NOT EXISTS idx_agentrecommendations_org_status
+                ON AgentRecommendations (OrganizationId, Status, PriorityScore DESC, UpdatedAt DESC);
+            CREATE INDEX IF NOT EXISTS idx_agentrecommendations_assignee
+                ON AgentRecommendations (OrganizationId, AssignedToUserId, UpdatedAt DESC)
+                WHERE AssignedToUserId IS NOT NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_agentrecommendations_approval
+                ON AgentRecommendations (ApprovalId) WHERE ApprovalId IS NOT NULL;
+
+            CREATE TABLE IF NOT EXISTS AgentStrategyPreferences (
+                OrganizationId UUID PRIMARY KEY REFERENCES Organizations(Id) ON DELETE CASCADE,
+                PrimaryGoal VARCHAR(50) NOT NULL DEFAULT 'Balanced'
+                    CHECK (PrimaryGoal IN ('Balanced', 'GrowVisibility', 'ImproveCitations', 'DefendCompetitors', 'ImproveBrandAccuracy')),
+                CreatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UpdatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO AgentStrategyPreferences (OrganizationId, PrimaryGoal)
+            SELECT Id, 'Balanced' FROM Organizations
+            ON CONFLICT (OrganizationId) DO NOTHING;
+
+            INSERT INTO AgentSchedules
+                (OrganizationId, AgentKey, TriggerType, TriggerExpression, TimeZone, IsEnabled)
+            SELECT Id, 'geo-strategy', 'Event', 'finding.explained', 'UTC', TRUE
+            FROM Organizations
+            ON CONFLICT (OrganizationId, AgentKey, TriggerType, TriggerExpression) DO NOTHING;
+            """),
+        new(
+            "202609250003_agent_content_execution",
+            "Add approval-gated, Knowledge Vault-grounded content execution records",
+            """
+            CREATE TABLE IF NOT EXISTS AgentContentExecutions (
+                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                OrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,
+                RunId UUID NOT NULL REFERENCES AgentRuns(Id) ON DELETE CASCADE,
+                RecommendationId UUID NOT NULL REFERENCES AgentRecommendations(Id) ON DELETE CASCADE,
+                ContentDraftId UUID REFERENCES ContentDrafts(Id) ON DELETE SET NULL,
+                KnowledgeBaseId UUID REFERENCES KnowledgeBases(Id) ON DELETE SET NULL,
+                PublishApprovalId UUID REFERENCES AgentApprovals(Id) ON DELETE SET NULL,
+                Status VARCHAR(40) NOT NULL DEFAULT 'Preparing'
+                    CHECK (Status IN ('Preparing', 'NeedsEvidence', 'ReadyForReview', 'AwaitingPublishApproval',
+                                      'ApprovedForPublishing', 'Publishing', 'Published', 'Rejected',
+                                      'PublishFailed', 'Failed')),
+                BriefJson JSONB NOT NULL DEFAULT '{}'::jsonb,
+                EvidenceJson JSONB NOT NULL DEFAULT '[]'::jsonb,
+                ReviewDiffJson JSONB NOT NULL DEFAULT '{}'::jsonb,
+                PolicyChecksJson JSONB NOT NULL DEFAULT '[]'::jsonb,
+                ReviewNote TEXT NOT NULL DEFAULT '',
+                ReviewedByUserId UUID REFERENCES Users(Id) ON DELETE SET NULL,
+                ReviewedAt TIMESTAMP WITH TIME ZONE,
+                PublishedAt TIMESTAMP WITH TIME ZONE,
+                CreatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UpdatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (OrganizationId, RecommendationId)
+            );
+            CREATE INDEX IF NOT EXISTS idx_agentcontentexecutions_org_status
+                ON AgentContentExecutions (OrganizationId, Status, UpdatedAt DESC);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_agentcontentexecutions_draft
+                ON AgentContentExecutions (ContentDraftId) WHERE ContentDraftId IS NOT NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_agentcontentexecutions_publish_approval
+                ON AgentContentExecutions (PublishApprovalId) WHERE PublishApprovalId IS NOT NULL;
+
+            INSERT INTO AgentSchedules
+                (OrganizationId, AgentKey, TriggerType, TriggerExpression, TimeZone, IsEnabled)
+            SELECT Id, 'content-execution', 'Event', 'recommendation.approved', 'UTC', TRUE
+            FROM Organizations
+            ON CONFLICT (OrganizationId, AgentKey, TriggerType, TriggerExpression) DO NOTHING;
+            """),
+        new(
+            "202609250004_agent_impact_measurements",
+            "Add evidence-linked baselines, follow-up measurements, and client-ready impact reports",
+            """
+            CREATE TABLE IF NOT EXISTS AgentImpactMeasurements (
+                Id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                OrganizationId UUID NOT NULL REFERENCES Organizations(Id) ON DELETE CASCADE,
+                RecommendationId UUID NOT NULL REFERENCES AgentRecommendations(Id) ON DELETE CASCADE,
+                BaselineRunId UUID NOT NULL REFERENCES AgentRuns(Id) ON DELETE CASCADE,
+                MeasurementRunId UUID REFERENCES AgentRuns(Id) ON DELETE SET NULL,
+                Status VARCHAR(30) NOT NULL DEFAULT 'Pending'
+                    CHECK (Status IN ('Pending', 'WaitingForData', 'NeedsBaseline', 'Measured', 'Failed', 'Cancelled')),
+                Outcome VARCHAR(30) NOT NULL DEFAULT 'Pending'
+                    CHECK (Outcome IN ('Pending', 'Improved', 'Neutral', 'Regressed', 'Inconclusive')),
+                MonitoringWindowDays INT NOT NULL DEFAULT 14 CHECK (MonitoringWindowDays BETWEEN 1 AND 90),
+                BaselineCapturedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                MeasurementDueAt TIMESTAMP WITH TIME ZONE NOT NULL,
+                MeasuredAt TIMESTAMP WITH TIME ZONE,
+                BaselineJson JSONB NOT NULL DEFAULT '{}'::jsonb,
+                FollowupJson JSONB NOT NULL DEFAULT '{}'::jsonb,
+                DeltaJson JSONB NOT NULL DEFAULT '{}'::jsonb,
+                EvidenceJson JSONB NOT NULL DEFAULT '{}'::jsonb,
+                ReportJson JSONB NOT NULL DEFAULT '{}'::jsonb,
+                Confidence NUMERIC(5,4) NOT NULL DEFAULT 0 CHECK (Confidence BETWEEN 0 AND 1),
+                ErrorMessage TEXT NOT NULL DEFAULT '',
+                CreatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UpdatedAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (OrganizationId, RecommendationId)
+            );
+            CREATE INDEX IF NOT EXISTS idx_agentimpactmeasurements_due
+                ON AgentImpactMeasurements (MeasurementDueAt, Status)
+                WHERE Status IN ('Pending', 'WaitingForData');
+            CREATE INDEX IF NOT EXISTS idx_agentimpactmeasurements_org_outcome
+                ON AgentImpactMeasurements (OrganizationId, Outcome, UpdatedAt DESC);
+
+            INSERT INTO AgentSchedules
+                (OrganizationId, AgentKey, TriggerType, TriggerExpression, TimeZone, IsEnabled)
+            SELECT Id, 'impact-reporting', 'Event', 'recommendation.implemented', 'UTC', TRUE
+            FROM Organizations
+            ON CONFLICT (OrganizationId, AgentKey, TriggerType, TriggerExpression) DO NOTHING;
             """)
     ];
 }

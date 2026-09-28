@@ -13,6 +13,10 @@ public class ToolExecutionService
     private readonly IContentDraftRepository _contentDraftRepository;
     private readonly IOpportunitySnapshotRepository _opportunityRepository;
     private readonly IPromptIntelligenceRepository _promptRepository;
+    private readonly IVisibilitySnapshotRepository _visibilitySnapshotRepository;
+    private readonly ICitationScanSnapshotRepository _citationSnapshotRepository;
+    private readonly ICompetitorSnapshotRepository _competitorSnapshotRepository;
+    private readonly IAgentControlPlaneRepository _agentRepository;
 
     public ToolExecutionService(
         IWebsiteRepository websiteRepository,
@@ -22,7 +26,11 @@ public class ToolExecutionService
         IKnowledgeBaseRepository knowledgeBaseRepository,
         IContentDraftRepository contentDraftRepository,
         IOpportunitySnapshotRepository opportunityRepository,
-        IPromptIntelligenceRepository promptRepository)
+        IPromptIntelligenceRepository promptRepository,
+        IVisibilitySnapshotRepository visibilitySnapshotRepository,
+        ICitationScanSnapshotRepository citationSnapshotRepository,
+        ICompetitorSnapshotRepository competitorSnapshotRepository,
+        IAgentControlPlaneRepository agentRepository)
     {
         _websiteRepository = websiteRepository;
         _metricsRepository = metricsRepository;
@@ -32,6 +40,10 @@ public class ToolExecutionService
         _contentDraftRepository = contentDraftRepository;
         _opportunityRepository = opportunityRepository;
         _promptRepository = promptRepository;
+        _visibilitySnapshotRepository = visibilitySnapshotRepository;
+        _citationSnapshotRepository = citationSnapshotRepository;
+        _competitorSnapshotRepository = competitorSnapshotRepository;
+        _agentRepository = agentRepository;
     }
 
     public async Task<Dictionary<string, object>> ExecuteToolsAsync(Guid? organizationId, string[] requiredTools, CancellationToken ct)
@@ -83,6 +95,17 @@ public class ToolExecutionService
             {
                 rawData["platformVisibilities"] = platVis.Select(p => new { p.Platform, p.VisibilityScore, p.MentionRate, p.PromptCoverage }).ToList();
             }
+
+            var visibilityHistory = await _visibilitySnapshotRepository.GetRecentSummaryHistoryAsync(organizationId.Value, 8);
+            rawData["visibilityHistory"] = visibilityHistory.Select(item => new
+            {
+                item.ScanDate,
+                item.CompositeScore,
+                item.DirectPct,
+                item.MentionsPct,
+                item.IndirectPct,
+                item.ComparativePct
+            }).ToList();
         }
 
         var loadWorkspaceSummary = requiredTools.Length == 0;
@@ -115,6 +138,18 @@ public class ToolExecutionService
                 rawData["opportunities"] = opportunities.OrderByDescending(o => o.Score).Take(10)
                     .Select(o => new { o.Category, o.Title, o.Summary, o.Score, o.Effort, o.EstimatedGainPct, o.Eta, o.ScanDate }).ToList();
             }
+
+            var recommendations = await _websiteRepository.GetGeoRecommendationsAsync(organizationId.Value);
+            rawData["geoRecommendations"] = recommendations.Take(15).Select(item => new
+            {
+                item.RecommendationId,
+                item.Category,
+                item.Title,
+                item.Priority,
+                item.ExpectedOutcome,
+                item.SuccessMetric,
+                item.CreatedAt
+            }).ToList();
         }
 
         if (loadWorkspaceSummary || requiredTools.Contains("Prompt Intelligence Tool"))
@@ -125,8 +160,130 @@ public class ToolExecutionService
             rawData["promptTopics"] = topics.Take(20).Select(t => new { t.Id, t.Name, t.Description }).ToList();
             rawData["promptVisibility"] = promptVisibility.OrderByDescending(v => v.RunAt).Take(20)
                 .Select(v => new { v.TopicName, v.QuestionId, v.Region, v.Persona, v.OverallVisibilityScore, v.ShareOfVoice, v.AveragePosition, v.CitationCount, v.RunAt }).ToList();
+
+            var citationEvidence = await _promptRepository.GetCitationSummaryDataAsync(organizationId.Value, since);
+            rawData["citationEvidence"] = citationEvidence.OrderByDescending(item => item.RunAt).Take(30)
+                .Select(item => new { item.AnalysisId, item.Platform, item.Domain, item.Url, item.Category, item.RunAt }).ToList();
+
+            var impactHistory = await _promptRepository.GetRecommendationImpactHistoryAsync(organizationId.Value, string.Empty, 1);
+            rawData["recommendationImpactHistory"] = impactHistory.Select(item => new
+            {
+                item.Category,
+                item.SampleCount,
+                item.AverageVisibilityDelta,
+                item.AverageCitationDelta
+            }).ToList();
+        }
+
+        if (loadWorkspaceSummary || loadVisibility || loadCompetitors || requiredTools.Contains("Agent Evidence Tool"))
+        {
+            await _agentRepository.EnsureDefaultsAsync(organizationId.Value, ct);
+            var findings = await _agentRepository.GetFindingsAsync(organizationId.Value, limit: 20, cancellationToken: ct);
+            rawData["agentFindings"] = findings.Select(item => new
+            {
+                item.Id,
+                item.AgentKey,
+                item.FindingType,
+                item.Severity,
+                item.Title,
+                item.Summary,
+                item.EntityType,
+                Evidence = ParseEvidence(item.EvidenceJson),
+                item.ObservationStartedAt,
+                item.ObservationEndedAt,
+                item.Confidence,
+                item.Status,
+                item.UpdatedAt
+            }).ToList();
+
+            var agentRecommendations = await _agentRepository.GetRecommendationsAsync(organizationId.Value, limit: 20, cancellationToken: ct);
+            rawData["agentRecommendations"] = agentRecommendations.Select(item => new
+            {
+                item.Id,
+                item.FindingId,
+                item.RecommendationType,
+                item.Category,
+                item.Title,
+                item.Summary,
+                item.Rationale,
+                item.TargetType,
+                item.TargetKey,
+                Evidence = ParseEvidence(item.EvidenceJson),
+                ActionPlan = ParseEvidence(item.ActionPlanJson),
+                ValidationPlan = ParseEvidence(item.ValidationPlanJson),
+                item.ExpectedImpact,
+                item.ImpactScore,
+                item.EffortScore,
+                item.UrgencyScore,
+                item.GoalAlignmentScore,
+                item.Confidence,
+                item.PriorityScore,
+                item.Status,
+                item.AssignedToName,
+                item.UpdatedAt
+            }).ToList();
+
+            var impactMeasurements = await _agentRepository.GetImpactMeasurementsAsync(
+                organizationId.Value, limit: 20, cancellationToken: ct);
+            rawData["agentImpactMeasurements"] = impactMeasurements.Select(item => new
+            {
+                item.Id,
+                item.RecommendationId,
+                item.Status,
+                item.Outcome,
+                item.MonitoringWindowDays,
+                item.BaselineCapturedAt,
+                item.MeasurementDueAt,
+                item.MeasuredAt,
+                Baseline = ParseEvidence(item.BaselineJson),
+                Followup = ParseEvidence(item.FollowupJson),
+                Delta = ParseEvidence(item.DeltaJson),
+                Evidence = ParseEvidence(item.EvidenceJson),
+                Report = ParseEvidence(item.ReportJson),
+                item.Confidence,
+                item.ErrorMessage
+            }).ToList();
+
+            var citationHistory = await _citationSnapshotRepository.GetRecentSummaryHistoryAsync(organizationId.Value, 8);
+            rawData["citationHistory"] = citationHistory.Select(item => new
+            {
+                item.ScanDate,
+                item.CompositeQualityScore,
+                item.AverageAuthorityScore,
+                item.AverageInfluenceScore,
+                item.CitationSignal,
+                item.ModelsReferencingCount,
+                item.ModelsTrackedCount
+            }).ToList();
+
+            var competitorHistory = await _competitorSnapshotRepository.GetRecentHistoryAsync(organizationId.Value, 4);
+            rawData["competitorHistory"] = competitorHistory.Select(item => new
+            {
+                item.ScanDate,
+                item.Name,
+                item.IsYou,
+                item.Rank,
+                item.ShareOfVoice,
+                item.Visibility,
+                item.Threat,
+                item.MeasurementSource,
+                item.MethodologyVersion
+            }).ToList();
         }
         
         return rawData;
+    }
+
+    private static JsonElement ParseEvidence(string json)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return document.RootElement.Clone();
+        }
+        catch (JsonException)
+        {
+            return JsonSerializer.SerializeToElement(new { raw = json });
+        }
     }
 }
