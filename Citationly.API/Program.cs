@@ -238,7 +238,11 @@ var runMigrationsOnly = args.Contains("--migrate-database", StringComparer.Ordin
 //
 // NOTE: init.sql itself opens with `DROP TABLE ... CASCADE` for a from-scratch dev reset — never
 // run that file's full contents here, only ever hand-pick idempotent CREATE/ALTER statements.
-var runMigrationsOnStartup = app.Configuration.GetValue<bool?>("Database:RunMigrationsOnStartup") ?? !app.Environment.IsProduction();
+// Versioned migrations are non-destructive and are protected by a PostgreSQL advisory lock.
+// Run them in every environment by default so a production deployment cannot start serving
+// requests against an older schema merely because the opt-in setting was omitted. Operators can
+// still explicitly disable startup migrations with Database__RunMigrationsOnStartup=false.
+var runMigrationsOnStartup = app.Configuration.GetValue<bool?>("Database:RunMigrationsOnStartup") ?? true;
 if (runMigrationsOnly || runMigrationsOnStartup)
 {
     await RunDatabaseMigrationsAsync(app.Services, app.Lifetime.ApplicationStopping);
