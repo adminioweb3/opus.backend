@@ -119,7 +119,7 @@ public class GeoDashboardAggregatorTests
                         OrganizationId = _orgId,
                         ScanDate = DateOnly.FromDateTime(DateTime.UtcNow),
                         VisibilityScore = 50,
-                        ScoringMethodVersion = "v3-geo-audit"
+                        ScoringMethodVersion = "v4-evidence-audit"
                     }
                 }
             },
@@ -220,7 +220,7 @@ public class GeoDashboardAggregatorTests
                     SeoHealth = 94,
                     AeoReadiness = 76,
                     GeoReadiness = 81,
-                    ScoringMethodVersion = "v3-geo-audit"
+                    ScoringMethodVersion = "v4-evidence-audit"
                 }
             }
         };
@@ -343,5 +343,29 @@ public class GeoDashboardAggregatorTests
         Assert.False(result.HasData);
         Assert.Empty(result.Trend);
         Assert.Empty(result.ShareOfVoice);
+    }
+
+    [Fact]
+    public async Task LegacyScan_IsRebuiltSoAvailableEvidenceDoesNotStayUnavailable()
+    {
+        var mediator = new StubMediator();
+        var visibilityRepo = new StubVisibilityRepository
+        {
+            Scans = new List<HistoricalScan>
+            {
+                new()
+                {
+                    OrganizationId = _orgId,
+                    ScanDate = DateOnly.FromDateTime(DateTime.UtcNow),
+                    VisibilityScore = 61,
+                    ScoringMethodVersion = "v3-geo-audit"
+                }
+            }
+        };
+
+        await CreateAggregator(visibilityRepo: visibilityRepo, mediator: mediator)
+            .BuildAsync(_orgId, "30D");
+
+        Assert.Equal(1, mediator.SendCount);
     }
 }

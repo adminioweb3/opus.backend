@@ -44,7 +44,8 @@ public class GeoDashboardAggregator
         // from whatever onboarding analysis already exists (persona/region/executive summary,
         // website profile, competitors) instead of showing fabricated numbers.
         var initialScans = await _visibilityRepo.GetHistoricalScansByOrgAsync(organizationId);
-        if (!initialScans.Any(IsUsableScan))
+        var latestUsableScan = initialScans.Where(IsUsableScan).LastOrDefault();
+        if (latestUsableScan == null || !IsCurrentEvidenceScan(latestUsableScan))
         {
             await _mediator.Send(new RunScanCommand { OrganizationId = organizationId });
         }
@@ -280,4 +281,7 @@ public class GeoDashboardAggregator
             scan.GeoReadiness
         }.Any(score => score > 0);
     }
+
+    private static bool IsCurrentEvidenceScan(HistoricalScan scan) =>
+        scan.ScoringMethodVersion.StartsWith("v4-evidence-", StringComparison.Ordinal);
 }

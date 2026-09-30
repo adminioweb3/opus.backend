@@ -24,6 +24,7 @@ namespace Citationly.API.Controllers;
 public class DashboardController : ControllerBase
 {
     private readonly IAiVisibilityRepository _visibilityRepository;
+    private readonly IPromptIntelligenceRepository _promptIntelligenceRepository;
     private readonly IMemoryCache _cache;
     private readonly GeoDashboardAggregator _aggregator;
     private readonly ICompetitorSnapshotRepository _snapshotRepository;
@@ -38,6 +39,7 @@ public class DashboardController : ControllerBase
 
     public DashboardController(
         IAiVisibilityRepository visibilityRepository,
+        IPromptIntelligenceRepository promptIntelligenceRepository,
         IMemoryCache cache,
         GeoDashboardAggregator aggregator,
         ICompetitorSnapshotRepository snapshotRepository,
@@ -51,6 +53,7 @@ public class DashboardController : ControllerBase
         ICurrentOrganizationAccessor currentOrganization)
     {
         _visibilityRepository = visibilityRepository;
+        _promptIntelligenceRepository = promptIntelligenceRepository;
         _cache = cache;
         _aggregator = aggregator;
         _snapshotRepository = snapshotRepository;
@@ -380,8 +383,28 @@ public class DashboardController : ControllerBase
             .Select(s => s.CompetitorId!.Value)
             .ToHashSet();
 
-        return trackedCompetitors.Count != snapshotCompetitorIds.Count
-            || trackedCompetitors.Any(c => !snapshotCompetitorIds.Contains(c.Id));
+        if (trackedCompetitors.Count != snapshotCompetitorIds.Count
+            || trackedCompetitors.Any(c => !snapshotCompetitorIds.Contains(c.Id)))
+        {
+            return true;
+        }
+
+        // A baseline can be written while Prompt Intelligence is still completing. Previously,
+        // that low-evidence snapshot was considered fresh for the rest of the day, even after
+        // more responses arrived, leaving every brand permanently "Not ranked" until another
+        // scheduled scan. Recalculate as soon as the evidence set has grown.
+        var snapshotResponseCount = snapshots.Count == 0
+            ? 0
+            : snapshots.Max(snapshot => snapshot.ResponseCount);
+        var currentResponseCount = (await _promptIntelligenceRepository
+                .GetCompetitorWatchObservationDataAsync(
+                    organizationId,
+                    DateTime.UtcNow.AddDays(-90)))
+            .Select(observation => observation.ResponseId)
+            .Distinct()
+            .Count();
+
+        return currentResponseCount > snapshotResponseCount;
     }
 
     private async Task<bool> CompetitorSnapshotHasCompetitorsAsync(Guid organizationId, DateOnly scanDate)
